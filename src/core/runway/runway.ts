@@ -265,7 +265,12 @@ export interface Runway {
   /** Plans across those phases. */
   planCount: number;
   onRunway: RunwayEntry[];
-  changed: (RunwayEntry & { changes: InputChange[]; gatesChange: GatesChange | null })[];
+  /** Approved phases whose signed inputs or gate config moved on; `statement` is what was signed. */
+  changed: (RunwayEntry & {
+    statement: ApprovalStatement;
+    changes: InputChange[];
+    gatesChange: GatesChange | null;
+  })[];
   invalid: { phaseId: string; reason: ApprovalInvalidReason; detail?: string }[];
 }
 
@@ -316,6 +321,7 @@ export async function computeRunway(options: RunwayOptions): Promise<Runway> {
       case 'changed':
         runway.changed.push({
           ...entry(state),
+          statement: state.statement,
           changes: state.changes,
           gatesChange: state.gatesChange,
         });

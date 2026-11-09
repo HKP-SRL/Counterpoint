@@ -31,10 +31,13 @@ function isMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** The gates slot for the commit `tip`: absent, or present with the digest of the `gates` value. */
-export async function gatesDigest(reader: GitFileReader, tip: string): Promise<GatesSlot> {
-  const bytes = await reader.read(tip, COUNTERPOINT_CONFIG_PATH);
-  if (bytes === null) return { ...GATES_ABSENT };
+/**
+ * The `gates` value of the host config at `commit`, parsed exactly as the digest parses it, or
+ * null when it is absent (missing or empty file, missing or null `gates` key).
+ */
+export async function gatesValue(reader: GitFileReader, commit: string): Promise<unknown | null> {
+  const bytes = await reader.read(commit, COUNTERPOINT_CONFIG_PATH);
+  if (bytes === null) return null;
 
   let document: unknown;
   try {
@@ -45,12 +48,18 @@ export async function gatesDigest(reader: GitFileReader, tip: string): Promise<G
     throw new GatesConfigError(`${COUNTERPOINT_CONFIG_PATH} could not be parsed: ${first}`);
   }
 
-  if (document === null || document === undefined) return { ...GATES_ABSENT };
+  if (document === null || document === undefined) return null;
   if (!isMapping(document)) {
     throw new GatesConfigError(`${COUNTERPOINT_CONFIG_PATH} must be a mapping at the top level.`);
   }
   const gates = Object.hasOwn(document, 'gates') ? document.gates : undefined;
-  if (gates === undefined || gates === null) return { ...GATES_ABSENT };
+  return gates === undefined || gates === null ? null : gates;
+}
+
+/** The gates slot for the commit `tip`: absent, or present with the digest of the `gates` value. */
+export async function gatesDigest(reader: GitFileReader, tip: string): Promise<GatesSlot> {
+  const gates = await gatesValue(reader, tip);
+  if (gates === null) return { ...GATES_ABSENT };
 
   try {
     return { state: 'present', digest: sha256Digest(canonicalJson(gates, 'gates')) };

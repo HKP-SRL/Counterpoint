@@ -158,6 +158,11 @@ function changedOf(runway: Awaited<ReturnType<typeof runwayOf>>, phaseId: string
   return found;
 }
 
+function only<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('expected a value');
+  return value;
+}
+
 /** The lines after the first hunk header, without hunk headers or "no newline" markers. */
 function bodyLines(diff: string): string[] {
   const lines = diff.split('\n');
@@ -212,7 +217,11 @@ describe('deriveNeedsYou', () => {
     const repo = await materializeFixtureRepo('synthetic');
     await land(repo, '02');
     await land(repo, '02.1');
-    await commitAt(repo.root, { [CONTEXT]: `${text(repo.root, CONTEXT)}\nOlder.\n` }, 2_000_000_000);
+    await commitAt(
+      repo.root,
+      { [CONTEXT]: `${text(repo.root, CONTEXT)}\nOlder.\n` },
+      2_000_000_000,
+    );
     await commitAt(
       repo.root,
       { [INSERTED_CONTEXT]: `${text(repo.root, INSERTED_CONTEXT)}\nNewer.\n` },
@@ -251,8 +260,9 @@ describe('changeView and changedInputDiff', () => {
 
   beforeAll(async () => {
     repo = await materializeFixtureRepo('synthetic');
-    await land(repo, '02');
+    // The statement's base commit is the tip it was prepared at, before the approval lands.
     signedTip = (await gitIn(repo.root, ['rev-parse', 'master'])).trim();
+    await land(repo, '02');
     // One commit: a modified CONTEXT, an added SPEC, a removed RESEARCH and a new Phase 02 goal.
     await commitAt(
       repo.root,
@@ -285,14 +295,18 @@ describe('changeView and changedInputDiff', () => {
 
   it('builds the lead facts, the rows sorted by path and the re-sign command', async () => {
     const c = changedOf(runway, '02');
-    const [item] = await deriveNeedsYou({
-      root: repo.root,
-      baseBranch: 'master',
-      tip: runway.tip as string,
-      changed: runway.changed,
-      reader: createGitFileReader(repo.root),
-      adapter,
-    });
+    const item = only(
+      (
+        await deriveNeedsYou({
+          root: repo.root,
+          baseBranch: 'master',
+          tip: runway.tip as string,
+          changed: runway.changed,
+          reader: createGitFileReader(repo.root),
+          adapter,
+        })
+      )[0],
+    );
     const view = changeView({
       item,
       statement: c.statement,
@@ -384,11 +398,14 @@ describe('gate config drift', () => {
       { [CONFIG]: '# host config\ngates:\n  lint: pnpm lint\n  test: pnpm test\n' },
       2_000_000_100,
     );
-    const ct = Number.parseInt((await gitIn(repo.root, ['log', '-1', '--format=%ct', sha])).trim(), 10);
+    const ct = Number.parseInt(
+      (await gitIn(repo.root, ['log', '-1', '--format=%ct', sha])).trim(),
+      10,
+    );
 
     const { runway, items } = await needsYouOf(repo);
     expect(items).toHaveLength(1);
-    const [item] = items;
+    const item = only(items[0]);
     expect(item?.changedCount).toBe(0);
     expect(item?.gatesChanged).toBe(true);
     expect(item?.changedAt).toBe(new Date(ct * 1000).toISOString());
@@ -413,7 +430,7 @@ describe('gate config drift', () => {
       change: 'added',
       signedDigest: null,
     });
-    expect(view.changes[0].nowDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(only(view.changes[0]).nowDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
 
     const { diff } = await changedInputDiff({
       root: repo.root,
@@ -452,7 +469,7 @@ describe('gate config drift', () => {
     expect(items[0]?.gatesChanged).toBe(true);
     const c = changedOf(runway, '02');
     const view = changeView({
-      item: items[0],
+      item: only(items[0]),
       statement: c.statement,
       changes: c.changes,
       gatesChange: c.gatesChange,
