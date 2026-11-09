@@ -166,12 +166,77 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 1 | Pending |
+| FOUND-05 | Phase 2 | Pending |
+| FOUND-06 | Phase 1 | Pending |
+| ADPT-01 | Phase 1 | Pending |
+| ADPT-02 | Phase 1 | Pending |
+| ADPT-03 | Phase 5 | Pending |
+| ADPT-04 | Phase 5 | Pending |
+| ADPT-05 | Phase 2 | Pending |
+| APPR-01 | Phase 1 | Pending |
+| APPR-02 | Phase 1 | Pending |
+| APPR-03 | Phase 3 | Pending |
+| APPR-04 | Phase 1 | Pending |
+| APPR-05 | Phase 3 | Pending |
+| BUILD-01 | Phase 2 | Pending |
+| BUILD-02 | Phase 2 | Pending |
+| BUILD-03 | Phase 2 | Pending |
+| BUILD-04 | Phase 2 | Pending |
+| BUILD-05 | Phase 5 | Pending |
+| BUILD-06 | Phase 3 | Pending |
+| BUILD-07 | Phase 3 | Pending |
+| BUILD-08 | Phase 2 | Pending |
+| BUILD-09 | Phase 3 | Pending |
+| BUILD-10 | Phase 2 | Pending |
+| GATE-01 | Phase 2 | Pending |
+| GATE-02 | Phase 3 | Pending |
+| GATE-03 | Phase 2 | Pending |
+| GATE-04 | Phase 2 | Pending |
+| GATE-05 | Phase 4 | Pending |
+| PR-01 | Phase 2 | Pending |
+| PR-02 | Phase 2 | Pending |
+| PR-03 | Phase 3 | Pending |
+| DRAFT-01 | Phase 4 | Pending |
+| DRAFT-02 | Phase 4 | Pending |
+| DRAFT-03 | Phase 4 | Pending |
+| DRAFT-04 | Phase 4 | Pending |
+| DRAFT-05 | Phase 4 | Pending |
+| DRAFT-06 | Phase 4 | Pending |
+| DRAFT-07 | Phase 4 | Pending |
+| DRAFT-08 | Phase 4 | Pending |
+| DRAFT-09 | Phase 6 | Pending |
+| DRAFT-10 | Phase 4 | Pending |
+| CNCL-01 | Phase 5 | Pending |
+| CNCL-02 | Phase 5 | Pending |
+| CNCL-03 | Phase 6 | Pending |
+| CNCL-04 | Phase 6 | Pending |
+| CNCL-05 | Phase 6 | Pending |
+| CNCL-06 | Phase 6 | Pending |
+| CNCL-07 | Phase 6 | Pending |
+| CNCL-08 | Phase 5 | Pending |
+| CNCL-09 | Phase 6 | Pending |
+| CNCL-10 | Phase 6 | Pending |
+| CARD-01 | Phase 5 | Pending |
+| CARD-02 | Phase 5 | Pending |
+| CARD-03 | Phase 5 | Pending |
+| CARD-04 | Phase 5 | Pending |
+| CARD-05 | Phase 5 | Pending |
+| CARD-06 | Phase 5 | Pending |
+| CARD-07 | Phase 5 | Pending |
+| MISN-01 | Phase 1 | Pending |
+| MISN-02 | Phase 1 | Pending |
+| MISN-03 | Phase 3 | Pending |
+| MISN-04 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 65 total
-- Mapped to phases: 0
-- Unmapped: 65 ⚠️
+- Mapped to phases: 65
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-09*
-*Last updated: 2026-11-09 after initial definition*
+*Last updated: 2026-11-09 after roadmap creation (traceability mapped)*

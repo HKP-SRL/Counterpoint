@@ -1,0 +1,125 @@
+# Roadmap: Counterpoint
+
+## Overview
+
+Counterpoint is built in six vertical slices, and the owner can use each one on Cena. The first slice is the trust layer: a loopback console, a proven agent sandbox, a read-only view of Cena's GSD plan, and signed runway approvals that recompute themselves from git. The second proves the core value: one unattended overnight run on a Cena QR-menu phase that ends in a green PR with a preview link, driven from the CLI. The third completes the morning-after loop: console mission control, parallel builds, rebase onto the owner's pushes, and merge only by the owner's signed merge commit. Design sign-off and the visual gate come next. The council comes last, on purpose: first question cards with decision write-back and "proceed on the recommendation" semantics, then full meetings and backlog filing. The core value lives in the build lane, and the council features carry the most scope-creep risk.
+
+## Phases
+
+**Phase Numbering:**
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+Decimal phases appear between their surrounding integers in numeric order.
+
+- [ ] **Phase 1: Trusted Shell & Signed Runway** - Loopback Astryx console, `doctor` with a live sandbox probe, Cena's GSD phases read through the adapter, signed runway approvals that drop off when content changes
+- [ ] **Phase 2: First Unattended Run** - An approved Cena phase built overnight in its own worktree, judged only by gate exit codes, ending in a green PR with a preview link or a parked item, plus a run report (CLI first)
+- [ ] **Phase 3: Morning Review & Signed Merge** - Console mission control (statuses, gate rows, live log), parallel builds, rebase on conflict, merge only by the owner's signed merge commit, cleanup, honest counters
+- [ ] **Phase 4: Design Drafts & Visual Gate** - Standalone drafts in the host's design system with pins, redraws, variants and "More like B"; signed-off full render joins the runway approval and drives a structural visual gate
+- [ ] **Phase 5: Council Cards & Decisions** - Seats raise question cards; Pick, More like B, reframe or Later; picks committed as GSD decisions; unanswered cards proceed as "assumed" or park only irreversible work
+- [ ] **Phase 6: Council Meetings & Backlog Filing** - Structured bounded meetings and async threads, minutes and transcripts, cost caps, persona pins on drafts, deduplicated backlog filing, automatic meetings alongside the work
+
+## Phase Details
+
+### Phase 1: Trusted Shell & Signed Runway
+**Goal**: The owner can run Counterpoint against Cena, see proof that agents are boxed in, browse Cena's GSD phases, and sign phases into a runway that recomputes itself from git
+**Mode:** mvp
+**Depends on**: Nothing (first phase)
+**Requirements**: FOUND-01, FOUND-02, FOUND-03, FOUND-04, FOUND-06, ADPT-01, ADPT-02, APPR-01, APPR-02, APPR-04, MISN-01, MISN-02
+**Success Criteria** (what must be TRUE):
+  1. Owner runs `npx @hkp/counterpoint` in the Cena repo and opens the Astryx console, in light and dark themes, at a loopback-only URL. Requests with an unexpected Host or Origin, cross-site posts, and privileged calls without the owner credential are rejected.
+  2. `counterpoint doctor` reports pass/fail for `claude`, `git` and `gh`, for the signing key (passphrase-protected, not loaded in ssh-agent or Keychain), and for a live probe. The probe shows that a headless `claude -p` session cannot read the signing key, `~/.ssh`, `gh` credentials or Counterpoint's state, and cannot write Cena's `.git/config`, `.git/hooks` or `.git/info`.
+  3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
+  4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
+  5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
+**Plans**: TBD
+**UI hint**: yes
+**Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
+
+### Phase 2: First Unattended Run
+**Goal**: The owner can start a run on an approved Cena QR-menu phase and walk away. Counterpoint builds it overnight in its own worktree, judges it only by gate exit codes, and leaves either a green PR with a preview link or a parked item with the reason.
+**Mode:** mvp
+**Depends on**: Phase 1
+**Requirements**: BUILD-01, BUILD-02, BUILD-03, BUILD-04, BUILD-08, BUILD-10, GATE-01, GATE-03, GATE-04, PR-01, PR-02, FOUND-05, ADPT-05
+**Success Criteria** (what must be TRUE):
+  1. Owner starts a run choosing approved phases, stop time, model and context budget, with the budget shown as a token figure (e.g. "40% of 1M = 400k tokens"), and can stop it. Each build runs in its own worktree and branch and never touches the owner's Cena checkout.
+  2. An unattended overnight run on a real Cena QR-menu phase ends in a green PR. Its body is generated from the phase artifacts and lists assumed decisions, and it has a preview link: Cena's Vercel preview when one exists, otherwise a local preview served by Counterpoint. The PR changes no `.planning/` files, and any planning bookkeeping goes through Counterpoint's single serialized write path.
+  3. Sessions hand off at the context budget (finish the task, write a handoff, commit, stop) and the next fresh session picks up from the handoff. A usage limit pauses the run until reset + 2 minutes, then it resumes on its own. Auth, credit and spend-limit errors stop the run and land in Needs You. If Counterpoint is killed or the machine reboots mid-run, the run resumes from its last handoff with no orphaned processes.
+  4. Gates are Counterpoint-defined commands read from the approved base and judged only by exit code. A failing gate's output goes back to the builder for a bounded number of retries; after N failed attempts the item parks in Needs You with the last failing output and its attempt history. Edits to tests, gate configs or baselines are flagged, and a test gate that ran zero tests fails.
+  5. At the end of a run, the owner gets a run report listing merge-ready PRs, parked items, items waiting on the owner, and decisions the builder assumed.
+**Plans**: TBD
+**Notes**: Do the CLI first: prove the overnight run before spending on console run controls, which come in Phase 3. Success criterion 2 is the exit gate for everything after this phase. Every agent spawn goes through one governor from here on (usage-limit pause across lanes); Phase 5 adds builder priority and the council's capped share. Research spikes: the context-window denominator on a 1M-window model, the `rate_limit_event` shape and reset unit, process-group kill on macOS, and sandbox escape hatches for Supabase/Docker gate commands.
+
+### Phase 3: Morning Review & Signed Merge
+**Goal**: The owner can follow several features building in parallel from the console, come back to their PRs, and merge each one only with their own signed merge commit, including when `master` moved underneath
+**Mode:** mvp
+**Depends on**: Phase 2
+**Requirements**: BUILD-06, BUILD-07, BUILD-09, GATE-02, APPR-03, APPR-05, PR-03, MISN-03, MISN-04
+**Success Criteria** (what must be TRUE):
+  1. Each work item in the console shows its status (queued, running, waiting on owner, parked, gates failing, ready for approval, merged) and its gate row, which lights up as gates pass; the failing gate's last lines are one click away. Owner can open a running session's live log (tool calls and progress) and stop that session.
+  2. Two or more Cena phases build in parallel without colliding. Tests run under one shared lock, and each worktree gets its own ports and database, so no gate passes against another worktree's server or data.
+  3. When the owner pushes to `master` and it conflicts with a build, the builder rebases, resolves, re-runs every gate, and parks the item if it can't. The owner's pushed changes are never dropped.
+  4. Owner sees a summary listing every assumption the builder proceeded on, then approves the merge by signing a `--no-ff` merge commit of the exact PR head. Counterpoint pushes it, the PR shows as merged, and the item's worktree and branch are cleaned up. Approval is recomputed from git every time: a PR whose head moved after signing, or one without a verified owner signature, never merges.
+  5. Beside the runway, the console shows a few honest counters (e.g. first-attempt gate pass rate, items merged without intervention), each paired with a counter-metric (e.g. gate-touch rate).
+**Plans**: TBD
+**UI hint**: yes
+**Notes**: This is the first phase that can merge anything, so it relies on the Phase 1 trust layer. Check Cena's branch-protection settings before planning.
+
+### Phase 4: Design Drafts & Visual Gate
+**Goal**: Before a UI phase is built, the owner can review standalone drafts in Cena's own design system and steer them with pins, redraws and variants. The owner then signs off a hi-fi render as part of the runway approval, and the build is checked against it.
+**Mode:** mvp
+**Depends on**: Phase 2
+**Requirements**: DRAFT-01, DRAFT-02, DRAFT-03, DRAFT-04, DRAFT-05, DRAFT-06, DRAFT-07, DRAFT-08, DRAFT-10, GATE-05
+**Success Criteria** (what must be TRUE):
+  1. Owner requests drafts for a Cena QR-menu phase and gets standalone local HTML screens. They use fixture data and Cena's design system, and they are served on an origin isolated from the console API. Each draft toggles between mobile and desktop and between empty, loading, error and long-text states.
+  2. Owner explores in low-fi "wire" mode (neutral palette, real layout and components), and the chosen draft is re-rendered as a hi-fi "full" render with Cena's tokens and fixtures.
+  3. Owner clicks any element to pin a comment, batches several pins into one revision that changes only the targeted parts, resolves or reopens comment threads, and redraws a whole draft with a steering note. Pins stay anchored across redraws.
+  4. Owner asks for 2–3 variants side by side and picks one, or says "More like B" (with an optional steering note) to get a new round anchored on B. A breadcrumb trail (A/B/C → B → B2 …) lets the owner back up.
+  5. Signing off the full render becomes part of the phase's runway approval. When the built screens drift from it in landmark regions (`data-cp-id`), the visual gate fails and attaches a side-by-side image.
+**Plans**: TBD
+**UI hint**: yes
+**Notes**: The variants / "More like B" round model is built here once, and Phase 5 reuses it for council cards. Research spikes first: rendering Cena screens in fixture mode, and keeping `data-cp-id` stable across revisions. The pixel-diff tier is deferred to v2 (GATE-V2-01). Can be planned alongside Phase 3 if useful, since it needs only the Phase 2 gate runner and the Phase 1 approvals.
+
+### Phase 5: Council Cards & Decisions
+**Goal**: Council seats raise planning questions on a phase as cards. The owner picks, steers, reframes or defers them; picks become committed GSD decisions, and unanswered cards never stop the build.
+**Mode:** mvp
+**Depends on**: Phase 4
+**Requirements**: CNCL-01, CNCL-02, CNCL-08, CARD-01, CARD-02, CARD-03, CARD-04, CARD-05, CARD-06, CARD-07, ADPT-03, ADPT-04, BUILD-05
+**Success Criteria** (what must be TRUE):
+  1. Seats (e.g. product, design, tech, QA, Cook) are defined in Cena's Counterpoint config. Defaults ship, and adding a seat is a config edit. For each council activity, the owner chooses router-picked relevant seats or all seats.
+  2. A card shows the question, the seats that raised it, 2–4 options with trade-offs, the recommended option, a minority report and a reversibility class. Owner can Pick (written into the phase's CONTEXT decisions and committed), say "More like B →" and back up through the breadcrumb trail, choose "None fit, reframe", or choose Later (the card stays in the inbox).
+  3. When the builder reaches work that depends on an unanswered reversible card, it proceeds on the recommended option. That choice is logged as "assumed" and appears in the PR and in the merge summary. If the owner later answers differently, a rework note goes to the open PR, or a backlog item is committed to Cena's backlog if the work already merged.
+  4. When the builder reaches work that depends on an unanswered irreversible card (DB schema, auth, data model, public routes, privacy, pricing), only that item parks, and the run carries on with the rest of the runway.
+  5. Approving, drafting and building never wait on the council. With council work running during a build, the builder keeps priority at the single quota governor and council spend stays within its capped share.
+**Plans**: TBD
+**UI hint**: yes
+**Notes**: "More like B →" reuses the round model from Phase 4. Decision and backlog writes go through the serialized planning-write path from Phase 2. Research: GSD write formats for CONTEXT decision entries and BACKLOG items against frozen Cena fixtures.
+
+### Phase 6: Council Meetings & Backlog Filing
+**Goal**: The council meets at set lifecycle points or when the owner calls it, debates in a bounded structured protocol, and turns what it finds into cards, review notes, persona pins on drafts and deduplicated backlog items, always alongside the work
+**Mode:** mvp
+**Depends on**: Phase 5
+**Requirements**: CNCL-03, CNCL-04, CNCL-05, CNCL-06, CNCL-07, CNCL-09, CNCL-10, DRAFT-09
+**Success Criteria** (what must be TRUE):
+  1. Owner calls a meeting on any topic or screen. It runs a blind pass per seat, then one anonymised critique round, then chair synthesis, in a fixed turn order with hard caps on rounds, tokens and wall time. The owner can read its minutes and full transcript.
+  2. Every meeting produces discrete outputs: cards, backlog items and review notes. The owner sees token cost per seat and per meeting, and per-meeting and per-day caps are enforced.
+  3. Seats clarify small points among themselves in async threads, and a thread that stalls escalates to a meeting.
+  4. The council files backlog items straight into Cena's backlog, tagged "council", with evidence and severity, deduplicated against existing items and capped per meeting. Needs You shows one summary that the owner can bulk-dismiss.
+  5. Relevant personas (e.g. the Cook) pin their own comments on a draft before the owner reviews it. The council also meets automatically at the configured lifecycle points without ever holding up approving, drafting or building.
+**Plans**: TBD
+**UI hint**: yes
+**Notes**: The default set of automatic meeting points is still open in PROJECT.md; settle it in this phase's discussion. Deferred to v2: live watch and interjection, post-build persona review, full gamification.
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Trusted Shell & Signed Runway | 0/TBD | Not started | - |
+| 2. First Unattended Run | 0/TBD | Not started | - |
+| 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
+| 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
+| 5. Council Cards & Decisions | 0/TBD | Not started | - |
+| 6. Council Meetings & Backlog Filing | 0/TBD | Not started | - |
