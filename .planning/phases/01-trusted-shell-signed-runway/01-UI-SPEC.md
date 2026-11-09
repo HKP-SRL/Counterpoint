@@ -29,7 +29,7 @@ created: "2026-11-09"
 Setup contract (prebuilt path, no StyleX build plugin in Phase 1):
 
 1. CSS imports, in this order (it maps to the layer cascade `reset` then `astryx-base` then `astryx-theme`):
-   `@astryxdesign/core/reset.css`, `@astryxdesign/core/astryx.css`, `@astryxdesign/theme-neutral/theme.css`, then the four `@fontsource/figtree/latin-{400,500,600,700}.css` files.
+   `@astryxdesign/core/reset.css`, `@astryxdesign/core/astryx.css`, `@astryxdesign/theme-neutral/theme.css`, then the four `@fontsource/figtree/latin-{400,500,600,700}.css` files (all four are needed: see the rendered weight set in Typography).
 2. Do **not** import `@astryxdesign/theme-neutral/fonts.css`. It `@import`s Google Fonts over the network. Counterpoint is a loopback tool that must work offline and under a strict `default-src 'self'` CSP. Self-host the font files (they ship inside `@fontsource/figtree`, which declares `font-family: 'Figtree'`, matching the theme). `@fontsource-variable/figtree` declares `Figtree Variable` and does **not** match, so do not use it.
 3. Providers at the root: `<Theme theme={neutralTheme} mode={mode}>` (`neutralTheme` from `@astryxdesign/theme-neutral/built`, `Theme` from `@astryxdesign/core/theme`) wrapping `<LinkProvider component={RouterLink}>` (`@astryxdesign/core/Link`) so Astryx links route through TanStack Router.
 4. No custom `xstyle` / StyleX styles in Phase 1. Compose with Astryx props (`gap`, `padding`, `variant`, `elevation`). If a gap truly needs custom CSS, write one small plain stylesheet that uses only Astryx CSS variables (`var(--spacing-*)`, `var(--color-*)`); this avoids needing `@astryxdesign/build`. Hex values never appear in Counterpoint's own CSS.
@@ -43,7 +43,7 @@ Enumerated by `npm pack @astryxdesign/core@0.7.11 && tar xzf astryxdesign-core-0
 
 Notes on provenance: version is the registry `latest` dist-tag (`npm view @astryxdesign/core version`), because the repo has no `node_modules` or lockfile yet. Filesystem cross-check (`ls -d package/dist/[A-Z]*/ | wc -l`) also gives 109; the sets differ by one name (the exports map lists the `BaseProps` types entry, `dist/` also holds the internal `NavItem`), so the counts agree. Capitalised entries only: lower-case entries (`./theme`, `./hooks`, `./i18n`, `./utils`, stylex token files) are not counted. Re-run the command after `pnpm install` against the lockfile-resolved version.
 
-This table is a **non-exhaustive** list of known-good components for Phase 1, not an allowlist. The executor may use anything else `@astryxdesign/core` exports (for example `CommandPalette`, `TabList`, `Drawer`, `Markdown`) if a plan needs it.
+This table is a **non-exhaustive** list of known-good components of the installed package (the package exports far more). The **vetted Phase 1 set is closed** and is the one named in the Registry Safety section: it is exactly the components in this table. A plan that needs any other `@astryxdesign/core` export (for example `CommandPalette`, `TabList`, `Drawer`, `Markdown`, `Image`) must first add it to the Registry Safety row with a source review dated that day; the executor does not reach past the table silently.
 
 | Component | Import path | Notes |
 |-----------|-------------|-------|
@@ -112,7 +112,7 @@ Four sizes, two weights. Sizes come from the theme scale (base 14, ratio 1.2) an
 | Display | 29px | 400 | 1.2414 (36px) | `Heading level={2} type="display-3"`: the **runway number only** |
 
 Rules:
-- Declared weights are exactly **400 and 600**. Do not use 500 or 700 in authored text. `Text type="label"` defaults to 500, so always pass `weight="semibold"`. The theme sets `Heading` levels 3 and 4 to bold (700); **do not use `Heading` levels 3-6** — section titles inside cards are `Text type="label" weight="semibold"`. Weights inside Astryx components (a Button's own label is 500) are the design system's and are not overridden.
+- Declared (authored) weights are exactly **400 and 600**. Do not use 500 or 700 in authored text. **Rendered weight set, stated honestly:** the screen also shows 500 (Astryx Button and menu labels) and 700 (a few theme internals; `Heading` levels 3-6 are not used in this phase), so the font files for 400, 500, 600 and 700 are all loaded and none is dropped. `Text type="label"` defaults to 500, so always pass `weight="semibold"`. The theme sets `Heading` levels 3 and 4 to bold (700); **do not use `Heading` levels 3-6** — section titles inside cards are `Text type="label" weight="semibold"`. Weights inside Astryx components (a Button's own label is 500) are the design system's and are not overridden.
 - Hashes, commit shas, file paths and commands use `Text type="code"` / `CodeBlock` (monospace, 14px, 400). Digests display as the first 12 hex characters; the full value is in a Tooltip and in the copied statement.
 - Numbers that change live (runway, counts, plan totals) use `hasTabularNumbers`.
 
@@ -174,19 +174,19 @@ Voice: plain, second person, short. Say what happened, then the next step. No ja
 | Not ready (no plans) | Banner (info) title `Not ready to approve`, body `Phase {NN} has context but no plans yet. You sign the exact plans the builder will run. Run /gsd-plan-phase {NN} in Cena, then come back.` |
 | Built phase | Banner (info) title `Already built`, body `Every plan in Phase {NN} has a summary, so there is nothing left to run. Approval is not offered.` |
 | Prerequisites banner (warning) | title `Setup needed before the builder can run this`, body lists each `user_setup` item as a bullet, then `{k} of {n} plans need you present (not autonomous).` — shown on the phase **and** at the top of the approval dialog; approval is still allowed |
-| Empty: phases list | heading `No phases found`; body `Counterpoint reads {host}'s .planning/ROADMAP.md and found no phases. Check the path with "counterpoint status".` |
+| Empty: phases list | heading `No phases in {host}'s roadmap`; body `Counterpoint reads {host}'s .planning/ROADMAP.md and found no phases. Check the path with "counterpoint status".` |
 | Empty: Needs You | heading `Nothing needs you`; body `If a phase you approved changes after signing, it will show up here with what changed.` |
 | Empty: runway (zero) | figure `0`; line `Nothing approved yet. Open a planned phase and approve it to start your runway.` with a Link `Browse phases` |
 | Empty: plans in a phase | `No plans yet` (replaces the table; Not-ready banner explains why) |
 | Empty: Trust page, doctor never run | heading `Not checked yet`; body `Run "counterpoint doctor" in a terminal. The result appears here.`; the command is in a CodeBlock with copy |
-| Error: lists failed to load | Banner (error) title `Couldn't load {phases | Needs You | checks}`; body `Counterpoint's daemon didn't answer. {last good data stays on screen if any}`; action `Try again` |
+| Error: lists failed to load | Banner (error) title `Couldn't load {phases | Needs You | checks}`; body `Counterpoint's daemon didn't answer. {last good data stays on screen if any}`; action `Try loading {phases | Needs You | checks} again` |
 | Error: live updates lost | Banner (warning) title `Live updates paused`; body `Reconnecting to Counterpoint. What you see may be out of date.` Clears itself on reconnect; no action needed. TopNav connection dot turns warning. |
 | Error: not signed in | EmptyState heading `This browser isn't signed in`; body `Run "counterpoint open" in a terminal to get a fresh sign-in link.` (CodeBlock with copy) |
 | Error: used or expired sign-in link | EmptyState heading `This sign-in link was already used`; body `Sign-in links work once. Run "counterpoint open" for a new one.` |
 | Error: request blocked (Host/Origin/CSRF 403) | heading `Request blocked`; body `Counterpoint only accepts requests from its own console at 127.0.0.1. Open the console from the link "counterpoint open" prints.` |
 | Error: can't read a phase | Badge `Couldn't read`; in detail, Banner (error) title `Couldn't read Phase {NN}`, body `{file} could not be parsed: {reason}. Other phases are unaffected. Fix the file in {host}; this page refreshes on its own.` |
 | Error: approval refused | Banner (error) inside the dialog, **no command shown**: `Signing would be refused: {host}'s .git/config (or hooks) changed since Counterpoint last checked. Review the change in {host}, then prepare the approval again.` |
-| Error: approval stale | Banner (warning) in the dialog: `{base} moved since this was prepared. Prepare the approval again so you sign the current version.` with button `Prepare again` |
+| Error: approval stale | Banner (warning) in the dialog: `{base} moved since this was prepared. Prepare the approval again so you sign the current version.` with button `Prepare approval again` |
 | Soft hint: uncommitted edits | Inline Text (supporting) with info icon on the phase row and detail: `Uncommitted edits to this approved phase. The approval only follows what is committed on {base}.` |
 | Needs You item title | `Phase {NN} changed since you signed it` |
 | Change view lead | `Signed {Timestamp} at {sha7}. {base} is now at {sha7}. {k} input file(s) changed.` |
@@ -225,7 +225,7 @@ Routes (IDs validated against the slug regex before use, per the prototype conve
 
 **Mission (`/h/{hostId}`)** — runway is the headline (MISN-01)
 1. Runway card (full width, first): `Display` figure = number of phases on the runway, label (Label) `Runway`, Supporting line `{n} phases · {p} plans approved and ready ahead of the builder`. Below, a List (`Item` rows) of on-runway phases (number, name, plan count, signed Timestamp), each a link to Phase detail. Zero state per Copywriting. If any item is Changed since signed, a Banner (warning) sits directly above the card: `{k} approved phase(s) changed since you signed them` linking to Needs You.
-2. Below, `Grid` two columns (one column below `lg`), `gap={6}`: **Needs You** card (up to 5 Item rows, then `View all`) and **Trust** card (one-line verdict from the last doctor report, last-checked Timestamp, link to Trust; verdict uses the same Badge words as the Trust page).
+2. Below, `Grid` two columns (one column below `lg`), `gap={6}`: **Needs You** card (up to 5 Item rows, then `View all Needs You items`) and **Trust** card (one-line verdict from the last doctor report, last-checked Timestamp, link to Trust; verdict uses the same Badge words as the Trust page).
 3. The runway figure never moves color; it is not a chart and has no trend in this phase.
 
 **Phases (`/h/{hostId}/phases`)** (ADPT-01)
@@ -241,7 +241,7 @@ Routes (IDs validated against the slug regex before use, per the prototype conve
 **Approval dialog** (APPR-01; `Dialog purpose="info"`, standard width ~640px)
 - Order: prerequisites Banner (if any) → `What you're signing` (MetadataList: phase, base branch and tip sha, plan count) → Inputs Table (`File`, `Digest`: first 12 hex; rows: `NN-CONTEXT.md`, each `NN-*-PLAN.md`, any `*-RESEARCH.md` / `*-UI-SPEC.md` / `*-SPEC.md` / `*-AI-SPEC.md`, and `ROADMAP.md · Phase {NN} section`; footer rows `Draft: none yet` and `Gates: no gate config yet`) → the command in a `CodeBlock` (`language="bash"`, `hasCopyButton`, single line, no wrapping) → waiting/landed status line.
 - The command is the ID-only form `counterpoint approve {host} {phase}` (Claude's Discretion; exact shape is a research item). It is only rendered after the server has recomputed and returned the prepared statement.
-- Footer: primary `Copy command` (first focus target), secondary `Close`. After the signed commit is observed and verified, the dialog switches to the landed state (success Banner `Signed. Runway is now {N}.`) and its primary becomes `Back to phases`.
+- Footer: primary `Copy command` (first focus target), secondary `Close approval`. After the signed commit is observed and verified, the dialog switches to the landed state (success Banner `Signed. Runway is now {N}.`) and its primary becomes `Back to phases`.
 
 **Needs You (`/h/{hostId}/needs-you`)** (MISN-02)
 - Single list of `Item` rows (icon, title, Supporting line `{host} · {n} files changed · signed {Timestamp}`), newest first. In Phase 1 the only kind is "approved version changed"; the row component takes a `kind` so later kinds (Phase 2+) reuse it. Each row links to the change view.
@@ -263,7 +263,7 @@ Routes (IDs validated against the slug regex before use, per the prototype conve
 
 1. **Credential flow (D-07).** The URL printed by `counterpoint` / `counterpoint open` carries a one-time code. The server exchanges it for an `HttpOnly; SameSite=Strict` cookie, then redirects (302) to `/h/{hostId}`; the SPA never sees the code. A code that is used or expired redirects to `/signed-out?reason=used`. Any API 401 sends the SPA to `/signed-out?reason=none`. The SPA must not store or log the code.
 2. **Live data.** One SSE stream; UI state is TanStack Query snapshots over HTTP, invalidated by SSE deltas (`runway`, `needs-you`, `phase`, `doctor`, `approval` event families). Reconnect uses `Last-Event-ID`. Never poll. A refresh keeps old rows on screen; skeleton only on first load.
-3. **Approve phase.** Click `Approve phase` → dialog opens immediately with Skeletons and `Button isLoading` while the privileged POST asks the server to recompute the statement from the base branch tip (D-03) → on success render the Inputs table and the command; on refusal render only the error Banner. Escape / `Close` dismisses; reopening re-prepares (never reuses a stale statement). While open, the server watches for the signed commit (SSE `approval` event) and flips the dialog to landed; if the base tip moves first, show the stale Banner and disable `Copy command`.
+3. **Approve phase.** Click `Approve phase` → dialog opens immediately with Skeletons and `Button isLoading` while the privileged POST asks the server to recompute the statement from the base branch tip (D-03) → on success render the Inputs table and the command; on refusal render only the error Banner. Escape / `Close approval` dismisses; reopening re-prepares (never reuses a stale statement). While open, the server watches for the signed commit (SSE `approval` event) and flips the dialog to landed; if the base tip moves first, show the stale Banner and disable `Copy command`.
 4. **Copy.** `Copy command` copies exactly the printed command string, then fires the `Command copied` Toast and a polite live-region announcement. CodeBlock's built-in copy button does the same.
 5. **Theme.** `Light`, `Dark`, `System` (default `System`) in a DropdownMenu with radio items; choice persisted in `localStorage` key `counterpoint.theme`, applied through `<Theme mode>`. To avoid a first-paint flash, set `data-theme` on `<html>` from `localStorage` in a tiny **external** script (`/theme-init.js`, loaded synchronously in `<head>`; inline script is blocked by the CSP). Both themes ship with identical layout; only tokens change.
 6. **Navigation.** Standard links and SideNav only; no modals-on-modals; browser Back always works; selected nav reflects the current route. No keyboard shortcuts in Phase 1.
@@ -287,6 +287,7 @@ Phase 1 also ships terminal output that the owner reads, so it is part of the co
 | Command | Output contract |
 |---------|-----------------|
 | `npx @hkp/counterpoint` | Prints `Counterpoint is running at http://127.0.0.1:{port}/` then `Sign-in link (works once): {url}`, opens it, returns the prompt. If already running: `Counterpoint is already running at …` and prints a fresh one-time link. Default port: **4170** (a default for the planner to confirm; it must not clash with the 4174-and-up preview range used by the prior art). |
+| `counterpoint stop` | Stops the one background daemon (D-05). Running: `Counterpoint stopped. The console at http://127.0.0.1:{port}/ is closed.` and exit 0. Not running: `Counterpoint is not running.` and exit 0 (idempotent). Nothing is deleted: state in the Counterpoint home and signed approvals are untouched; the next `counterpoint` start reconciles state and prints a fresh one-time sign-in link. Open browser tabs show the `Live updates paused` Banner, then the signed-out screen on next load. |
 | Port taken | `Port {port} is already in use. Free it, or choose a different port in the Counterpoint config.` (non-zero exit; never drifts silently) |
 | Home missing (D-08) | `Counterpoint home "{path}" does not exist. If it is on the Dock volume, is it mounted? Nothing was created.` (non-zero exit) |
 | `counterpoint status` | One line per host: `{host}  running on 127.0.0.1:{port}  runway {n}  needs you {m}`; `not running` otherwise |
@@ -303,17 +304,17 @@ Applicable state considerations resolved: 19 covered, 3 backstop, 2 unresolved
 
 | Category | Element(s) | Status | Resolution / Reason |
 |----------|------------|--------|---------------------|
-| empty | list-collection: phases list | ✅ covered | A host with no roadmap phases renders the "No phases found" EmptyState (Copywriting: Empty: phases list), never an empty table |
+| empty | list-collection: phases list | ✅ covered | A host with no roadmap phases renders the "No phases in {host}'s roadmap" EmptyState (Copywriting: Empty: phases list), never an empty table |
 | empty | list-collection: Needs You inbox | ✅ covered | Zero items render the "Nothing needs you" EmptyState with the explanatory line |
 | empty | static-content: runway headline | ✅ covered | Zero renders the figure `0` plus the "Nothing approved yet" line and a Browse phases link; no placeholder chart |
 | empty | list-collection: plans table in Phase detail | ✅ covered | A phase with no plans renders "No plans yet" in place of the table, with the Not-ready Banner giving the reason |
 | empty | list-collection: Trust page when doctor never ran | ✅ covered | Renders "Not checked yet" with the copyable `counterpoint doctor` command |
 | loading | list-collection: all lists and pages on first load | ✅ covered | First load renders Skeleton rows at the final row height; later refreshes keep stale rows and show no skeleton |
 | loading | interactive-control: approval dialog | ✅ covered | While the server recomputes the statement the dialog shows Skeletons and `Button isLoading`; the command is not rendered until the statement is returned |
-| error | list-collection: any list fails to load | ✅ covered | Inline error Banner with `Try again`; last good data stays visible (Copywriting: Error: lists failed to load) |
+| error | list-collection: any list fails to load | ✅ covered | Inline error Banner with `Try loading {list} again`; last good data stays visible (Copywriting: Error: lists failed to load) |
 | error | nav: SSE connection lost | ✅ covered | Warning Banner plus warning connection dot; auto-resumes via `Last-Event-ID`; clears without user action |
 | error | nav: no session / used link / blocked request | ✅ covered | Routed to `/signed-out` EmptyState variants with the exact copy in the Copywriting Contract |
-| error | interactive-control: approve refused or stale | ✅ covered | Refusal shows an error Banner and no command; stale shows a warning Banner with `Prepare again` and a disabled `Copy command` |
+| error | interactive-control: approve refused or stale | ✅ covered | Refusal shows an error Banner and no command; stale shows a warning Banner with `Prepare approval again` and a disabled `Copy command` |
 | populated | list-collection: phases table | ✅ covered | Cena's full roadmap (decimal phases included) sorted ascending by phase number with tabular numerals; row opens detail |
 | partial | list-collection: phase with an unparsable file | ✅ covered | That row shows the `Couldn't read` Badge; the rest of the table is unaffected; detail names the file and reason |
 | partial | list-collection: phase with CONTEXT but no plans | ✅ covered | Status `Not planned` with the no-plans Banner; the Approve action is not offered |
@@ -350,13 +351,18 @@ Applicable state considerations resolved: 19 covered, 3 backstop, 2 unresolved
 
 ## Registry Safety
 
+Vetting performed 2026-11-09: `npm pack <pkg>@<version>`, extraction into an empty scratch directory, then a text-only scan (no package code executed) of the published JS/CSS/JSON for `fetch(`, `XMLHttpRequest`, `sendBeacon`, `eval(`, `new Function`, `child_process`, and a read of `package.json` lifecycle scripts.
+
 | Registry | Blocks Used | Safety Gate |
 |----------|-------------|-------------|
 | shadcn official | none (shadcn is not used) | not applicable |
 | Third-party shadcn registries | none | not applicable |
-| npm: `@astryxdesign/core`, `@astryxdesign/theme-neutral` (0.7.11) | components listed in Component Inventory; theme tokens | exact-pin; MIT; published by GitHub Actions trusted publisher (checked via `npm search` publisher metadata, 2026-11-09); source read as plain text from the packed tarball, no install scripts or code executed |
-| npm: `@fontsource/figtree` (5.3.0) | latin 400/500/600/700 CSS and woff2 files | exact-pin; OFL-1.1; static font files only, no runtime code (tarball read, 2026-11-09) |
-| npm: `lucide-react` (transitive via `theme-neutral`) | icons through Astryx `Icon` | transitive; do not import directly |
+| npm: `@astryxdesign/core@0.7.11` (MIT, exact-pin) | **Closed Phase 1 set, nothing else:** `AppShell`, `TopNav`, `SideNav` (`SideNavItem`, `SideNavSection`), `Layout` (`LayoutHeader`, `LayoutContent`), `Stack` (`HStack`, `VStack`), `Grid`, `Card`, `Section`, `Heading`, `Text`, `Button`, `IconButton`, `Badge`, `StatusDot`, `Token`, `Banner`, `EmptyState`, `Table`, `Item`, `List`, `MetadataList`, `Dialog`, `Collapsible`, `CodeBlock`, `DropdownMenu`, `SegmentedControl`, `Tooltip`, `InfoTip`, `Skeleton`, `Spinner`, `Toast`, `Timestamp`, `Link` (`LinkProvider`), `Icon`, `ScrollableArea`, `VisuallyHidden`, `Divider`, plus `@astryxdesign/core/theme` (`Theme`, `useTheme`), `@astryxdesign/core/hooks` (`useAnnounce`, `useClipboard`) and the CSS files `reset.css` and `astryx.css`. Any other export (e.g. `CommandPalette`, `TabList`, `Drawer`, `Markdown`, `Image`) is out of scope until added to this row with its own dated review. | view passed — no flags — 2026-11-09. Two observations were read in full and are benign for the closed set: (1) `postinstall` script `scripts/postinstall.mjs` (102 lines) uses only `node:fs`, `node:path`, `node:url`, reads `INIT_CWD` and `npm_command`, prints a one-line "run astryx init" hint and exits 0; no network, no writes. Installing with scripts ignored (pnpm default, or `npm --ignore-scripts`) loses nothing. This corrects the earlier note that said "no install scripts". (2) One `fetch(` in `dist/hooks/useImageMode.js`, used by the `Image` component only; not in the closed set. (3) No `eval(`, `new Function`, `child_process`, `XMLHttpRequest` or `sendBeacon` in `dist`. Publisher: GitHub Actions trusted publisher (npm publisher metadata). |
+| npm: `@astryxdesign/theme-neutral@0.7.11` (MIT, exact-pin) | `built` (`neutralTheme`) and `theme.css` only. Not `fonts.css`. | view passed — no flags — 2026-11-09. No lifecycle scripts; no dynamic-code or network calls in JS. The one network reference is `fonts.css` (`@import` of fonts.googleapis.com), which this spec forbids importing (Design System, setup item 2). |
+| npm: `@fontsource/figtree@5.3.0` (OFL-1.1, exact-pin) | `latin-400.css`, `latin-500.css`, `latin-600.css`, `latin-700.css` and the woff2 files they reference | view passed — no flags — 2026-11-09. Static CSS and font files only; no JS, no lifecycle scripts. |
+| npm: `lucide-react@1.18.0` (ISC; dependency of `theme-neutral`, range `^1.18.0`) | No direct imports. Reaches the app only through Astryx `Icon` and the theme icon registry. | view passed — no flags — 2026-11-09. No lifecycle scripts run on install (only build and test scripts); no flagged patterns in published JS. After `pnpm install`, if the lockfile resolves a different version, it needs a fresh review before use. |
+
+Route used for the BLOCK fix: the checker's closed-set hint (named blocks instead of blanket access), plus dated canonical-form results for every npm row; the `lucide-react` row now carries a real review result instead of a usage note.
 
 ---
 
