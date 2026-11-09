@@ -234,7 +234,7 @@ status: complete
 | File | Line | Stub | Resolved by |
 |------|------|------|-------------|
 | src/compose.ts | 11 | `detectFramework` always returns `none` (no adapter is composed yet; the plan specifies this) | 01-07 (adapter `detect` at the base tip) |
-| src/cli/main.ts | 223 | `--no-open` accepted but the browser is never opened; no sign-in link is printed yet | 01-03 (sign-in flow) |
+| src/cli/main.ts | 210 | `--no-open` accepted but the browser is never opened; no sign-in link is printed yet | 01-03 (sign-in flow) |
 
 Neither stub blocks this plan's goal. Both are named in the plan as arriving later. `.planning/WINDOWS.md` does not exist, so nothing was added to the ledger.
 
