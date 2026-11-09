@@ -1,0 +1,1 @@
+{"content":"Agent SDK: getContextUsage() totalTokens/maxTokens; result.modelUsage[model].contextWindow; rate_limit_event{status,resetsAt}; system/api_retry; SDK docs say third parties may not offer claude.ai login via SDK.","source":"web","provider":"webfetch","confidence":"MEDIUM","fetched_at":"2026-11-09T11:10:57.089Z","ttl":86400000,"kind":"docs"}

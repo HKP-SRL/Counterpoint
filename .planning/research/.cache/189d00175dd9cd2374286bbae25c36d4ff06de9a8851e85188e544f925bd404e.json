@@ -1,0 +1,1 @@
+{"content":"Hooks get session_id/transcript_path/cwd; no documented context-usage field; PostToolUse/Stop accept decision:block+reason; hooks via --settings do not run with --bare.","source":"web","provider":"webfetch","confidence":"MEDIUM","fetched_at":"2026-11-09T11:10:57.026Z","ttl":86400000,"kind":"docs"}
