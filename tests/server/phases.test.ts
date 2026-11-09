@@ -59,7 +59,13 @@ interface PhaseDetailBody extends PhaseRow {
     autonomous: boolean;
     filesCount: number;
   }[];
-  inputs: { path: string; label: string; kind: string; normalization: string | null; digest: string }[];
+  inputs: {
+    path: string;
+    label: string;
+    kind: string;
+    normalization: string | null;
+    digest: string;
+  }[];
   inputsError?: string;
 }
 
@@ -183,12 +189,12 @@ describe('GET /api/hosts/:hostId/phases/:phaseId', () => {
     expect(body.tip).toBe(repo.commit);
     expect(body.goal).toContain('two plans');
     expect(body.dependsOn).toBe('Phase 1');
-    expect(body.plans.map((plan) => [plan.id, plan.wave, plan.autonomous, plan.filesCount])).toEqual(
-      [
-        ['02-01', 1, false, 3],
-        ['02-02', 2, true, 1],
-      ],
-    );
+    expect(
+      body.plans.map((plan) => [plan.id, plan.wave, plan.autonomous, plan.filesCount]),
+    ).toEqual([
+      ['02-01', 1, false, 3],
+      ['02-02', 2, true, 1],
+    ]);
     expect(body.plans[0]?.objective).toContain('Set up the ready thing');
 
     const paths = body.inputs.map((input) => input.path);
@@ -242,9 +248,7 @@ describe('base-tip watcher', () => {
 
       const body = (await (await get(`/api/hosts/${hostId}/phases/02`)).json()) as PhaseDetailBody;
       expect(body.tip).toBe(tip);
-      expect(body.inputs.find((input) => input.path === CONTEXT_02)?.digest).toBe(
-        sha256(content),
-      );
+      expect(body.inputs.find((input) => input.path === CONTEXT_02)?.digest).toBe(sha256(content));
     } finally {
       watcher.stop();
       unsubscribe();

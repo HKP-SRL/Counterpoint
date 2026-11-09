@@ -28,6 +28,8 @@ import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus } from '../core/store/events.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createControlApp, hashToken } from './control.ts';
+import { createHostRuntimes } from './hosts.ts';
+import { startWatcher, type Watcher } from './watcher.ts';
 
 const SQLITE_BUSY = 5;
 
@@ -216,15 +218,19 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   // One bus: the control socket publishes, the console's SSE streams listen.
   const bus = new EventBus();
-  app = createApp({ store, port: bound, uiDir: resolveUiDir(), bus });
+  // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
+  const runtimes = createHostRuntimes({ store });
+  app = createApp({ store, port: bound, uiDir: resolveUiDir(), bus, runtimes });
 
   let stopping = false;
   let control: Server | undefined;
+  let watcher: Watcher | undefined;
 
   const stop = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log('stopping', { reason });
+    watcher?.stop();
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
     rmSync(paths.daemonJson, { force: true });
@@ -248,6 +254,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const info: DaemonInfo = { pid: process.pid, port: bound, startedAt: new Date().toISOString() };
   writeFileSync(paths.daemonJson, `${JSON.stringify(info)}\n`, { mode: 0o600 });
+
+  // Base-tip polling (D-03): a commit to a host's base branch reaches open consoles within ~2 s.
+  watcher = startWatcher({ runtimes, db: store, bus, log });
 
   process.once('SIGTERM', () => void stop('SIGTERM'));
   process.once('SIGINT', () => void stop('SIGINT'));
