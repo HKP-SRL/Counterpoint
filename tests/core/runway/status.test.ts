@@ -46,7 +46,9 @@ describe('derivePhaseStatus', () => {
   });
 
   it('reports a phase whose every plan has a summary as built', () => {
-    const built = phase({ plans: [plan({ hasSummary: true }), plan({ id: '02-02', hasSummary: true })] });
+    const built = phase({
+      plans: [plan({ hasSummary: true }), plan({ id: '02-02', hasSummary: true })],
+    });
     expect(derivePhaseStatus(built)).toEqual({ status: 'built', notReadyReason: null });
   });
 

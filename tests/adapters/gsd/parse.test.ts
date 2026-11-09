@@ -100,7 +100,11 @@ describe('Cena master fixture', () => {
       {
         service: 'docker + supabase-cli',
         why: 'Local Supabase stack (Postgres + GoTrue + Inbucket/Mailpit) is where migrations apply and the RLS suite runs',
-        envVars: ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SECRET_KEY'],
+        envVars: [
+          'NEXT_PUBLIC_SUPABASE_URL',
+          'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+          'SUPABASE_SECRET_KEY',
+        ],
       },
     ]);
     expect(plan?.objective).toMatch(/^Stand up the Walking Skeleton: the thinnest/);
@@ -162,7 +166,11 @@ describe('synthetic fixture', () => {
         why: 'Local stack where the migrations apply',
         envVars: ['SYN_DATABASE_URL', 'SYN_SECRET_KEY'],
       },
-      { service: 'google-oauth', why: 'Sign-in needs an OAuth client', envVars: ['SYN_GOOGLE_CLIENT_ID'] },
+      {
+        service: 'google-oauth',
+        why: 'Sign-in needs an OAuth client',
+        envVars: ['SYN_GOOGLE_CLIENT_ID'],
+      },
     ]);
     expect(plan?.objective).toBe('Set up the ready thing end to end, including its local stack.');
   });
@@ -262,7 +270,11 @@ describe('robustness', () => {
       '.planning/phases/02.1-inserted-thing/02.1-01-PLAN.md',
     );
     expect(phase(snapshot, '02').unreadable).toBeNull();
-    await commitChange(synthetic.root, '.planning/phases/02.1-inserted-thing/02.1-01-PLAN.md', null);
+    await commitChange(
+      synthetic.root,
+      '.planning/phases/02.1-inserted-thing/02.1-01-PLAN.md',
+      null,
+    );
   });
 });
 
@@ -290,7 +302,9 @@ describe('parseRoadmap', () => {
       [[1, 1], 'One Point One', true],
     ]);
     expect(phases[0]?.sectionText).toBe('### Phase 1: One\n\n**Goal**: First.\n\n');
-    expect(phases[1]?.sectionText).toBe('### Phase 01.1: One Point One (INSERTED)\n\n**Goal:** Second.\n\n');
+    expect(phases[1]?.sectionText).toBe(
+      '### Phase 01.1: One Point One (INSERTED)\n\n**Goal:** Second.\n\n',
+    );
     expect(phases[1]?.goal).toBe('Second.');
   });
 
