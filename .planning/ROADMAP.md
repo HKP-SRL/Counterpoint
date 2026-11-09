@@ -35,21 +35,40 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 16 plans
 
 Plans:
+**Wave 1**
 - [ ] 01-01-PLAN.md — Owner vets packages; toolchain; core host modules (home refusal, ids, clean-env git runner, host registration with an injected framework detector) *(wave 1)*
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — Walking-skeleton tracer: `counterpoint` → background daemon → SQLite host → 127.0.0.1 → Astryx page; composition root *(wave 2)*
+
+**Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-03-PLAN.md — One-time sign-in, request guard and CSP, SSE live events, init/status/open *(wave 3)*
 - [ ] 01-04-PLAN.md — Sandbox spike as code: one settings builder, claude -p runner, differential probe with a mirror-confined control session *(wave 3)*
-- [ ] 01-05-PLAN.md — Probe evaluator that cannot false-pass; seven Blocked targets live *(wave 4)*
 - [ ] 01-06-PLAN.md — GSD adapter read side over committed `.planning/`: port, reader, fixtures, parser, `detect`, core status *(wave 3)*
-- [ ] 01-07-PLAN.md — D-02 approval inputs, `cp-gsd-roadmap-section/v1` normalizer, composition root, lint-enforced boundary *(wave 4)*
 - [ ] 01-08-PLAN.md — Signed-approval plumbing (CAS landing, ssh-keygen sign/verify, adversarial suite) and integrity snapshot *(wave 3)*
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 01-05-PLAN.md — Probe evaluator that cannot false-pass; seven Blocked targets live *(wave 4)*
+- [ ] 01-07-PLAN.md — D-02 approval inputs, `cp-gsd-roadmap-section/v1` normalizer, composition root, lint-enforced boundary *(wave 4)*
 - [ ] 01-09-PLAN.md — Console shell: AppShell, Light/Dark/System, signed-out screens, live client *(wave 4)*
+
+**Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 01-10-PLAN.md — `counterpoint doctor`, init-key / trust-key (confirmed at a terminal) / trust {host} *(wave 5)*
 - [ ] 01-11-PLAN.md — Phases, Phase detail and Trust in the console; base-tip watcher *(wave 5)*
+
+**Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 01-12-PLAN.md — Owner confirms the statement format; `counterpoint approve`; runway recomputed from git, gate-config drift included *(wave 6)*
+
+**Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 01-13-PLAN.md — Approve from the console; runway headline *(wave 7)*
+
+**Wave 8** *(blocked on Wave 7 completion)*
 - [ ] 01-14-PLAN.md — Needs You and the change view (approved version changed, gate config included) *(wave 8)*
+
+**Wave 9** *(blocked on Wave 8 completion)*
 - [ ] 01-15-PLAN.md — Mission cards, drift hints, end-to-end drift test, visual backstops *(wave 9)*
+
+**Wave 10** *(blocked on Wave 9 completion)*
 - [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena *(wave 10)*
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
