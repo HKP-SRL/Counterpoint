@@ -1,6 +1,8 @@
 // Console routes (UI-SPEC "Screens and Layout"), code-based TanStack Router:
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
+//   /h/$hostId/phases[/$phaseId] → Phases and Phase detail
+//   /h/$hostId/trust → Trust (the last doctor report)
 //   /signed-out      → signed-out, used-link and blocked screens, without AppShell
 // Host ids from the address bar are checked against the slug rule and against GET /api/hosts
 // before use; an unknown id goes back to `/`.
@@ -18,11 +20,16 @@ import {
 import { type ComponentProps, type MouseEvent, useEffect } from 'react';
 import { hostsQuery } from './api';
 import { MissionPage } from './pages/MissionPage';
+import { PhaseDetailPage } from './pages/PhaseDetailPage';
+import { PhasesPage } from './pages/PhasesPage';
 import { SignedOutPage } from './pages/SignedOutPage';
+import { TrustPage } from './pages/TrustPage';
 import { AppFrame } from './shell/AppFrame';
 
 /** Host ids: lowercase slug, 1-32 characters, never starting with a dash (src/core/ids.ts). */
 const HOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** Phase ids: two-digit phase, optional decimal sub-phase (src/core/ids.ts). */
+const PHASE_ID_RE = /^\d{2}(\.\d+)?$/;
 
 export const LAST_HOST_KEY = 'counterpoint.lastHost';
 
@@ -118,6 +125,44 @@ function MissionRoute() {
   return <MissionPage hostId={hostId} />;
 }
 
+const phasesRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/phases',
+  component: PhasesRoute,
+});
+
+function PhasesRoute() {
+  const { hostId } = hostRoute.useParams();
+  return <PhasesPage hostId={hostId} />;
+}
+
+const phaseRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/phases/$phaseId',
+  beforeLoad: ({ params }) => {
+    if (!PHASE_ID_RE.test(params.phaseId)) {
+      throw redirect({ to: '/h/$hostId/phases', params: { hostId: params.hostId }, replace: true });
+    }
+  },
+  component: PhaseRoute,
+});
+
+function PhaseRoute() {
+  const { hostId, phaseId } = phaseRoute.useParams();
+  return <PhaseDetailPage key={`${hostId}/${phaseId}`} hostId={hostId} phaseId={phaseId} />;
+}
+
+const trustRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/trust',
+  component: TrustRoute,
+});
+
+function TrustRoute() {
+  const { hostId } = hostRoute.useParams();
+  return <TrustPage hostId={hostId} />;
+}
+
 const signedOutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/signed-out',
@@ -134,7 +179,7 @@ function SignedOutRoute() {
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  hostRoute.addChildren([missionRoute]),
+  hostRoute.addChildren([missionRoute, phasesRoute, phaseRoute, trustRoute]),
   signedOutRoute,
 ]);
 

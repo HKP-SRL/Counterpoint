@@ -10,6 +10,9 @@ import { hostGuard, mutationGuard, securityHeaders, sessionGuard } from '../core
 import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
 import type { EventBus } from '../core/store/events.ts';
+import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
+import { mountPhaseRoutes } from './routes/phases.ts';
+import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
 
 export const PACKAGE_NAME = '@hkp/counterpoint';
@@ -26,6 +29,10 @@ export interface AppOptions {
   bus: EventBus;
   /** SSE heartbeat interval; 25 s by default, shortened in tests. */
   heartbeatMs?: number;
+  /** Per-host runtimes (shared with the base-tip watcher); created here when omitted. */
+  runtimes?: HostRuntimes;
+  /** The Counterpoint home; the Trust API reads `hosts/{id}/doctor.json` from it when set. */
+  home?: string;
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -105,6 +112,13 @@ export function createApp(options: AppOptions): Hono {
       })),
     }),
   );
+
+  mountPhaseRoutes(app, {
+    runtimes: options.runtimes ?? createHostRuntimes({ store: options.store }),
+  });
+  if (options.home !== undefined) {
+    mountTrustRoutes(app, { home: options.home, store: options.store });
+  }
 
   // Unknown API reads are JSON 404s, never the console page. GET only, so API routes added to the
   // app after createApp (later route groups, tests) stay reachable for other methods.
