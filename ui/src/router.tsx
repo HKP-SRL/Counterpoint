@@ -2,6 +2,7 @@
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
 //   /h/$hostId/phases[/$phaseId] → Phases and Phase detail
+//   /h/$hostId/needs-you[/$itemId] → Needs You and the approved-version-changed change view
 //   /h/$hostId/trust → Trust (the last doctor report)
 //   /signed-out      → signed-out, used-link and blocked screens, without AppShell
 // Host ids from the address bar are checked against the slug rule and against GET /api/hosts
@@ -19,7 +20,9 @@ import {
 } from '@tanstack/react-router';
 import { type ComponentProps, type MouseEvent, useEffect } from 'react';
 import { hostsQuery } from './api';
+import { ChangeViewPage } from './pages/ChangeViewPage';
 import { MissionPage } from './pages/MissionPage';
+import { NEEDS_YOU_ITEM_ID_RE, NeedsYouPage } from './pages/NeedsYouPage';
 import { PhaseDetailPage } from './pages/PhaseDetailPage';
 import { PhasesPage } from './pages/PhasesPage';
 import { SignedOutPage } from './pages/SignedOutPage';
@@ -152,6 +155,37 @@ function PhaseRoute() {
   return <PhaseDetailPage key={`${hostId}/${phaseId}`} hostId={hostId} phaseId={phaseId} />;
 }
 
+const needsYouRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/needs-you',
+  component: NeedsYouRoute,
+});
+
+function NeedsYouRoute() {
+  const { hostId } = hostRoute.useParams();
+  return <NeedsYouPage hostId={hostId} />;
+}
+
+const changeViewRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/needs-you/$itemId',
+  beforeLoad: ({ params }) => {
+    if (!NEEDS_YOU_ITEM_ID_RE.test(params.itemId)) {
+      throw redirect({
+        to: '/h/$hostId/needs-you',
+        params: { hostId: params.hostId },
+        replace: true,
+      });
+    }
+  },
+  component: ChangeViewRoute,
+});
+
+function ChangeViewRoute() {
+  const { hostId, itemId } = changeViewRoute.useParams();
+  return <ChangeViewPage key={`${hostId}/${itemId}`} hostId={hostId} itemId={itemId} />;
+}
+
 const trustRoute = createRoute({
   getParentRoute: () => hostRoute,
   path: '/trust',
@@ -179,7 +213,14 @@ function SignedOutRoute() {
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  hostRoute.addChildren([missionRoute, phasesRoute, phaseRoute, trustRoute]),
+  hostRoute.addChildren([
+    missionRoute,
+    phasesRoute,
+    phaseRoute,
+    needsYouRoute,
+    changeViewRoute,
+    trustRoute,
+  ]),
   signedOutRoute,
 ]);
 

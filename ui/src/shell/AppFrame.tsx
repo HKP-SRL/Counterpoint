@@ -1,9 +1,11 @@
 // The console chrome (UI-SPEC "AppShell chrome"): TopNav with the wordmark, host switcher,
 // live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves the
-// SideNav into its mobile drawer. Needs You (01-15) goes between Phases and Trust.
+// SideNav into its mobile drawer. Items: Mission, Phases, Needs You (with its count badge), Trust.
+// While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`.
 // The frame owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AppShell } from '@astryxdesign/core/AppShell';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   DropdownMenu,
@@ -11,17 +13,20 @@ import {
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { HStack } from '@astryxdesign/core/HStack';
+import { useAnnounce } from '@astryxdesign/core/hooks';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNav, SideNavItem } from '@astryxdesign/core/SideNav';
 import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { Text } from '@astryxdesign/core/Text';
 import { TopNav, TopNavHeading } from '@astryxdesign/core/TopNav';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import type { ReactNode } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { type HostSummary, hostsQuery } from '../api';
 import { useConnectionState, useLiveEvents } from '../live';
+import { needsYouQuery } from '../pages/NeedsYouPage';
 import { parseThemePreference, useThemeChoice } from '../theme';
 
 function HostSwitcher({
@@ -95,6 +100,45 @@ function ThemeMenu() {
   );
 }
 
+/** The SideNav count: hidden at 0 or while loading, exact 1-99, `99+` above (full count spoken). */
+function NeedsYouCount({ count }: { count: number | null }) {
+  if (count === null || count === 0) return null;
+  return (
+    <>
+      <Badge variant="warning" label={count > 99 ? '99+' : String(count)} aria-hidden="true" />
+      <VisuallyHidden>{count === 1 ? ', 1 item' : `, ${count} items`}</VisuallyHidden>
+    </>
+  );
+}
+
+const TITLE_COUNT_RE = /^\(\d+\) /;
+
+/**
+ * Keeps the browser tab title as `({n}) {Page} · Counterpoint` while Needs You has items. Pages
+ * set their own `{Page} · Counterpoint` title; this only adds or removes the count prefix,
+ * including after a page changes its title later.
+ */
+function useTitleCount(count: number | null): void {
+  useEffect(() => {
+    const apply = () => {
+      const base = document.title.replace(TITLE_COUNT_RE, '');
+      const next = count !== null && count > 0 ? `(${count}) ${base}` : base;
+      if (document.title !== next) document.title = next;
+    };
+    apply();
+    const element = document.querySelector('title');
+    let observer: MutationObserver | null = null;
+    if (element !== null) {
+      observer = new MutationObserver(apply);
+      observer.observe(element, { childList: true, characterData: true, subtree: true });
+    }
+    return () => {
+      observer?.disconnect();
+      document.title = document.title.replace(TITLE_COUNT_RE, '');
+    };
+  }, [count]);
+}
+
 export function AppFrame({ hostId, children }: { hostId: string; children: ReactNode }) {
   const hosts = useQuery(hostsQuery).data ?? [];
   const current = hosts.find((host) => host.id === hostId);
@@ -102,10 +146,32 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const missionPath = `/h/${hostId}`;
   const phasesPath = `${missionPath}/phases`;
   const onPhases = pathname === phasesPath || pathname.startsWith(`${phasesPath}/`);
+  const needsYouPath = `${missionPath}/needs-you`;
+  const onNeedsYou = pathname === needsYouPath || pathname.startsWith(`${needsYouPath}/`);
   const trustPath = `${missionPath}/trust`;
   const queryClient = useQueryClient();
   useLiveEvents(queryClient);
   const connected = useConnectionState() === 'connected';
+
+  // The Needs You count for the badge and the tab title: unknown (hidden) until it arrives.
+  const needsYou = useQuery(needsYouQuery(hostId));
+  const needsYouCount = needsYou.data?.hostId === hostId ? needsYou.data.items.length : null;
+  useTitleCount(needsYouCount);
+
+  // New items are announced politely; the first count and decreases are not.
+  const announce = useAnnounce();
+  const lastCount = useRef<{ hostId: string; count: number } | null>(null);
+  useEffect(() => {
+    if (needsYouCount === null) return;
+    const previous = lastCount.current;
+    lastCount.current = { hostId, count: needsYouCount };
+    if (previous !== null && previous.hostId === hostId && needsYouCount > previous.count) {
+      announce(
+        needsYouCount === 1 ? '1 item needs you' : `${needsYouCount} items need you`,
+        'polite',
+      );
+    }
+  }, [needsYouCount, hostId, announce]);
 
   return (
     <AppShell
@@ -136,6 +202,12 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
             isSelected={pathname === missionPath || pathname === `${missionPath}/`}
           />
           <SideNavItem label="Phases" href={phasesPath} isSelected={onPhases} />
+          <SideNavItem
+            label="Needs You"
+            href={needsYouPath}
+            isSelected={onNeedsYou}
+            endContent={<NeedsYouCount count={needsYouCount} />}
+          />
           <SideNavItem label="Trust" href={trustPath} isSelected={pathname === trustPath} />
         </SideNav>
       }
