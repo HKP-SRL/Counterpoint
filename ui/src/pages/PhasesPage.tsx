@@ -16,6 +16,7 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Table, type TableColumn, type TablePlugin } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
+import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { Token } from '@astryxdesign/core/Token';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { VStack } from '@astryxdesign/core/VStack';
@@ -31,6 +32,11 @@ import { isPhaseStatus, type PhaseStatus, StatusBadge } from '../components/Stat
 export type UserSetupRow = { service: string; why: string | null };
 export type UnreadableFile = { file: string; reason: string };
 
+/** A phase's approval as the server verified it from git at the base tip (never stored). */
+export type ApprovalFacts =
+  | { state: 'on-runway' | 'changed'; signedAt: string; commit: string }
+  | { state: 'invalid'; reason: string };
+
 export type PhaseRow = {
   id: string;
   name: string;
@@ -40,6 +46,7 @@ export type PhaseRow = {
   nonAutonomousCount: number;
   userSetup: UserSetupRow[];
   unreadable: UnreadableFile | null;
+  approval: ApprovalFacts | null;
 };
 
 export type PhasesSnapshot = {
@@ -63,6 +70,20 @@ function parseUnreadable(value: unknown): UnreadableFile | null {
   return isRecord(value) ? { file: str(value.file), reason: str(value.reason) } : null;
 }
 
+const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/** The approval facts of a row; anything that does not fit is treated as no approval. */
+export function parseApproval(value: unknown): ApprovalFacts | null {
+  if (!isRecord(value)) return null;
+  if (value.state === 'on-runway' || value.state === 'changed') {
+    if (typeof value.signedAt !== 'string' || Number.isNaN(Date.parse(value.signedAt))) return null;
+    if (typeof value.commit !== 'string' || !SHA_RE.test(value.commit)) return null;
+    return { state: value.state, signedAt: value.signedAt, commit: value.commit };
+  }
+  if (value.state === 'invalid') return { state: 'invalid', reason: str(value.reason) };
+  return null;
+}
+
 /** Validates one phase row from the API; rows that do not fit are dropped. */
 export function parsePhaseRow(value: unknown): PhaseRow | null {
   if (!isRecord(value) || typeof value.id !== 'string' || !PHASE_ID_RE.test(value.id)) return null;
@@ -82,6 +103,7 @@ export function parsePhaseRow(value: unknown): PhaseRow | null {
         }))
       : [],
     unreadable: parseUnreadable(value.unreadable),
+    approval: parseApproval(value.approval),
   };
 }
 
@@ -236,8 +258,16 @@ export function PhasesPage({ hostId }: { hostId: string }) {
     {
       key: 'approval',
       header: 'Approval',
-      // On runway · signed {Timestamp} arrives with approvals (01-13).
-      renderCell: () => <Text color="secondary">—</Text>,
+      // Verified from git at the base tip by the server (01-13); never a stored flag.
+      renderCell: (row) =>
+        row.status === 'on-runway' && row.approval?.state === 'on-runway' ? (
+          <Text>
+            {'On runway · signed '}
+            <Timestamp value={row.approval.signedAt} hasTooltip />
+          </Text>
+        ) : (
+          <Text color="secondary">—</Text>
+        ),
     },
   ];
 
