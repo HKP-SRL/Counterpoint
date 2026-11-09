@@ -33,9 +33,15 @@ import {
 export const APPROVAL_PATH_RE = /^\.counterpoint\/approvals\/phase-\d{2}(\.\d+)?\.json$/;
 
 const SHA_RE = /^[0-9a-f]{40}$/;
-const BRANCH_RE = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}(?<![/.])$/;
+/** Base branch names accepted for approvals (no leading dash, no `..`, no `//`). */
+export const BRANCH_RE = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}(?<![/.])$/;
 const ARMOR_RE =
   /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=]+\n)+-----END SSH SIGNATURE-----\n$/;
+
+/** True for a well-formed armored SSH signature (BEGIN line, base64 lines, END line). */
+export function isArmoredSignature(signature: string): boolean {
+  return ARMOR_RE.test(signature);
+}
 
 export class SignedCommitError extends Error {
   readonly kind: 'malformed' | 'unsigned' | 'multiple-signatures' | 'unsupported-signature';

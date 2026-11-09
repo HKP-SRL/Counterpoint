@@ -97,8 +97,17 @@ async function approve(dir: string, key = owner, bytes = statement()) {
   return result.commit;
 }
 
-async function verify(dir: string, withTrust: Pick<Trust, 'allowedSignersPath' | 'fingerprint'> = trust) {
-  return verifyApprovalCommit({ root: dir, baseBranch: 'master', itemId: 'phase-01', trust: withTrust, tmpDir });
+async function verify(
+  dir: string,
+  withTrust: Pick<Trust, 'allowedSignersPath' | 'fingerprint'> = trust,
+) {
+  return verifyApprovalCommit({
+    root: dir,
+    baseBranch: 'master',
+    itemId: 'phase-01',
+    trust: withTrust,
+    tmpDir,
+  });
 }
 
 /** Points master at a hand-made commit object (agents can write any commit and move any ref). */
@@ -109,7 +118,14 @@ async function forge(dir: string, bytes: Uint8Array): Promise<string> {
 }
 
 async function unsignedPayload(dir: string, tree: string, parents: string[]): Promise<Uint8Array> {
-  const args = ['commit-tree', '--no-gpg-sign', tree, ...parents.flatMap((p) => ['-p', p]), '-m', 'approve'];
+  const args = [
+    'commit-tree',
+    '--no-gpg-sign',
+    tree,
+    ...parents.flatMap((p) => ['-p', p]),
+    '-m',
+    'approve',
+  ];
   const sha = (await gitIn(dir, args)).trim();
   return catFileCommit(dir, sha);
 }
@@ -169,7 +185,10 @@ describe('verifyApprovalCommit', () => {
     const dir = await baseRepo();
     const commit = await approve(dir);
     const text = decoder.decode(await catFileCommit(dir, commit));
-    const tampered = text.replace('counterpoint: approve phase 01', 'counterpoint: approve phase 0l');
+    const tampered = text.replace(
+      'counterpoint: approve phase 01',
+      'counterpoint: approve phase 0l',
+    );
     expect(tampered).not.toBe(text);
     await forge(dir, encoder.encode(tampered));
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'signature-tampered' });
@@ -189,8 +208,16 @@ describe('verifyApprovalCommit', () => {
     const blob = await hashObjectBlob(dir, statement());
     const extra = await hashObjectBlob(dir, encoder.encode('smuggled\n'));
     const baseTree = await revParse(dir, `${tip}^{tree}`);
-    const withItem = await replacePath(dir, baseTree, ITEM.split('/'), { mode: '100644', type: 'blob', sha: blob });
-    const tree = await replacePath(dir, withItem, ['smuggled.txt'], { mode: '100644', type: 'blob', sha: extra });
+    const withItem = await replacePath(dir, baseTree, ITEM.split('/'), {
+      mode: '100644',
+      type: 'blob',
+      sha: blob,
+    });
+    const tree = await replacePath(dir, withItem, ['smuggled.txt'], {
+      mode: '100644',
+      type: 'blob',
+      sha: extra,
+    });
     const unsigned = await commitTree(dir, { tree, parent: tip, message: 'approve', ident });
     const payload = await catFileCommit(dir, unsigned);
     await forge(dir, embedSignature(payload, await signWith(owner)(payload)));
@@ -220,7 +247,11 @@ describe('verifyApprovalCommit', () => {
     const dir = makeScratchDir('vroot');
     await initScratchRepo(dir, { branch: 'master' });
     const blob = await hashObjectBlob(dir, statement());
-    const tree = await replacePath(dir, null, ITEM.split('/'), { mode: '100644', type: 'blob', sha: blob });
+    const tree = await replacePath(dir, null, ITEM.split('/'), {
+      mode: '100644',
+      type: 'blob',
+      sha: blob,
+    });
     const payload = await unsignedPayload(dir, tree, []);
     await forge(dir, embedSignature(payload, await signWith(owner)(payload)));
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'root-commit' });
@@ -240,7 +271,10 @@ describe('verifyApprovalCommit', () => {
     const dir = await baseRepo();
     const commit = await approve(dir);
     const text = decoder.decode(await catFileCommit(dir, commit));
-    const garbled = text.replace(/(gpgsig -----BEGIN SSH SIGNATURE-----\n) \S+\n/, '$1 !!not*base64!!\n');
+    const garbled = text.replace(
+      /(gpgsig -----BEGIN SSH SIGNATURE-----\n) \S+\n/,
+      '$1 !!not*base64!!\n',
+    );
     expect(garbled).not.toBe(text);
     await forge(dir, encoder.encode(garbled));
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'garbled-signature' });
@@ -272,7 +306,10 @@ describe('verifyApprovalCommit', () => {
     const dir = await baseRepo();
     await approve(dir);
     const otherFingerprint = await fingerprintOf(other.publicKeyPath);
-    const state = await verify(dir, { allowedSignersPath: trust.allowedSignersPath, fingerprint: otherFingerprint });
+    const state = await verify(dir, {
+      allowedSignersPath: trust.allowedSignersPath,
+      fingerprint: otherFingerprint,
+    });
     expect(state).toMatchObject({ state: 'invalid', reason: 'fingerprint-mismatch' });
   });
 
@@ -281,14 +318,26 @@ describe('verifyApprovalCommit', () => {
     const signed = await approve(dir);
     writeFileIn(dir, ITEM, '{"item":"phase-01","note":"agent edit"}\n');
     const unsigned = await commitAll(dir, 'edit approval');
-    const disguise = (await gitIn(dir, ['commit-tree', `${signed}^{tree}`, '-p', signed, '-m', 'noop'])).trim();
+    const disguise = (
+      await gitIn(dir, ['commit-tree', `${signed}^{tree}`, '-p', signed, '-m', 'noop'])
+    ).trim();
     await gitIn(dir, ['replace', unsigned, disguise]);
+    // Positive control: with replace refs honoured, git reports the signed commit as last toucher.
+    expect((await gitIn(dir, ['log', '-1', '--format=%H', 'master', '--', ITEM])).trim()).toBe(
+      signed,
+    );
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'unsigned' });
   });
 
   it('rejects an item id outside the phase-NN pattern', async () => {
     const dir = await baseRepo();
-    const state = await verifyApprovalCommit({ root: dir, baseBranch: 'master', itemId: '../x', trust, tmpDir });
+    const state = await verifyApprovalCommit({
+      root: dir,
+      baseBranch: 'master',
+      itemId: '../x',
+      trust,
+      tmpDir,
+    });
     expect(state).toMatchObject({ state: 'invalid', reason: 'bad-item-id' });
   });
 
@@ -296,7 +345,11 @@ describe('verifyApprovalCommit', () => {
     const dir = await baseRepo();
     const commit = await approve(dir);
     const marker = join(tmpDir, `program-ran-${Date.now()}`);
-    const script = writeFileIn(dir, '.git/fake-keygen.sh', `#!/bin/sh\ntouch '${marker}'\nexit 0\n`);
+    const script = writeFileIn(
+      dir,
+      '.git/fake-keygen.sh',
+      `#!/bin/sh\ntouch '${marker}'\nexit 0\n`,
+    );
     chmodSync(script, 0o755);
     await gitIn(dir, ['config', 'gpg.format', 'ssh']);
     await gitIn(dir, ['config', 'gpg.ssh.program', script]);
@@ -308,7 +361,12 @@ describe('verifyApprovalCommit', () => {
     // Positive control: git's own verification does run the planted program.
     await execa('git', ['verify-commit', commit], {
       cwd: dir,
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: process.env.HOME ?? '/',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+      },
       extendEnv: false,
       reject: false,
     });
@@ -323,14 +381,21 @@ describe('trust store', () => {
     expect(written.fingerprint).toBe(await fingerprintOf(owner.publicKeyPath));
     expect(written.privateKeyPath).toBe(owner.privateKeyPath);
     const read = readTrust(h);
-    expect(read).toMatchObject({ ok: true, principal: OWNER_PRINCIPAL, fingerprint: written.fingerprint });
+    expect(read).toMatchObject({
+      ok: true,
+      principal: OWNER_PRINCIPAL,
+      fingerprint: written.fingerprint,
+    });
     if (!read.ok) return;
     const line = (await execa('cat', [read.allowedSignersPath])).stdout;
     expect(line).toBe(`owner@counterpoint namespaces="git" ${publicKeyText(owner.publicKeyPath)}`);
   });
 
   it('reports no-trusted-key on an empty home', () => {
-    expect(readTrust(makeScratchDir('thome'))).toMatchObject({ ok: false, error: 'no-trusted-key' });
+    expect(readTrust(makeScratchDir('thome'))).toMatchObject({
+      ok: false,
+      error: 'no-trusted-key',
+    });
   });
 
   it('refuses a symlinked allowed_signers file', async () => {
@@ -363,7 +428,10 @@ describe('trust store', () => {
   it('refuses a public key file holding more than one key', async () => {
     const dir = makeScratchDir('tkeys');
     const k = await makeThrowawayKey(dir);
-    writeFileSync(k.publicKeyPath, `${publicKeyText(k.publicKeyPath)}\n${publicKeyText(other.publicKeyPath)}\n`);
+    writeFileSync(
+      k.publicKeyPath,
+      `${publicKeyText(k.publicKeyPath)}\n${publicKeyText(other.publicKeyPath)}\n`,
+    );
     mkdirSync(join(dir, 'h'));
     await expect(writeTrust(join(dir, 'h'), { publicKeyPath: k.publicKeyPath })).rejects.toThrow();
   });
