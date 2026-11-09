@@ -228,7 +228,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CARD-06 | Phase 5 | Pending |
 | CARD-07 | Phase 5 | Pending |
 | MISN-01 | Phase 1 | Pending |
-| MISN-02 | Phase 1 | Pending |
+| MISN-02 | Phase 1 (partial: the inbox and "approved items whose content changed"); parked items Phase 2 (BUILD-08); PRs awaiting signed merge Phase 3 (APPR-03); council cards Phase 5; backlog-filing summaries Phase 6 (CNCL-09); seat conflicts unassigned (open roadmap gap) | Pending |
 | MISN-03 | Phase 3 | Pending |
 | MISN-04 | Phase 3 | Pending |
 

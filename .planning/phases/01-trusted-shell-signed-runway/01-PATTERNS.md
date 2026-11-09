@@ -4,6 +4,8 @@
 **Files analyzed:** 27 planned files (module paths from RESEARCH.md "Recommended Project Structure")
 **Analogs found:** 9 with a real code analog / 27. The remaining 18 have no code analog and are specified by RESEARCH.md recipes instead. Counterpoint has no tracked source yet (greenfield).
 
+**Reconciled with the plans (revision 2026-11-09):** the paths below are the files the plans create; names planned earlier and since superseded are noted as "superseded name".
+
 All analog paths are git-tracked. The Cena ones are read with `git -C /Volumes/Dock/Projects/HKP/Cena show ccr-61ff69b1-hgtpdm:<path>` (read-only). The CV ones were checked with `git ls-files`. In zsh, write `${B}:path` when `B` holds the branch name, because `$B:t` is a history modifier and breaks the lookup.
 
 ## File Classification
@@ -11,14 +13,14 @@ All analog paths are git-tracked. The Cena ones are read with `git -C /Volumes/D
 | New file | Role | Data flow | Closest analog | Match |
 |---|---|---|---|---|
 | `src/core/security/guard.ts` | middleware | request-response | Cena `lib/factory/guard.ts` | role-match, port with 3 tightenings |
-| `tests/core/security/guard.test.ts` | test | request-response | Cena `tests/factory/guard.test.ts` | role-match |
+| `tests/server/guard.test.ts` (superseded name: `tests/core/security/guard.test.ts`) | test | request-response | Cena `tests/factory/guard.test.ts` | role-match |
 | `src/core/security/sandbox-settings.ts` | config builder | transform | none (RESEARCH Item 1 JSON) | no analog |
 | `src/agent/probe.ts` (+ evaluator) | service | event-driven (stream-json) | none | no analog |
 | `src/core/security/login.ts` (code, session, token file) | service | request-response | none | no analog |
 | `src/core/store/*` (schema, repos) | model | CRUD | CV `test-lock.ts` (only `node:sqlite` usage) | partial |
-| `src/server/daemon-lock.ts` | utility | file-I/O | CV `tools/speckit-auto/test-lock.ts` | exact technique |
+| `src/server/daemon.ts` single-instance lock (superseded name: `src/server/daemon-lock.ts`) | utility | file-I/O | CV `tools/speckit-auto/test-lock.ts` | exact technique |
 | `src/core/approvals/verify.ts` | service | request-response | Cena `lib/factory/signature.ts` | role-match, redesign |
-| `src/core/approvals/prepare.ts`, `sign.ts` | service | batch | none (RESEARCH Item 2 recipe) | no analog |
+| `src/core/approvals/commit.ts` + `ssh.ts` (sign and land; superseded name: `sign.ts`), `prepare.ts` (re-derives the statement only, 01-12) | service | batch | none (RESEARCH Item 2 recipe) | no analog |
 | `src/core/approvals/statement.ts`, `canonical.ts` | model/utility | transform | none (zod schema, RESEARCH Item 4) | no analog |
 | `src/core/approvals/integrity.ts` | utility | file-I/O | none | no analog |
 | `tests/core/approvals/*.test.ts` | test | integration (scratch git repos) | Cena `tests/factory/signature.test.ts` | role-match |
@@ -26,13 +28,13 @@ All analog paths are git-tracked. The Cena ones are read with `git -C /Volumes/D
 | `src/core/git/reader.ts` (ls-tree, cat-file) | service | file-I/O | Cena `lib/factory/safe-fs.ts` (safe-read idea only) | partial |
 | `src/core/host/*` (registry, `COUNTERPOINT_HOME`) | service | CRUD | none | no analog |
 | `src/core/runway/*` | service | transform | none | no analog |
-| `src/adapters/api.ts` | interface | n/a | none | no analog |
+| `src/core/framework/port.ts` (superseded name: `src/adapters/api.ts`; core may not import anything under `adapters/`) | interface | n/a | none | no analog |
 | `src/adapters/gsd/*` (parser, input rule, roadmap normalizer) | service | transform | none (RESEARCH Item 8 recipe) | no analog |
-| `tests/adapters/gsd/*.test.ts` + `test/fixtures/gsd/` | test | transform | Cena `tests/factory/helpers.ts` + `tests/fixtures/factory/` | role-match |
+| `tests/adapters/gsd/*.test.ts` + `tests/fixtures/gsd/` | test | transform | Cena `tests/factory/helpers.ts` + `tests/fixtures/factory/` | role-match |
 | `src/compose.ts` | config | n/a | none | no analog |
-| `src/server/app.ts`, `sse.ts`, `static.ts`, `control.ts` | controller | request-response, streaming | none (RESEARCH Item 6 snippets) | no analog |
+| `src/server/app.ts` (static serving included; superseded name: `static.ts`), `sse.ts`, `control.ts` | controller | request-response, streaming | none (RESEARCH Item 6 snippets) | no analog |
 | `src/cli/*` (commander) | controller | request-response | none | no analog |
-| `ui/theme/theme.ts` + `ui/use-theme.ts` + `public/theme-init.js` | utility/hook | event-driven | Cena `mission-theme.ts` + `use-mission-theme.ts` | exact idea, rewrite for Astryx |
+| `ui/src/theme.ts` (logic and hook; superseded names: `ui/theme/theme.ts`, `ui/use-theme.ts`) + `ui/public/theme-init.js` | utility/hook | event-driven | Cena `mission-theme.ts` + `use-mission-theme.ts` | exact idea, rewrite for Astryx |
 | `ui/*` Astryx pages | component | request-response | Cena `app/%5F%5Fmission/*` (layout idea only; Tailwind/shadcn) | do not copy markup |
 | `src/worktree/*` | utility | batch | CV `worktree.sh` | not needed in Phase 1 |
 | `biome.json` boundary override | config | n/a | none (RESEARCH Item 8 JSON) | no analog |
@@ -68,13 +70,13 @@ The header comment at lines 14-24 (WR-01: the Host check stops browsers, not LAN
 
 ---
 
-### `tests/core/security/guard.test.ts` (test)
+### `tests/server/guard.test.ts` (test; superseded name: `tests/core/security/guard.test.ts`)
 
 **Analog:** Cena `tests/factory/guard.test.ts` lines 32-45. Reuse the table-driven `it.each([[env, host, expected]])` style. Extend the rows to cover `localhost:PORT` blocked, `evil.example`, `localhost.evil.example`, `localhost@evil.example`, and a null host. Do not copy the `walk(MISSION_DIR)` "every route calls the guard" idea literally. Port it as a test that every `/api/*` route is mounted under the guard. The guard test must run over a real socket on port 0 (RESEARCH Item 9).
 
 ---
 
-### `src/server/daemon-lock.ts` (utility, file-I/O) and `src/core/store/*`
+### `src/server/daemon.ts` single-instance lock (utility, file-I/O; superseded name: `daemon-lock.ts`) and `src/core/store/*`
 
 **Analog:** `/Volumes/Dock/Projects/HKP/CV/tools/speckit-auto/test-lock.ts` (85 lines).
 
@@ -147,13 +149,13 @@ Real scratch git repos in a temp dir, `commit.gpgsign=false` pinned so the machi
 
 ---
 
-### `src/core/approvals/prepare.ts` and `sign.ts`
+### `src/core/approvals/commit.ts` and `ssh.ts` (approval commit recipe; superseded names: `prepare.ts` and `sign.ts`)
 
 No code analog. Implement the verified plumbing recipe in RESEARCH Item 2 (lines 352-366): `hash-object -w`, `mktree` chain, `commit-tree`, `ssh-keygen -Y sign -n git` over the commit payload on stdin, embed as `gpgsig`, `hash-object -t commit -w`, then `update-ref <ref> <new> <old>` (CAS). Also apply the index fix only when `git worktree list --porcelain` shows the base branch checked out (`update-index --add --cacheinfo`, then `checkout-index -f`). Scrub `SSH_ASKPASS` and `SSH_AUTH_SOCK`, and require a TTY.
 
 ---
 
-### `ui/` theme: `ui/theme/theme.ts`, `ui/use-theme.ts`, `public/theme-init.js`
+### `ui/` theme: `ui/src/theme.ts` and `ui/public/theme-init.js` (superseded names: `ui/theme/theme.ts`, `ui/use-theme.ts`)
 
 **Analog:** Cena `lib/factory/mission-theme.ts` (132 lines) and `use-mission-theme.ts` (88 lines).
 
@@ -175,11 +177,11 @@ No code analog. Implement the verified plumbing recipe in RESEARCH Item 2 (lines
 
 ---
 
-### `src/adapters/gsd/*`, `src/adapters/api.ts`, `src/compose.ts`, `biome.json`
+### `src/adapters/gsd/*`, `src/core/framework/port.ts` (superseded name: `src/adapters/api.ts`), `src/compose.ts`, `biome.json`
 
 No analog. Follow RESEARCH Item 8 (remark/yaml/zod parsing recipe; tuple phase numbers, never `parseFloat`) and Pattern 2 (adapter receives a git file-reader port from core, returns labelled input byte-ranges, core owns hashing). Boundary: copy the verified `noRestrictedImports` override JSON at RESEARCH lines 515-517, and add the meta-test that lints a violating fixture.
 
-Fixture/test harness analog: Cena `tests/fixtures/factory/*` plus `tests/factory/helpers.ts` for the "materialize fixtures into scratch git repos" helper. Freeze `.planning` from Cena `master` with `git archive` (RESEARCH line 511) and add a synthetic planned-phase fixture.
+Fixture/test harness analog: Cena `tests/fixtures/factory/*` plus `tests/factory/helpers.ts` for the "materialize fixtures into scratch git repos" helper. Freeze `.planning` from Cena `master` with `git archive` (RESEARCH line 511; the plans use `tests/fixtures/gsd/cena-master`, not `test/fixtures/...`) and add a synthetic planned-phase fixture.
 
 ## Shared Patterns
 
@@ -216,7 +218,7 @@ Use the RESEARCH.md recipe named in the right column.
 | `server/sse.ts` | controller | streaming | `streamSSE`, a 25 s heartbeat, `Last-Event-ID` replay against `events.seq` |
 | `core/approvals/statement.ts`, `canonical.ts` | model | transform | Item 4 (sorted-key canonical JSON, test vectors, `sha256:` digests) |
 | `core/approvals/integrity.ts` | utility | file-I/O | Item 2 "Integrity snapshot" |
-| `core/host/*`, `core/runway/*`, `cli/*`, `compose.ts`, `adapters/api.ts` | various | various | Architecture section of RESEARCH |
+| `core/host/*`, `core/runway/*`, `cli/*`, `compose.ts`, `core/framework/port.ts` (was `adapters/api.ts`) | various | various | Architecture section of RESEARCH |
 
 ## Metadata
 

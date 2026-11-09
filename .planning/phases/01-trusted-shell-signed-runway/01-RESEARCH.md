@@ -637,23 +637,35 @@ try { lock.exec('BEGIN EXCLUSIVE'); } catch { console.error('Counterpoint is alr
 | A10 | Default port 4170 does not clash with the prior-art preview range (4174 and up) | Item 5 | Port clash message handles it |
 | A11 | A 12-hour session length is "normal" for D-07 | Item 5 | Owner preference only |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Every question below carries a resolution or an explicit deferral (plan-phase revision, 2026-11-09; plan numbers refer to the 16-plan set).
 
 1. **Cena has nothing approvable today (Pitfall 3).**
    - What we know: `master` has Phase 1 (17/17) and 1.1 (14/14) built; Phases 2 to 7 have no directory.
    - What's unclear: whether the demo of criterion 4 should wait for the owner to plan Phase 2 in Cena, or use a fixture host.
    - Recommendation: tests use the synthetic fixture host; add an owner checkpoint (run `/gsd-discuss-phase 2` and `/gsd-plan-phase 2` in Cena, commit to `master`) before the phase demo.
+   - **RESOLVED (owner decision):** fixture-host tests prove criterion 4 automatically; an owner checkpoint (01-16 Task 2) plans Cena Phase 2 on `master` before the end-of-phase demo.
 2. **`npx @hkp/counterpoint` before the package is published.**
    - What we know: `npm view @hkp/counterpoint` is 404; public release is out of scope for v1; criterion 1 says the owner runs `npx @hkp/counterpoint`.
    - Recommendation: ship `bin: { counterpoint }`, build a tarball (`pnpm pack`) and install it globally with `PNPM_HOME`/prefix on `/Volumes/Dock/Dev` (or `pnpm link --global`); confirm with the owner whether a private publish is wanted.
+   - **RESOLVED (owner decision):** no publish; a locally packed tarball (or `npm link`) installed under the npm prefix on `/Volumes/Dock/Dev` (01-16).
 3. **ROADMAP-section normalization (A2) and statement format (A1)** need explicit owner confirmation because they are costly to change.
+   - **RESOLVED:** A2 confirmed by the owner as `cp-gsd-roadmap-section/v1` (01-07). A1 is resolved by a blocking `checkpoint:decision` in 01-12 Task 1 that the owner answers before the format is frozen; nothing is signed before that gate.
 4. **Integrity baseline acceptance flow (A3):** who establishes the first baseline and how changes are accepted (`counterpoint trust <host>` after reviewing a printed list).
+   - **RESOLVED (owner decision):** execution-capable config keys plus hook/info hashes (01-08), with the baseline accepted by the owner at a terminal via `counterpoint trust <host>` (01-10); `approve` and `doctor` refuse on a mismatch.
 5. **Keychain/`gh` credential denial (A4, A5)** is unverified here because real credentials were off limits. First doctor task: the owner runs the probe including a `gh auth status`-class row and the Keychain check on their own machine.
+   - **RESOLVED (by design; confirmed on the owner's machine in 01-16):** the probe's gh row adds a Keychain sub-step against a temporary canary item that stands in for gh's real keyring entry (01-04, 01-05); a sub-step that cannot run reads `Not checked`, never `Blocked`, and the evidence names the proxy. The A4 signing-key Keychain check states its assumption in the row detail. The owner confirms both in the 01-16 demo.
 6. **`.counterpoint/config.yaml` path (A6)** — confirm for GATE-01 in Phase 2.
+   - **RESOLVED for Phase 1; final shape deferred to Phase 2 (GATE-01):** Phase 1 hashes the `gates` section at this path (absent = sentinel) and treats a gates-only change as `changed` (01-12, 01-14). If Phase 2 picks another path or shape, only the derivation of the gates digest changes, not the statement schema.
 7. **Author identity on the approval commit:** read `user.name`/`user.email` with a plain `git config --get` (read-only) and pass them via `GIT_AUTHOR_*`/`GIT_COMMITTER_*`; or use a fixed "Counterpoint owner" identity. Recommendation: the owner's configured identity.
+   - **RESOLVED:** the owner's configured `user.name` / `user.email`, read without executing anything, with a `Counterpoint owner <owner@counterpoint>` fallback (01-12).
 8. **`cena_owner` key** passphrase status was not inspected; recommendation stands: generate a new dedicated key.
+   - **RESOLVED (CONTEXT discretion):** a new dedicated passphrase-only key (`counterpoint init-key`; created and pinned by the owner in 01-16); if the owner reuses `cena_owner`, `doctor` reports its protection status.
 9. **Phase 2 carry-over:** does Cena's `.claude/commands`/`agents`/skills content still load under `--setting-sources user`? (Cena `master` has no `.claude/settings.json`, only agents/commands/hooks directories.)
+   - **DEFERRED to Phase 2 planning:** Phase 1 spawns only the fixed-prompt probe, which needs none of Cena's project commands, agents or skills; the question is recorded for Phase 2 research.
 10. **Local vs remote base tip:** D-03 is read as the local `refs/heads/master`; if the owner pushes first and a teammate-less flow means `origin/master` is ahead, confirm local is intended.
+   - **RESOLVED:** the local `refs/heads/<base>` per D-03 (01-12 prepares from it, 01-13 recomputes from it); `approve` prints `Not pushed: push {base} when you're ready.` A remote-tip mode, if ever wanted, is a later change.
 
 ## Environment Availability
 
