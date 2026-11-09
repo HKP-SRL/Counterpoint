@@ -70,9 +70,13 @@ export async function revParseMaybe(root: string, rev: string): Promise<string |
 
 /** Writes `bytes` as a blob exactly as given (no filters, no end-of-line conversion). */
 export async function hashObjectBlob(root: string, bytes: Uint8Array): Promise<string> {
-  const { stdout } = await git(root, ['hash-object', '-t', 'blob', '-w', '--no-filters', '--stdin'], {
-    input: bytes,
-  });
+  const { stdout } = await git(
+    root,
+    ['hash-object', '-t', 'blob', '-w', '--no-filters', '--stdin'],
+    {
+      input: bytes,
+    },
+  );
   return oneSha(stdout, 'blob id');
 }
 
@@ -233,9 +237,9 @@ export async function updateIndexCacheinfo(
   await git(worktree, ['update-index', '--add', '--cacheinfo', `100644,${blob},${path}`]);
 }
 
-/** Writes one path from this worktree's index to its working tree. */
+/** Writes one path from this worktree's index to its working tree (and refreshes its stat info). */
 export async function checkoutIndexFile(worktree: string, path: string): Promise<void> {
-  await git(worktree, ['checkout-index', '-f', '--', path]);
+  await git(worktree, ['checkout-index', '-f', '-u', '--', path]);
 }
 
 /** Porcelain status of one path, including untracked and ignored files. Empty string = clean. */

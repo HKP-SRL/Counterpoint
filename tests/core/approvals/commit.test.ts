@@ -143,6 +143,22 @@ describe('signAndLand', () => {
     expect(await gitIn(dir, ['status', '--porcelain'])).toBe('');
   });
 
+  it('preserves submodule (gitlink) and executable entries when rebuilding the root tree', async () => {
+    const dir = await baseRepo();
+    const fake = 'a'.repeat(40);
+    await gitIn(dir, ['update-index', '--add', '--cacheinfo', `160000,${fake},vendor/sub`]);
+    writeFileIn(dir, 'run.sh', '#!/bin/sh\n');
+    chmodSync(join(dir, 'run.sh'), 0o755);
+    await gitIn(dir, ['add', 'run.sh']);
+    await gitIn(dir, ['commit', '-q', '-m', 'submodule and script']);
+    const before = await gitIn(dir, ['ls-tree', '-r', 'master']);
+
+    expect((await land(dir)).ok).toBe(true);
+    const after = (await gitIn(dir, ['ls-tree', '-r', 'master'])).split('\n');
+    expect(after.filter((l) => !l.endsWith(ITEM))).toEqual(before.split('\n'));
+    expect(after).toContain(`160000 commit ${fake}\tvendor/sub`);
+  });
+
   it('moves the base ref but changes nothing in a checkout on another branch', async () => {
     const dir = await baseRepo();
     await gitIn(dir, ['checkout', '-q', '-b', 'feature']);
@@ -299,7 +315,11 @@ describe('signAndLand', () => {
   it('never runs a planted reference-transaction hook, fsmonitor or gpg.ssh.program', async () => {
     const dir = await baseRepo();
     const marker = join(dir, '..', `${dir.split('/').pop()}-marker`);
-    const script = writeFileIn(dir, '.git/trap.sh', `#!/bin/sh\necho "$0 $*" >> '${marker}'\nexit 1\n`);
+    const script = writeFileIn(
+      dir,
+      '.git/trap.sh',
+      `#!/bin/sh\necho "$0 $*" >> '${marker}'\nexit 1\n`,
+    );
     chmodSync(script, 0o755);
     const hook = writeFileIn(dir, '.git/hooks/reference-transaction', `#!/bin/sh\n'${script}'\n`);
     chmodSync(hook, 0o755);
@@ -336,7 +356,9 @@ describe('gpgsig embedding', () => {
     const armored = await sign(built.payload);
     const signed = embedSignature(built.payload, armored);
     const text = new TextDecoder().decode(signed);
-    expect(text).toMatch(/\ngpgsig -----BEGIN SSH SIGNATURE-----\n( .+\n)+ -----END SSH SIGNATURE-----\n\n/);
+    expect(text).toMatch(
+      /\ngpgsig -----BEGIN SSH SIGNATURE-----\n( .+\n)+ -----END SSH SIGNATURE-----\n\n/,
+    );
     const split = splitSignedCommit(signed);
     expect(Buffer.from(split.payload).equals(Buffer.from(built.payload))).toBe(true);
     expect(split.signature).toBe(armored);
@@ -386,17 +408,25 @@ describe('ssh-keygen signer', () => {
     const dir = makeScratchDir('askpass');
     const protectedKey = await makeThrowawayKey(dir, { passphrase: 'correct horse', name: 'pk' });
     const marker = join(dir, 'askpass-ran');
-    const askpass = writeFileIn(dir, 'askpass.sh', `#!/bin/sh\ntouch '${marker}'\necho 'correct horse'\n`);
+    const askpass = writeFileIn(
+      dir,
+      'askpass.sh',
+      `#!/bin/sh\ntouch '${marker}'\necho 'correct horse'\n`,
+    );
     chmodSync(askpass, 0o755);
     const trapEnv = { SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: ':0' };
 
     // Positive control: with the helper in its environment, ssh-keygen uses it.
-    const control = await execa(SSH_KEYGEN, ['-Y', 'sign', '-n', 'git', '-f', protectedKey.privateKeyPath], {
-      env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME ?? '/', ...trapEnv },
-      extendEnv: false,
-      input: 'payload',
-      reject: false,
-    });
+    const control = await execa(
+      SSH_KEYGEN,
+      ['-Y', 'sign', '-n', 'git', '-f', protectedKey.privateKeyPath],
+      {
+        env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME ?? '/', ...trapEnv },
+        extendEnv: false,
+        input: 'payload',
+        reject: false,
+      },
+    );
     expect(control.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(true);
     rmSync(marker);
