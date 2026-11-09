@@ -20,7 +20,12 @@ afterAll(removeScratchDirs);
 const PROBE_NAME = `cp-${'0123456789abcdef'.repeat(2)}`;
 
 /** A bare `git init` (no test identity), so the local config holds no risky keys. */
-async function freshRepo(): Promise<{ dir: string; gitDir: string; home: string; host: { id: string; gitCommonDir: string } }> {
+async function freshRepo(): Promise<{
+  dir: string;
+  gitDir: string;
+  home: string;
+  host: { id: string; gitCommonDir: string };
+}> {
   const dir = makeScratchDir('irepo');
   await gitIn(dir, ['-c', 'init.defaultBranch=master', 'init', '-q']);
   const gitDir = join(dir, '.git');
@@ -185,7 +190,13 @@ describe('compareIntegrity and copy', () => {
   });
 
   it('covers the execution-capable key families', () => {
-    for (const key of ['core.fsmonitor', 'core.hookspath', 'includeif.*', 'gpg.*', 'remote.*.url']) {
+    for (const key of [
+      'core.fsmonitor',
+      'core.hookspath',
+      'includeif.*',
+      'gpg.*',
+      'remote.*.url',
+    ]) {
       expect(RISKY_CONFIG_KEYS).toContain(key);
     }
   });
