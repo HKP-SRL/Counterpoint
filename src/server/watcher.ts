@@ -95,5 +95,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
       unsubscribe();
     },
     tick,
+    // RED stub (01-13 Task 1).
+    nudge: async (_hostId: string) => {},
   };
 }
