@@ -19,7 +19,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 ### Framework Adapter
 
 - [ ] **ADPT-01**: Counterpoint shows the host's GSD phases with status, plans and prerequisites (e.g. `user_setup`, non-autonomous plans) parsed from `.planning/`
-- [ ] **ADPT-02**: Core reaches the planning framework only through an adapter interface (boundary enforced by import rules), so a second framework can be added without core changes
+- [x] **ADPT-02**: Core reaches the planning framework only through an adapter interface (boundary enforced by import rules), so a second framework can be added without core changes
 - [ ] **ADPT-03**: A decision picked on a card is written into the phase's CONTEXT decisions and committed
 - [ ] **ADPT-04**: A council backlog item is written into the host's backlog and committed
 - [ ] **ADPT-05**: All planning writes (decisions, backlog, approvals, bookkeeping) go through one serialized path; build worktrees never write planning files
@@ -173,7 +173,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-05 | Phase 2 | Pending |
 | FOUND-06 | Phase 1 | Pending |
 | ADPT-01 | Phase 1 | Pending |
-| ADPT-02 | Phase 1 | Pending |
+| ADPT-02 | Phase 1 | Complete |
 | ADPT-03 | Phase 5 | Pending |
 | ADPT-04 | Phase 5 | Pending |
 | ADPT-05 | Phase 2 | Pending |
