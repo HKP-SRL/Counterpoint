@@ -1,7 +1,8 @@
 ---
 phase: "01"
 slug: "trusted-shell-signed-runway"
-status: draft
+status: approved
+reviewed_at: "2026-11-09"
 shadcn_initialized: false
 preset: none
 design_system: astryx
@@ -195,6 +196,8 @@ Voice: plain, second person, short. Say what happened, then the next step. No ja
 | Doctor verdict, probe fails | Banner (error) `Agent sandbox is not confining sessions`, body `{n} target(s) were reachable. Approvals still work, but builds will refuse to start until this passes.` |
 | Doctor stale (over 24 h) | Banner (warning) `This check is {age} old`, body `Run "counterpoint doctor" again.` |
 | Probe row result words | Blocked targets: `Blocked` (success badge). Reachable: `Reachable` (error badge). Never "Pass/Fail" for probe rows (a pass means blocked, which reads backwards otherwise). Tool and key checks use `Pass` / `Fail` / `Not checked`. |
+| Change view, item resolved | heading `This phase matches what you signed again`; body `Nothing left to review.`; Link `Back to Needs You`. Unknown item id: heading `This item no longer exists`, same link. |
+| Empty: phases filter | `No phases match this filter` with a Link `Show all phases` |
 | Copy confirmation | Toast `Command copied` (auto-hide) |
 | Destructive confirmation | None in Phase 1: no action in the console deletes, revokes or overwrites anything. Re-signing is a terminal action that adds a new signed commit; the console describes it as such. |
 
@@ -298,41 +301,91 @@ Phase 1 also ships terminal output that the owner reads, so it is part of the co
 
 ## UI Considerations
 
-> Shape-rooted state coverage for this phase. Empty and error COPY live in the Copywriting Contract above and are referenced, not restated.
+> Shape-rooted state coverage for this phase, produced by the ui-phase UI-consideration probe (step 9.5) after checker approval. Empty and error COPY live in the Copywriting Contract above and are referenced, not restated.
+> Elements probed: E1 Mission runway card, E2 Mission Needs You / Trust cards, E3 Phases table, E4 Phase detail, E5 Approval dialog, E6 Needs You inbox, E7 Change view, E8 Trust page, E9 App shell navigation, E10 Signed-out / blocked screens. Element kinds were confirmed by the owner (heuristic corrected: no form or media kinds in Phase 1).
 
-Applicable state considerations resolved: 19 covered, 3 backstop, 2 unresolved
+Applicable state considerations resolved: 63 covered, 6 backstop, 3 dismissed, 0 unresolved (72 applicable)
 
 | Category | Element(s) | Status | Resolution / Reason |
 |----------|------------|--------|---------------------|
-| empty | list-collection: phases list | ✅ covered | A host with no roadmap phases renders the "No phases in {host}'s roadmap" EmptyState (Copywriting: Empty: phases list), never an empty table |
-| empty | list-collection: Needs You inbox | ✅ covered | Zero items render the "Nothing needs you" EmptyState with the explanatory line |
-| empty | static-content: runway headline | ✅ covered | Zero renders the figure `0` plus the "Nothing approved yet" line and a Browse phases link; no placeholder chart |
-| empty | list-collection: plans table in Phase detail | ✅ covered | A phase with no plans renders "No plans yet" in place of the table, with the Not-ready Banner giving the reason |
-| empty | list-collection: Trust page when doctor never ran | ✅ covered | Renders "Not checked yet" with the copyable `counterpoint doctor` command |
-| loading | list-collection: all lists and pages on first load | ✅ covered | First load renders Skeleton rows at the final row height; later refreshes keep stale rows and show no skeleton |
-| loading | interactive-control: approval dialog | ✅ covered | While the server recomputes the statement the dialog shows Skeletons and `Button isLoading`; the command is not rendered until the statement is returned |
-| error | list-collection: any list fails to load | ✅ covered | Inline error Banner with `Try loading {list} again`; last good data stays visible (Copywriting: Error: lists failed to load) |
-| error | nav: SSE connection lost | ✅ covered | Warning Banner plus warning connection dot; auto-resumes via `Last-Event-ID`; clears without user action |
-| error | nav: no session / used link / blocked request | ✅ covered | Routed to `/signed-out` EmptyState variants with the exact copy in the Copywriting Contract |
-| error | interactive-control: approve refused or stale | ✅ covered | Refusal shows an error Banner and no command; stale shows a warning Banner with `Prepare approval again` and a disabled `Copy command` |
-| populated | list-collection: phases table | ✅ covered | Cena's full roadmap (decimal phases included) sorted ascending by phase number with tabular numerals; row opens detail |
-| partial | list-collection: phase with an unparsable file | ✅ covered | That row shows the `Couldn't read` Badge; the rest of the table is unaffected; detail names the file and reason |
-| partial | list-collection: phase with CONTEXT but no plans | ✅ covered | Status `Not planned` with the no-plans Banner; the Approve action is not offered |
-| zero-one-many | list-collection: plan counts | ✅ covered | Copy reads `No plans`, `1 plan`, `17 plans` (pluralised); the same for files changed and phases on the runway |
-| zero-one-many | nav: Needs You count badge | ✅ covered | Hidden at 0, the exact number 1 to 99, `99+` above; screen readers get the full count in VisuallyHidden text |
-| zero-one-many | list-collection: runway list | ✅ covered | `1 phase` vs `{n} phases` in the Supporting line; one row renders without separators |
-| long-text | static-content: file paths, shas and digests | ✅ covered | Monospace, 12-hex digest with the full value in a Tooltip and in the copied statement; paths `wordBreak="break-all"` |
-| long-text | static-content: Trust and Mission verdict lines | ✅ covered | Wrap within the Card; no truncation of verdict text |
-| overflow | list-collection: phases table with long names | 🧪 backstop | Name cell `maxLines={1}` with truncation tooltip; held-out visual test at 1024px and 360px in light and dark |
-| overflow | static-content: unified diffs in the change view | 🧪 backstop | `CodeBlock isDiff` with `maxHeight` 480px and horizontal scroll, no wrapping; held-out visual test with a 1,000-line diff |
-| long-text | list-collection: phase objectives and `user_setup` entries | 🧪 backstop | Wrap fully on Phase detail, truncate to one line in the table; held-out visual test with a 300-character objective |
-| partial | list-collection: `.planning` files being rewritten by GSD mid-read | ⚠ unresolved | Assume the adapter serves the last good snapshot and marks the row stale; debounce/atomicity rule to be set when the adapter fixtures are frozen |
-| overflow | nav: host switcher with many hosts | ⚠ unresolved | v1 registers one host (Cena); the layout above is not designed for more than a handful; planner treats as an assumption |
+| empty | E1 Mission runway card | ✅ covered | Zero renders figure `0` plus the `Nothing approved yet` line and a `Browse phases` link; no placeholder chart (Copywriting: Empty: runway) |
+| loading | E1 Mission runway card | ✅ covered | First load renders a Skeleton figure and Skeleton list rows; later SSE updates replace the number in place and announce the change politely |
+| error | E1 Mission runway card | ✅ covered | Load failure renders the inline error Banner with `Try loading phases again` and keeps the last good data visible (Copywriting: Error: lists failed to load) |
+| populated | E1 Mission runway card | ✅ covered | Display figure = phases on the runway; Supporting `{n} phases · {p} plans approved and ready ahead of the builder`; list rows show number, name, plan count, signed Timestamp, each linking to Phase detail |
+| partial | E1 Mission runway card | ✅ covered | A runway phase whose files can't be read keeps its row with the `Couldn't read` Badge; it still counts toward the runway until its inputs change; a Changed-since-signed phase raises the warning Banner above the card |
+| overflow | E1 Mission runway card | 🧪 backstop | Runway list grows with the page (no inner scroll, no cap); held-out visual test with 40 runway rows at 1024px and 360px in light and dark |
+| zero-one-many | E1 Mission runway card | ✅ covered | `1 phase` vs `{n} phases` and `1 plan` vs `{n} plans` in the Supporting line; one row renders without separators |
+| long-text | E1 Mission runway card | ✅ covered | Phase names in runway rows truncate to one line with the full name in a Tooltip and on Phase detail |
+| empty | E2 Mission Needs You / Trust cards | ✅ covered | Needs You card shows the `Nothing needs you` EmptyState copy; Trust card with no doctor report shows `Not checked yet` and links to Trust (Copywriting: Empty: Needs You / Trust page) |
+| loading | E2 Mission Needs You / Trust cards | ✅ covered | First load renders Skeleton rows at final row height; later refreshes keep the current rows on screen with no skeleton (Interaction Contract 2) |
+| error | E2 Mission Needs You / Trust cards | ✅ covered | Load failure renders the inline error Banner with `Try loading Needs You / checks again` and keeps the last good data visible (Copywriting: Error: lists failed to load) |
+| populated | E2 Mission Needs You / Trust cards | ✅ covered | Needs You card shows up to 5 newest Item rows then `View all Needs You items`; Trust card shows the one-line verdict, last-checked Timestamp and a link to Trust, using the Trust page's Badge words |
+| partial | E2 Mission Needs You / Trust cards | ✅ covered | A doctor report older than 24 h shows the `This check is {age} old` warning wording on the Trust card; a report with some checks `Not checked` shows the failing/unchecked count, never an all-pass verdict |
+| overflow | E2 Mission Needs You / Trust cards | ✅ covered | Needs You card is capped at 5 rows; more are reachable only via `View all Needs You items` |
+| zero-one-many | E2 Mission Needs You / Trust cards | ✅ covered | The `View all Needs You items` link appears only when there are more than 5 items; counts are pluralised (`1 file changed` / `{n} files changed`) |
+| long-text | E2 Mission Needs You / Trust cards | ✅ covered | Item titles truncate to one line with Tooltip; verdict lines wrap within the Card and are never truncated |
+| empty | E3 Phases table | ✅ covered | A host with no roadmap phases renders the `No phases in {host}'s roadmap` EmptyState, never an empty table; a filter with zero matches shows `No phases match this filter` with a link back to `All` |
+| loading | E3 Phases table | ✅ covered | First load renders Skeleton rows at final row height; later refreshes keep the current rows on screen with no skeleton (Interaction Contract 2) |
+| error | E3 Phases table | ✅ covered | Load failure renders the inline error Banner with `Try loading phases again` and keeps the last good data visible (Copywriting: Error: lists failed to load) |
+| populated | E3 Phases table | ✅ covered | All roadmap phases (decimal phases included) sorted ascending by phase number with tabular numerals; filter counts on the SegmentedControl; row opens Phase detail |
+| partial | E3 Phases table | ✅ covered | A phase with an unparsable file shows the `Couldn't read` Badge and the rest of the table is unaffected; a file caught mid-rewrite by GSD keeps the last good parse, is re-read after a short debounce, and shows `Couldn't read` only if it still fails after the retry; CONTEXT-without-plans shows `Not planned` |
+| overflow | E3 Phases table | 🧪 backstop | Name cell `maxLines={1}` with a truncation Tooltip; table scrolls with the page; held-out visual test at 1024px and 360px in light and dark with 40 phases |
+| zero-one-many | E3 Phases table | ✅ covered | Plans column reads `No plans`, `1 plan`, `{n} plans`; `{k} not autonomous` appears only when k > 0; filter counts show 0 rather than hiding the option |
+| long-text | E3 Phases table | 🧪 backstop | Long phase names and `user_setup` entries truncate to one line in the table (full text in Tooltip); held-out visual test with a 300-character name |
+| empty | E4 Phase detail | ✅ covered | A phase with no plans renders `No plans yet` in place of the plans table with the Not-ready Banner giving the reason (Copywriting: Not ready) |
+| loading | E4 Phase detail | ✅ covered | First load renders Skeleton header, MetadataList and table rows; `Approve phase` is not rendered until status is known |
+| error | E4 Phase detail | ✅ covered | Unparsable phase renders the `Couldn't read Phase {NN}` error Banner naming the file and reason; a failed fetch renders the inline error Banner with retry (Copywriting: Error: can't read a phase) |
+| populated | E4 Phase detail | ✅ covered | Heading, Status Badge, `Approve phase` only when Ready to approve, then Banners, MetadataList, plans table and Inputs card listing every covered file with its digest |
+| partial | E4 Phase detail | ✅ covered | Phases with prerequisites show the warning Banner listing `user_setup` items and `{k} of {n} plans need you present`; approval is still allowed; uncommitted edits show the soft hint |
+| overflow | E4 Phase detail | ✅ covered | Plans table with 1 to 20+ rows scrolls with the page (no inner scroll); objective text wraps |
+| zero-one-many | E4 Phase detail | ✅ covered | Plan, file and not-autonomous counts are pluralised; the Inputs card lists one row per covered file whatever the count |
+| long-text | E4 Phase detail | 🧪 backstop | Objectives and `user_setup` entries wrap fully; file paths use `wordBreak="break-all"`; held-out visual test with a 300-character objective and a deep file path |
+| empty | E5 Approval dialog | ➖ dismissed | Not applicable: the dialog only opens for a Ready-to-approve phase, which by definition has CONTEXT and at least one plan, so the Inputs table is never empty |
+| loading | E5 Approval dialog | ✅ covered | While the server recomputes the statement the dialog shows Skeletons and `Button isLoading`; the command is not rendered until the statement is returned |
+| error | E5 Approval dialog | ✅ covered | Refusal shows the error Banner and no command; a stale statement shows the warning Banner with `Prepare approval again` and a disabled `Copy command` (Copywriting: approval refused / stale) |
+| populated | E5 Approval dialog | ✅ covered | Prerequisites Banner (if any), `What you're signing` MetadataList, Inputs table (File, 12-hex Digest, plus `Draft: none yet` and `Gates: no gate config yet`), the one-line command CodeBlock, then the waiting line that flips to `Signed. Runway is now {N}.` |
+| partial | E5 Approval dialog | ✅ covered | Optional inputs (RESEARCH, UI-SPEC, SPEC, AI-SPEC) appear only when present; missing optional files are simply absent, never shown as errors |
+| overflow | E5 Approval dialog | ✅ covered | Command CodeBlock is a single line with horizontal scroll, never wrapped; Inputs table scrolls within the dialog body at about 640px width |
+| zero-one-many | E5 Approval dialog | ✅ covered | Plan count and file rows read correctly for 1 and many plans (`1 plan` / `{n} plans`) |
+| long-text | E5 Approval dialog | ✅ covered | Phase name in the title wraps; file paths `wordBreak="break-all"`; digests show 12 hex with the full value in a Tooltip and in the copied statement |
+| empty | E6 Needs You inbox | ✅ covered | Zero items render the `Nothing needs you` EmptyState with its explanatory line (Copywriting: Empty: Needs You) |
+| loading | E6 Needs You inbox | ✅ covered | First load renders Skeleton rows at final row height; later refreshes keep the current rows on screen with no skeleton (Interaction Contract 2) |
+| error | E6 Needs You inbox | ✅ covered | Load failure renders the inline error Banner with `Try loading Needs You again` and keeps the last good data visible (Copywriting: Error: lists failed to load) |
+| populated | E6 Needs You inbox | ✅ covered | Item rows (icon, `Phase {NN} changed since you signed it`, Supporting `{host} · {n} files changed · signed {Timestamp}`), newest first, each linking to its change view |
+| partial | E6 Needs You inbox | ✅ covered | An item whose phase can no longer be read still lists, with the `Couldn't read` Badge; the item resolves itself when the phase is re-signed or its inputs return to the signed state |
+| overflow | E6 Needs You inbox | 🧪 backstop | List grows with the page, no pagination in Phase 1; held-out visual test with 50 items |
+| zero-one-many | E6 Needs You inbox | ✅ covered | Nav badge hidden at 0, exact 1 to 99, `99+` above with the full count in VisuallyHidden text; `1 file changed` vs `{n} files changed` |
+| long-text | E6 Needs You inbox | ✅ covered | Titles truncate to one line with Tooltip; the full title is the change view's heading |
+| empty | E7 Change view | ✅ covered | If the item resolves while open (re-signed or inputs back to the signed state), the view shows `This phase matches what you signed again` with a `Back to Needs You` link; an unknown item id shows the same with `This item no longer exists` |
+| loading | E7 Change view | ✅ covered | First load renders Skeleton lead line and table rows; diff bodies load when their Collapsible opens (first file open by default) |
+| error | E7 Change view | ✅ covered | Failed load shows the inline error Banner with retry; a diff that can't be computed shows an error line inside that file's Collapsible while the other files still render |
+| populated | E7 Change view | ✅ covered | Lead line, changed-inputs table (File, Modified/Added/Removed Badge, signed digest → now digest), one Collapsible diff per file, then `Sign the new version` with the command CodeBlock |
+| partial | E7 Change view | ✅ covered | Added files show `—` for the signed digest and Removed files show `—` for the now digest; their diffs show the whole file as added or removed |
+| overflow | E7 Change view | 🧪 backstop | `CodeBlock isDiff` with `maxHeight` 480px and horizontal scroll, no wrapping; held-out visual test with a 1,000-line diff and a 400-character line |
+| zero-one-many | E7 Change view | ✅ covered | `{k} input file(s) changed` reads `1 input file changed` / `{k} input files changed`; with one file its Collapsible is open |
+| long-text | E7 Change view | ✅ covered | Diff text is plain text only, never HTML; long lines scroll horizontally; file paths `wordBreak="break-all"` |
+| empty | E8 Trust page | ✅ covered | Doctor never run renders `Not checked yet` with the copyable `counterpoint doctor` command (Copywriting: Empty: Trust page) |
+| loading | E8 Trust page | ✅ covered | First load renders Skeleton rows at final row height; later refreshes keep the current rows on screen with no skeleton (Interaction Contract 2) |
+| error | E8 Trust page | ✅ covered | Load failure renders the inline error Banner with `Try loading checks again` and keeps the last good data visible (Copywriting: Error: lists failed to load) |
+| populated | E8 Trust page | ✅ covered | Verdict Banner, then Tools, Signing key and Sandbox probe tables; tool/key rows read `Pass`/`Fail`, probe rows read `Blocked`/`Reachable`, each with icon plus word |
+| partial | E8 Trust page | ✅ covered | Checks that did not run read `Not checked` and the verdict never claims all-pass; a report older than 24 h shows the stale warning Banner (Copywriting: Doctor stale) |
+| overflow | E8 Trust page | ✅ covered | Tables have a fixed set of rows (3 tools, key checks, 7 probe targets); version strings and fix hints wrap within the cell |
+| zero-one-many | E8 Trust page | ✅ covered | Probe-failure verdict reads `1 target was reachable` / `{n} targets were reachable` |
+| long-text | E8 Trust page | ✅ covered | Fix hints and version strings wrap; verdict text is never truncated |
+| loading | E9 App shell navigation | ✅ covered | Nav renders immediately; the host switcher shows the host name from the first snapshot and the Needs You badge is hidden until its count arrives |
+| error | E9 App shell navigation | ✅ covered | Lost SSE connection turns the connection dot warning (pulsing) and shows the `Live updates paused` Banner; it clears on reconnect via `Last-Event-ID`; no session / used link / blocked request routes to `/signed-out` (Copywriting) |
+| overflow | E9 App shell navigation | ➖ dismissed | Host switcher with many hosts: v1 registers one host (Cena); the dropdown simply lists the hosts that exist. Revisit when multi-host lands |
+| long-text | E9 App shell navigation | ✅ covered | Host name and base branch in the switcher truncate to one line with Tooltip; below 360px nav moves into AppShell's mobile drawer |
+| loading | E10 Signed-out / blocked screens | ➖ dismissed | Not applicable: the screen is static and rendered from the `reason` query value with no data fetch |
+| error | E10 Signed-out / blocked screens | ✅ covered | Unknown or missing `reason` falls back to the `This browser isn't signed in` variant; each variant's copy is in the Copywriting Contract |
+| overflow | E10 Signed-out / blocked screens | ✅ covered | Centered EmptyState wraps at narrow widths; the command CodeBlock scrolls horizontally rather than wrapping |
+| long-text | E10 Signed-out / blocked screens | ✅ covered | Body copy is short and fixed; it wraps and is never truncated |
 
 <!-- Status vocabulary (locked by probe-core projectTruths):
-     ✅ covered   → a plain truth string lifted into must_haves.truths
-     🧪 backstop  → a flat scalar { statement, verification: backstop }; at verify time, no explicit
+     ✅ covered   → resolved (verification: explicit); a plain truth string lifted into must_haves.truths
+     🧪 backstop  → resolved (verification: backstop); a flat scalar { statement, verification: backstop }; at verify time, no explicit
                     evidence → insufficient_spec → human_needed (never a silent pass, #1154)
+     ➖ dismissed → not applicable, with the required reason; not lifted
      ⚠ unresolved → an explicit planner assumption (surfaced, never silently dropped)
      Rows are REPLACED (not appended) on a probe re-run — idempotent. -->
 
@@ -368,12 +421,14 @@ Route used for the BLOCK fix: the checker's closed-set hint (named blocks instea
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
-- [ ] Dimension 7 Inventory Provenance: PASS
+Verified by gsd-ui-checker on 2026-11-09 after one revision (the first pass blocked on Registry Safety, fixed by naming a closed component set).
 
-**Approval:** pending
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: FLAG (non-blocking): declare a focal point for the Phases list and the Trust page; state that the theme IconButton needs an accessible name, not only `tooltip="Theme"`
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: FLAG (non-blocking): the header should say four weights render (authored 400/600, Astryx-internal 500/700)
+- [x] Dimension 5 Spacing: FLAG (non-blocking): state that the 12px `compact` step is never used in authored layout
+- [x] Dimension 6 Registry Safety: FLAG (non-blocking): (a) the `@astryxdesign/core` gate says "no flags" beside recorded observations, so prefer `view passed — observations recorded`; (b) `@stylexjs/stylex` and TanStack Query/Router have no rows, so add them or scope them out; (c) `npx @astryxdesign/cli` is invoked without a vetting row; (d) `lucide-react` was reviewed at 1.18.0 but is declared `^1.18.0`, so exact-pin it or re-review after lockfile resolution
+- [x] Dimension 7 Inventory Provenance: PASS (re-run the inventory count after the first `pnpm install`)
+
+**Approval:** approved 2026-11-09. FLAGs are accepted as planner notes.
