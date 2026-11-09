@@ -14,11 +14,11 @@ Requirements for the first milestone. Each maps to roadmap phases.
 - [ ] **FOUND-03**: Owner can run `counterpoint doctor` to see pass/fail for: `claude`, `git`, `gh` present; signing key passphrase-protected and not loaded in ssh-agent/Keychain; sandbox actually confining headless `claude -p` sessions
 - [ ] **FOUND-04**: Agent sessions run sandboxed so they cannot read the signing key, `~/.ssh`, `gh` credentials or Counterpoint's state, and cannot write the host's shared `.git/config`, `.git/hooks` or `.git/info`
 - [ ] **FOUND-05**: After a crash or reboot, Counterpoint restores its state, reconciles runs that were in progress, and resumes them from their last handoff
-- [ ] **FOUND-06**: Console is built on Astryx and works in light and dark themes
+- [x] **FOUND-06**: Console is built on Astryx and works in light and dark themes
 
 ### Framework Adapter
 
-- [ ] **ADPT-01**: Counterpoint shows the host's GSD phases with status, plans and prerequisites (e.g. `user_setup`, non-autonomous plans) parsed from `.planning/`
+- [x] **ADPT-01**: Counterpoint shows the host's GSD phases with status, plans and prerequisites (e.g. `user_setup`, non-autonomous plans) parsed from `.planning/`
 - [x] **ADPT-02**: Core reaches the planning framework only through an adapter interface (boundary enforced by import rules), so a second framework can be added without core changes
 - [ ] **ADPT-03**: A decision picked on a card is written into the phase's CONTEXT decisions and committed
 - [ ] **ADPT-04**: A council backlog item is written into the host's backlog and committed
@@ -171,8 +171,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-03 | Phase 1 | Pending |
 | FOUND-04 | Phase 1 | Pending |
 | FOUND-05 | Phase 2 | Pending |
-| FOUND-06 | Phase 1 | Pending |
-| ADPT-01 | Phase 1 | Pending |
+| FOUND-06 | Phase 1 | Complete |
+| ADPT-01 | Phase 1 | Complete |
 | ADPT-02 | Phase 1 | Complete |
 | ADPT-03 | Phase 5 | Pending |
 | ADPT-04 | Phase 5 | Pending |
