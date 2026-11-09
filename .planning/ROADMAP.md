@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 9/16 plans executed
+**Plans**: 11/16 plans executed
 
 Plans:
 **Wave 1**
@@ -53,8 +53,8 @@ Plans:
 - [x] 01-09-PLAN.md — Console shell: AppShell, Light/Dark/System, signed-out screens, live client *(wave 4)*
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 01-10-PLAN.md — `counterpoint doctor`, init-key / trust-key (confirmed at a terminal) / trust {host} *(wave 5)*
-- [ ] 01-11-PLAN.md — Phases, Phase detail and Trust in the console; base-tip watcher *(wave 5)*
+- [x] 01-10-PLAN.md — `counterpoint doctor`, init-key / trust-key (confirmed at a terminal) / trust {host} *(wave 5)*
+- [x] 01-11-PLAN.md — Phases, Phase detail and Trust in the console; base-tip watcher *(wave 5)*
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 01-12-PLAN.md — Owner confirms the statement format; `counterpoint approve`; runway recomputed from git, gate-config drift included *(wave 6)*
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 9/16 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 11/16 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
