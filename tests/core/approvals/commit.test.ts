@@ -1,7 +1,7 @@
 // Approval commit mechanics (APPR-01): plumbing-built tree and commit, ssh-keygen signature
 // embedded as gpgsig, compare-and-swap landing that leaves the owner's checkout untouched apart
 // from the one approval file. Scratch repos and throwaway keys only.
-import { chmodSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { execa } from 'execa';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -267,6 +267,42 @@ describe('signAndLand', () => {
     expect(signer).not.toHaveBeenCalled();
     expect(await rev(dir, 'master')).toBe(tip0);
     expect(readFileSync(join(dir, ITEM), 'utf8')).toBe('owner draft\n');
+  });
+
+  it('refuses with occupied when .counterpoint is a symlink in the checkout', async () => {
+    const dir = await baseRepo();
+    const tip0 = await rev(dir, 'master');
+    const elsewhere = makeScratchDir('elsewhere');
+    symlinkSync(elsewhere, join(dir, '.counterpoint'));
+
+    const result = await land(dir);
+    expect(result).toMatchObject({ ok: false, reason: 'occupied' });
+    expect(await rev(dir, 'master')).toBe(tip0);
+    expect(existsSync(join(elsewhere, 'approvals'))).toBe(false);
+  });
+
+  it('refuses with unsafe-path when a filter attribute applies, and never runs the filter', async () => {
+    const dir = await baseRepo();
+    const marker = join(dir, '..', `${dir.split('/').pop()}-smudge`);
+    const script = writeFileIn(dir, '.git/smudge.sh', `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(script, 0o755);
+    writeFileIn(dir, '.gitattributes', '*.json filter=evil\n');
+    await commitAll(dir, 'attributes');
+    await gitIn(dir, ['config', 'filter.evil.smudge', script]);
+    await gitIn(dir, ['config', 'filter.evil.clean', script]);
+    const tip0 = await rev(dir, 'master');
+
+    const result = await land(dir);
+    expect(result).toMatchObject({ ok: false, reason: 'unsafe-path' });
+    expect(await rev(dir, 'master')).toBe(tip0);
+    expect(existsSync(marker)).toBe(false);
+
+    // Positive control: checking out a .json path in this repo does run the smudge program.
+    const blob = await rev(dir, 'HEAD:README.md');
+    await rawGit(dir, ['update-index', '--add', '--cacheinfo', `100644,${blob},control.json`]);
+    await rawGit(dir, ['checkout-index', '-f', '--', 'control.json']);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker, { force: true });
   });
 
   it('refuses with occupied when the existing approval file is modified in the checkout', async () => {
