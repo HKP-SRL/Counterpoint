@@ -276,3 +276,8 @@ None.
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-09*
+
+## Self-Check: PASSED
+
+- All six modified source files and this SUMMARY exist on disk.
+- Commits `08da0ec`, `40bf513` and `f161255` are on this branch (`git log 92f4f1d..HEAD`), and the working tree is clean.
