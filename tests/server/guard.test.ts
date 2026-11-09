@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hostCheckedServer } from '../../src/core/security/guard.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { openStore, type Store, upsertHost } from '../../src/core/store/db.ts';
+import { EventBus } from '../../src/core/store/events.ts';
 import { createApp } from '../../src/server/app.ts';
 import { makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
@@ -105,7 +106,7 @@ beforeAll(async () => {
   if (address === null || typeof address !== 'object') throw new Error('no address');
   port = address.port;
 
-  app = createApp({ store, port, uiDir });
+  app = createApp({ store, port, uiDir, bus: new EventBus() });
   // A test-only JSON route behind the same guard chain as every real /api route.
   app.post('/api/__test/echo', async (c) => c.json({ ok: true, body: await c.req.json() }));
   ready = app;

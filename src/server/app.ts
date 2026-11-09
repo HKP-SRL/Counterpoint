@@ -9,6 +9,8 @@ import { Hono } from 'hono';
 import { hostGuard, mutationGuard, securityHeaders, sessionGuard } from '../core/security/guard.ts';
 import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
+import type { EventBus } from '../core/store/events.ts';
+import { mountEvents } from './sse.ts';
 
 export const PACKAGE_NAME = '@hkp/counterpoint';
 
@@ -20,6 +22,10 @@ export interface AppOptions {
   port: number;
   /** Absolute path of the built console (`dist/ui`). */
   uiDir: string;
+  /** The daemon's event bus; the control app publishes to the same instance. */
+  bus: EventBus;
+  /** SSE heartbeat interval; 25 s by default, shortened in tests. */
+  heartbeatMs?: number;
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -57,6 +63,14 @@ export function createApp(options: AppOptions): Hono {
   app.use('*', hostGuard(getPort));
   app.use('*', securityHeaders());
   app.use('/api/*', mutationGuard(getPort));
+  // The SSE stream carries its own sseGuard then sessionGuard (Origin checked before session, as
+  // for writes), so it is mounted ahead of the shared session check.
+  mountEvents(app, {
+    db: options.store,
+    bus: options.bus,
+    getPort,
+    ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
+  });
   app.use('/api/*', sessionGuard(options.store));
 
   // The one-time sign-in exchange (D-07). Outside /api and the session check, behind the Host

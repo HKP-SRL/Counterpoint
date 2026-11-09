@@ -10,6 +10,7 @@ import {
   validateSession,
 } from '../../src/core/security/login.ts';
 import { openStore, type Store, upsertHost } from '../../src/core/store/db.ts';
+import { EventBus } from '../../src/core/store/events.ts';
 import { createApp } from '../../src/server/app.ts';
 import { makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
@@ -128,7 +129,7 @@ describe('sessions', () => {
 
 describe('GET /login', () => {
   function app() {
-    return createApp({ store: db, port: PORT, uiDir });
+    return createApp({ store: db, port: PORT, uiDir, bus: new EventBus() });
   }
 
   function get(path: string, method = 'GET') {

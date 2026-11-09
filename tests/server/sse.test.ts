@@ -321,11 +321,11 @@ describe('GET /api/events', () => {
   });
 
   it('stops listening when the client goes away', async () => {
-    const before = bus.listenerCount();
     const stream = await openStream({ cookie });
-    await stream.waitFor(() => bus.listenerCount() === before + 1);
+    // Streams closed by earlier tests are torn down asynchronously; wait for this one alone.
+    await stream.waitFor(() => bus.listenerCount() === 1);
     stream.close();
-    await stream.waitFor(() => bus.listenerCount() === before);
-    expect(bus.listenerCount()).toBe(before);
+    await stream.waitFor(() => bus.listenerCount() === 0);
+    expect(bus.listenerCount()).toBe(0);
   });
 });

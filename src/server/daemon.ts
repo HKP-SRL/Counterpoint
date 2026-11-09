@@ -25,6 +25,7 @@ import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
+import { EventBus } from '../core/store/events.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createControlApp, hashToken } from './control.ts';
 
@@ -213,7 +214,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.exit(1);
   });
 
-  app = createApp({ store, port: bound, uiDir: resolveUiDir() });
+  // One bus: the control socket publishes, the console's SSE streams listen.
+  const bus = new EventBus();
+  app = createApp({ store, port: bound, uiDir: resolveUiDir(), bus });
 
   let stopping = false;
   let control: Server | undefined;
@@ -233,6 +236,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const controlApp = createControlApp({
     store,
+    bus,
     tokenHash,
     port: bound,
     onStop: () => void stop('control'),

@@ -12,11 +12,15 @@ import {
   NotARepositoryError,
   registerHost,
 } from '../core/host/registry.ts';
+import { HOST_ID_RE } from '../core/ids.ts';
 import { mintLoginCode } from '../core/security/login.ts';
 import { hostRegistryStore, listHosts, type Store } from '../core/store/db.ts';
+import { EVENT_FAMILIES, type EventBus, publishEvent } from '../core/store/events.ts';
 
 export interface ControlAppOptions {
   store: Store;
+  /** The daemon's event bus; the console app's SSE streams listen on the same instance. */
+  bus: EventBus;
   /** SHA-256 of the control token. */
   tokenHash: Buffer;
   /** The HTTP port the console is bound to. */
@@ -42,6 +46,11 @@ function bearerMatches(header: string | undefined, expected: Buffer): boolean {
 const RegisterBody = z.object({
   cwd: z.string().min(1).max(4096).refine(isAbsolute, 'cwd must be an absolute path'),
   base: z.string().min(1).max(200).optional(),
+});
+
+const NotifyBody = z.strictObject({
+  hostId: z.string().regex(HOST_ID_RE),
+  family: z.enum(EVENT_FAMILIES),
 });
 
 export function createControlApp(options: ControlAppOptions): Hono {
@@ -75,6 +84,7 @@ export function createControlApp(options: ControlAppOptions): Hono {
         ...(parsed.data.base === undefined ? {} : { base: parsed.data.base }),
         detectFramework: options.detectFramework,
       });
+      publishEvent(options.store, options.bus, { hostId: host.id, family: 'host' });
       return c.json({ host });
     } catch (error) {
       if (
@@ -93,6 +103,26 @@ export function createControlApp(options: ControlAppOptions): Hono {
   app.post('/control/login-code', (c) => {
     const code = mintLoginCode(options.store);
     return c.json({ url: `http://127.0.0.1:${options.port}/login?code=${code}` });
+  });
+
+  // The generic nudge (doctor report written, approval landed): a host id and a family, nothing
+  // else. publishEvent = appendEvent to the SQLite outbox, then emit on the bus to every open
+  // console stream. A strict
+  // body keeps file contents or free text from ever travelling through here.
+  app.post('/control/notify', async (c) => {
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: 'The request body must be JSON.' }, 400);
+    }
+    const parsed = NotifyBody.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'Invalid notify request.' }, 400);
+    const event = publishEvent(options.store, options.bus, {
+      hostId: parsed.data.hostId,
+      family: parsed.data.family,
+    });
+    return c.json({ seq: event.seq }, 202);
   });
 
   app.post('/control/stop', (c) => {
