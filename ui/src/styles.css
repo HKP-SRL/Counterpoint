@@ -1,0 +1,10 @@
+/* Order matters: it maps to the cascade layers reset, then astryx-base, then astryx-theme. */
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+/* Figtree is self-hosted so the console works offline; the theme's own font stylesheet would
+   fetch Google Fonts over the network. */
+@import "@fontsource/figtree/latin-400.css";
+@import "@fontsource/figtree/latin-500.css";
+@import "@fontsource/figtree/latin-600.css";
+@import "@fontsource/figtree/latin-700.css";
