@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 13/16 plans executed
+**Plans**: 14/16 plans executed
 
 Plans:
 **Wave 1**
@@ -63,7 +63,7 @@ Plans:
 - [x] 01-13-PLAN.md — Approve from the console; runway headline *(wave 7)*
 
 **Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 01-14-PLAN.md — Needs You and the change view (approved version changed, gate config included) *(wave 8)*
+- [x] 01-14-PLAN.md — Needs You and the change view (approved version changed, gate config included) *(wave 8)*
 
 **Wave 9** *(blocked on Wave 8 completion)*
 - [ ] 01-15-PLAN.md — Mission cards, drift hints, end-to-end drift test, visual backstops *(wave 9)*
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 13/16 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 14/16 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
