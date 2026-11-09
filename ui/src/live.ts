@@ -27,7 +27,16 @@ export type EventFamily = (typeof EVENT_FAMILIES)[number];
 /** Which cached queries each event family makes stale, for the event's host. */
 export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly QueryKey[]> = {
   host: () => [queryKeys.hosts],
-  phase: (hostId) => [queryKeys.phases(hostId), queryKeys.phase(hostId)],
+  // A `phase` event means the base tip moved. The runway and Needs You are derived from the tip
+  // too, and the watcher only publishes `runway` / `needs-you` when their value differs from its
+  // own last pass: a change and its revert inside one poll leave a page that fetched the middle
+  // state stale. Refetching them on every tip move closes that gap (the server caches per tip).
+  phase: (hostId) => [
+    queryKeys.phases(hostId),
+    queryKeys.phase(hostId),
+    queryKeys.runway(hostId),
+    queryKeys.needsYou(hostId),
+  ],
   approval: (hostId) => [
     queryKeys.phase(hostId),
     queryKeys.phases(hostId),
