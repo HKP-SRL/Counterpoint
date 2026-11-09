@@ -187,7 +187,9 @@ describe('buildAgentSandboxSettings', () => {
         ...paths,
         signingKeyDir: '/tmp/cp-missing-dir-0104/keys',
       });
-      expect(settings.sandbox.filesystem.denyRead).toContain('/private/tmp/cp-missing-dir-0104/keys');
+      expect(settings.sandbox.filesystem.denyRead).toContain(
+        '/private/tmp/cp-missing-dir-0104/keys',
+      );
     },
   );
 
@@ -373,9 +375,9 @@ describe('DoctorReport', () => {
   });
 
   it('rejects another schema id', () => {
-    expect(DoctorReport.safeParse({ ...validReport(), schema: 'counterpoint/doctor/v2' }).success).toBe(
-      false,
-    );
+    expect(
+      DoctorReport.safeParse({ ...validReport(), schema: 'counterpoint/doctor/v2' }).success,
+    ).toBe(false);
   });
 
   it('rejects an unknown probe target id', () => {
