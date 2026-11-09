@@ -27,6 +27,7 @@ import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.
 import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus } from '../core/store/events.ts';
 import { createApp, resolveUiDir } from './app.ts';
+import { createApprovalViews } from './approval-views.ts';
 import { createControlApp, hashToken } from './control.ts';
 import { createHostRuntimes } from './hosts.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
@@ -220,6 +221,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
+  // One set of approval views (states and runway recomputed from git, cached per tip in memory
+  // only, so every daemon start begins with an empty cache).
+  const approvals = createApprovalViews({ home: options.home });
   app = createApp({
     store,
     port: bound,
@@ -227,6 +231,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     bus,
     runtimes,
     home: options.home,
+    approvals,
   });
 
   let stopping = false;
@@ -254,6 +259,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     port: bound,
     onStop: () => void stop('control'),
     detectFramework,
+    nudge: (hostId) => void watcher?.nudge(hostId),
+    runwayCount: async (hostId) => {
+      const runtime = runtimes.get(hostId);
+      return runtime === null ? null : (await approvals.runway(runtime)).count;
+    },
   });
   control = createAdaptorServer({ fetch: controlApp.fetch }) as Server;
   await listenOnSocket(control, paths.socket);
@@ -263,7 +273,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   writeFileSync(paths.daemonJson, `${JSON.stringify(info)}\n`, { mode: 0o600 });
 
   // Base-tip polling (D-03): a commit to a host's base branch reaches open consoles within ~2 s.
-  watcher = startWatcher({ runtimes, db: store, bus, log });
+  watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
 
   process.once('SIGTERM', () => void stop('SIGTERM'));
   process.once('SIGINT', () => void stop('SIGINT'));

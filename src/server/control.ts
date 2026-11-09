@@ -29,6 +29,29 @@ export interface ControlAppOptions {
   onStop: () => void;
   detectFramework: FrameworkDetector;
   pid?: number;
+  /** Re-checks a host at once (the watcher's `nudge`); called when an approval has landed. */
+  nudge?: (hostId: string) => void;
+  /** The host's runway count recomputed from git, or null when unknown. */
+  runwayCount?: (hostId: string) => Promise<number | null>;
+}
+
+/** How long `/control/status` waits for a runway figure before leaving it out. */
+const STATUS_RUNWAY_TIMEOUT_MS = 2_000;
+
+async function runwayWithin(
+  count: (hostId: string) => Promise<number | null>,
+  hostId: string,
+): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), STATUS_RUNWAY_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([count(hostId).catch(() => null), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function hashToken(token: string): Buffer {
@@ -64,9 +87,18 @@ export function createControlApp(options: ControlAppOptions): Hono {
     await next();
   });
 
-  app.get('/control/status', (c) =>
-    c.json({ running: true, pid, port: options.port, hosts: listHosts(options.store) }),
-  );
+  // `runway` per host (MISN-01) once the daemon can compute it; the CLI's `status` prints it.
+  app.get('/control/status', async (c) => {
+    const { runwayCount } = options;
+    const hosts = await Promise.all(
+      listHosts(options.store).map(async (host) => {
+        if (runwayCount === undefined) return host;
+        const runway = await runwayWithin(runwayCount, host.id);
+        return runway === null ? host : { ...host, runway };
+      }),
+    );
+    return c.json({ running: true, pid, port: options.port, hosts });
+  });
 
   app.post('/control/hosts', async (c) => {
     let raw: unknown;
@@ -122,6 +154,9 @@ export function createControlApp(options: ControlAppOptions): Hono {
       hostId: parsed.data.hostId,
       family: parsed.data.family,
     });
+    // An approval landed: re-check that host now rather than at the next poll, so open consoles
+    // see the new runway within moments. The check itself recomputes everything from git.
+    if (parsed.data.family === 'approval') options.nudge?.(parsed.data.hostId);
     return c.json({ seq: event.seq }, 202);
   });
 

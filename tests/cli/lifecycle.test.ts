@@ -159,11 +159,12 @@ describe('counterpoint status, open and the sign-in link', () => {
     expect(lines[0]).toBe(`Counterpoint is running at http://127.0.0.1:${port}/`);
   });
 
-  it('status prints one line per host with its port', async () => {
+  it('status prints one line per host with its port and runway', async () => {
     const result = await cli(['status'], home, repo);
     expect(result.exitCode).toBe(0);
+    // Nothing is approved in this repository, so its runway is 0 (01-13).
     expect(result.stdout.trim()).toBe(
-      `${hostIdFromName(basename(repo))}  running on 127.0.0.1:${port}`,
+      `${hostIdFromName(basename(repo))}  running on 127.0.0.1:${port}  runway 0`,
     );
   });
 

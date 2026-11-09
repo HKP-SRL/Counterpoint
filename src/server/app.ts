@@ -10,7 +10,9 @@ import { hostGuard, mutationGuard, securityHeaders, sessionGuard } from '../core
 import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
 import type { EventBus } from '../core/store/events.ts';
+import { type ApprovalViews, createApprovalViews } from './approval-views.ts';
 import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
+import { mountApprovalRoutes } from './routes/approvals.ts';
 import { mountPhaseRoutes } from './routes/phases.ts';
 import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
@@ -33,6 +35,11 @@ export interface AppOptions {
   runtimes?: HostRuntimes;
   /** The Counterpoint home; the Trust API reads `hosts/{id}/doctor.json` from it when set. */
   home?: string;
+  /**
+   * Approval views (shared with the watcher and the control app); created from `home` when
+   * omitted. Without a home there are no approval routes and no approval overlay.
+   */
+  approvals?: ApprovalViews;
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -113,11 +120,16 @@ export function createApp(options: AppOptions): Hono {
     }),
   );
 
-  mountPhaseRoutes(app, {
-    runtimes: options.runtimes ?? createHostRuntimes({ store: options.store }),
-  });
+  const runtimes = options.runtimes ?? createHostRuntimes({ store: options.store });
+  const approvals =
+    options.approvals ??
+    (options.home === undefined ? undefined : createApprovalViews({ home: options.home }));
+  mountPhaseRoutes(app, { runtimes, ...(approvals === undefined ? {} : { approvals }) });
   if (options.home !== undefined) {
     mountTrustRoutes(app, { home: options.home, store: options.store });
+    if (approvals !== undefined) {
+      mountApprovalRoutes(app, { runtimes, home: options.home, approvals });
+    }
   }
 
   // Unknown API reads are JSON 404s, never the console page. GET only, so API routes added to the

@@ -2,7 +2,9 @@
 // E4): why the phase is or is not approvable (D-01), what setup it needs, its plans, and exactly
 // which inputs a signature would bind (D-02), all read at the base branch tip (D-03).
 //
-// The `Approve phase` button arrives with the approval flow (01-13) and is not rendered here.
+// `Approve phase` (01-13) is the page's one primary action, rendered only for Ready to approve; it
+// opens the approval dialog, which previews and hands over the terminal command (no signing in
+// the browser). Approval facts (signed at, commit) are the server's verification from git.
 // Every string comes from the host's planning files (untrusted) and renders as React text only.
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -14,11 +16,13 @@ import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList'
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
+import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
-import { type ReactNode, useEffect } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { ApiError, apiGet, queryKeys } from '../api';
+import { ApprovalDialog } from '../components/ApprovalDialog';
 import { StatusBadge } from '../components/StatusBadge';
 import { type PhaseRow, parsePhaseRow, plansText, setupItemText } from './PhasesPage';
 
@@ -290,9 +294,34 @@ function LoadingDetail() {
   );
 }
 
+function ApprovalFactsItems({ phase }: { phase: PhaseDetail }) {
+  const approval = phase.approval;
+  if (approval === null) return null;
+  if (approval.state === 'invalid') {
+    return (
+      <MetadataListItem label="Approval">
+        <Text>{`not verified (${approval.reason})`}</Text>
+      </MetadataListItem>
+    );
+  }
+  return (
+    <MetadataListItem label="Signed">
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Timestamp value={approval.signedAt} hasTooltip />
+        <Tooltip content={<Text type="code">{approval.commit}</Text>}>
+          <Text type="code" aria-label={`commit ${approval.commit}`}>
+            {approval.commit.slice(0, 7)}
+          </Text>
+        </Tooltip>
+      </HStack>
+    </MetadataListItem>
+  );
+}
+
 export function PhaseDetailPage({ hostId, phaseId }: { hostId: string; phaseId: string }) {
   const query = useQuery(phaseQuery(hostId, phaseId));
   const phase = query.data?.hostId === hostId && query.data.id === phaseId ? query.data : undefined;
+  const [approving, setApproving] = useState(false);
 
   useEffect(() => {
     document.title = `Phase ${phaseId} · Counterpoint`;
@@ -329,11 +358,16 @@ export function PhaseDetailPage({ hostId, phaseId }: { hostId: string; phaseId: 
         <Skeleton width={320} height={28} />
       )
     ) : (
-      <HStack gap={4} vAlign="center" wrap="wrap">
-        <Heading level={2} accessibilityLevel={1}>
-          {`Phase ${phase.id}: ${phase.name}`}
-        </Heading>
-        <StatusBadge status={phase.status} />
+      <HStack gap={4} vAlign="center" justify="between" wrap="wrap">
+        <HStack gap={4} vAlign="center" wrap="wrap">
+          <Heading level={2} accessibilityLevel={1}>
+            {`Phase ${phase.id}: ${phase.name}`}
+          </Heading>
+          <StatusBadge status={phase.status} />
+        </HStack>
+        {phase.status === 'ready' ? (
+          <Button label="Approve phase" variant="primary" onClick={() => setApproving(true)} />
+        ) : null}
       </HStack>
     );
 
@@ -365,6 +399,7 @@ export function PhaseDetailPage({ hostId, phaseId }: { hostId: string; phaseId: 
               </Tooltip>
             )}
           </MetadataListItem>
+          <ApprovalFactsItems phase={phase} />
         </MetadataList>
         {phase.plans.length === 0 ? (
           <Text>No plans yet</Text>
@@ -389,6 +424,20 @@ export function PhaseDetailPage({ hostId, phaseId }: { hostId: string; phaseId: 
           <VStack gap={6}>
             {errorBanner}
             {body}
+            {phase !== undefined ? (
+              // Mounted with the page, so it stays open after the phase leaves Ready (it just
+              // landed) and returns focus to `Approve phase` on close.
+              <ApprovalDialog
+                hostId={hostId}
+                hostName={phase.hostName}
+                phaseId={phase.id}
+                phaseName={phase.name}
+                isOpen={approving}
+                onOpenChange={setApproving}
+                currentTip={phase.tip}
+                approval={phase.approval}
+              />
+            ) : null}
           </VStack>
         </LayoutContent>
       }
