@@ -1,0 +1,34 @@
+# pnpm settings only (single-package repo, no workspace packages).
+overrides:
+  # Transitive via @astryxdesign/theme-neutral (^1.18.0). Held at the version reviewed in
+  # 01-UI-SPEC "Registry Safety"; a different version needs a fresh review before use.
+  lucide-react: 1.18.0
+
+# Dependency lifecycle scripts stay blocked. pnpm 12 fails an install with unreviewed build
+# scripts, so the one dependency that ships one is denied explicitly. @astryxdesign/core's
+# postinstall only prints an "astryx init" hint (reviewed in 01-UI-SPEC Registry Safety).
+allowBuilds:
+  "@astryxdesign/core": false
+
+# Written by pnpm: the owner-vetted exact pins vite 8.3.7 and @vitejs/plugin-react 6.3.0, and
+# vite's own bundler rolldown 1.2.18 (vite requires ~1.2.18), are younger than pnpm's default
+# minimumReleaseAge. Exact versions only, no wildcards.
+minimumReleaseAgeExclude:
+  - "@rolldown/binding-android-arm-eabi@1.2.18"
+  - "@rolldown/binding-android-arm64@1.2.18"
+  - "@rolldown/binding-darwin-arm64@1.2.18"
+  - "@rolldown/binding-darwin-x64@1.2.18"
+  - "@rolldown/binding-freebsd-x64@1.2.18"
+  - "@rolldown/binding-linux-arm-gnueabihf@1.2.18"
+  - "@rolldown/binding-linux-arm64-gnu@1.2.18"
+  - "@rolldown/binding-linux-arm64-musl@1.2.18"
+  - "@rolldown/binding-linux-ppc64-gnu@1.2.18"
+  - "@rolldown/binding-linux-s390x-gnu@1.2.18"
+  - "@rolldown/binding-linux-x64-gnu@1.2.18"
+  - "@rolldown/binding-linux-x64-musl@1.2.18"
+  - "@rolldown/binding-openharmony-arm64@1.2.18"
+  - "@rolldown/binding-win32-arm64-msvc@1.2.18"
+  - "@rolldown/binding-win32-x64-msvc@1.2.18"
+  - "@vitejs/plugin-react@6.3.0"
+  - rolldown@1.2.18
+  - vite@8.3.7
