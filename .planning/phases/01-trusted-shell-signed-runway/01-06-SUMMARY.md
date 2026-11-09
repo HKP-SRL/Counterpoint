@@ -231,7 +231,7 @@ See `key-decisions` in the frontmatter. The ones that matter most:
 
 | File | Line | Stub | Resolved by |
 |------|------|------|-------------|
-| src/adapters/gsd/index.ts | 103 | `approvalInputs` throws `PhaseNotFoundError` for every id (the plan specifies this) | 01-07 (approval-input rule and ROADMAP normalizer) |
+| src/adapters/gsd/index.ts | 99 | `approvalInputs` throws `PhaseNotFoundError` for every id (the plan specifies this) | 01-07 (approval-input rule and ROADMAP normalizer) |
 
 This stub does not block this plan's goal. `.planning/WINDOWS.md` does not exist, so nothing was added to the ledger.
 
