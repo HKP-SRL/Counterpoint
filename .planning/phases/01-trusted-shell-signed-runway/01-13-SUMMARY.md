@@ -282,3 +282,9 @@ None. A real approval on Cena stays the owner's manual step in 01-16.
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-09*
+
+## Self-Check: PASSED
+
+- All 6 created source/test files and this SUMMARY exist on disk; commits 1f0c837, b06ad9e, 6760cef and 1b8c872 are on this branch (`git rev-list --count 72e2bd9..HEAD` = 4 before the SUMMARY commit).
+- Acceptance criteria re-run, all PASS (approvals.ts literals, watcher computeRunway / runway, control nudge, dialog copy and purpose="info", Approve phase, On runway · signed, Mission copy and display-3, /usr/bin/script in the e2e).
+- Plan verification: `pnpm test` 692 passed / 1 skipped, `pnpm test:e2e` 31 passed, `pnpm typecheck` and `pnpm lint` exit 0, `pnpm build:ui` builds.
