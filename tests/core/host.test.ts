@@ -186,9 +186,9 @@ describe('sandbox-probe artifact names', () => {
 
 describe('resolveHome', () => {
   it('uses COUNTERPOINT_HOME when set', () => {
-    expect(resolveHome({ COUNTERPOINT_HOME: '/Volumes/Dock/cp-home', HOME: '/Users/x' }, 'darwin')).toBe(
-      '/Volumes/Dock/cp-home',
-    );
+    expect(
+      resolveHome({ COUNTERPOINT_HOME: '/Volumes/Dock/cp-home', HOME: '/Users/x' }, 'darwin'),
+    ).toBe('/Volumes/Dock/cp-home');
   });
 
   it('defaults to Application Support on macOS', () => {
@@ -379,7 +379,7 @@ describe('runGit', () => {
     const repo = await initScratchRepo(makeScratchDir('fs'));
     writeFileIn(repo, 'a.txt', 'one\n');
     await commitAll(repo);
-    const marker = join(repo, '..', `${basename(repo)}-fsmonitor-ran`);
+    const marker = join(makeScratchDir('mk'), 'fsmonitor-ran');
     const script = join(repo, '.git', 'fsmonitor-trap.sh');
     plantMarkerScript(script, marker);
     await gitIn(repo, ['config', 'core.fsmonitor', script]);
@@ -402,7 +402,7 @@ describe('runGit', () => {
   it('never runs a reference-transaction hook planted in the repo', async () => {
     const repo = await initScratchRepo(makeScratchDir('rt'));
     await commitAll(repo);
-    const marker = join(repo, '..', `${basename(repo)}-hook-ran`);
+    const marker = join(makeScratchDir('mk'), 'hook-ran');
     mkdirSync(join(repo, '.git', 'hooks'), { recursive: true });
     plantMarkerScript(join(repo, '.git', 'hooks', 'reference-transaction'), marker);
 
@@ -449,7 +449,9 @@ describe('runGit', () => {
   it('returns raw bytes with encoding buffer and passes stdin input', async () => {
     const repo = await initScratchRepo(makeScratchDir('bf'));
     const bytes = new Uint8Array([0x00, 0xff, 0x0a, 0x41]);
-    const oid = (await runGit(repo, ['hash-object', '-w', '--stdin'], { input: bytes })).stdout.trim();
+    const oid = (
+      await runGit(repo, ['hash-object', '-w', '--stdin'], { input: bytes })
+    ).stdout.trim();
     const blob = await runGit(repo, ['cat-file', 'blob', oid], { encoding: 'buffer' });
     expect(blob.stdout).toBeInstanceOf(Uint8Array);
     expect(Array.from(blob.stdout)).toEqual(Array.from(bytes));
@@ -457,10 +459,13 @@ describe('runGit', () => {
 
   it('throws GitError with the exit code and a stderr tail on failure', async () => {
     const repo = await initScratchRepo(makeScratchDir('er'));
-    const failure = runGit(repo, ['rev-parse', '--verify', 'refs/heads/does-not-exist']);
+    const failure = runGit(repo, ['rev-parse', 'does-not-exist']);
     await expect(failure).rejects.toBeInstanceOf(GitError);
     await expect(failure).rejects.toMatchObject({ exitCode: 128 });
-    const error = await failure.catch((caught: unknown) => caught as GitError);
+    const error = (await failure.then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )) as GitError;
     expect(error.stderrTail.length).toBeLessThanOrEqual(20);
     expect(error.stderrTail.join('\n')).toContain('does-not-exist');
   });
@@ -594,10 +599,11 @@ describe('registerHost', () => {
   });
 
   it('refuses a directory that is not inside a git repository', async () => {
-    const dir = makeScratchDir('ng');
-    await expect(registerHost(fakeStore(), { cwd: dir, detectFramework: detectGsd })).rejects.toThrow(
-      'is not inside a git repository',
-    );
+    // Scratch dirs sit inside this checkout, so use the filesystem root (read-only use).
+    const dir = '/';
+    await expect(
+      registerHost(fakeStore(), { cwd: dir, detectFramework: detectGsd }),
+    ).rejects.toThrow('is not inside a git repository');
   });
 
   it('stores whatever framework id the injected detector returns', async () => {
@@ -621,9 +627,9 @@ describe('registerHost', () => {
     async (bad) => {
       const repo = await repoWithBranch('ri', 'main');
       const store = fakeStore();
-      await expect(
-        registerHost(store, { cwd: repo, detectFramework: () => bad }),
-      ).rejects.toThrow(/framework id/i);
+      await expect(registerHost(store, { cwd: repo, detectFramework: () => bad })).rejects.toThrow(
+        /framework id/i,
+      );
       expect(store.hosts).toEqual([]);
     },
   );

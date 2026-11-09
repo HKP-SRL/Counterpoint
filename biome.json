@@ -13,7 +13,8 @@
       "!**/.tmp",
       "!**/tests/fixtures",
       "!**/.claude",
-      "!**/.planning"
+      "!**/.planning",
+      "!**/*.md"
     ]
   },
   "formatter": {
@@ -30,7 +31,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true
+      "preset": "recommended"
     }
   },
   "overrides": [
