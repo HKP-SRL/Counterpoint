@@ -33,6 +33,7 @@ import {
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
+import { doctorCommand } from './doctor.ts';
 import {
   initKeyCommand,
   type TrustCommandOptions,
@@ -447,6 +448,11 @@ async function trustHost(hostId: string): Promise<void> {
   exitWith(await trustHostCommand(home, hostId, terminalPrompt()));
 }
 
+async function doctor(hostId: string | undefined): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await doctorCommand(home, hostId));
+}
+
 async function daemon(options: { port?: number }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
@@ -485,6 +491,12 @@ export function buildProgram(): Command {
     .command('stop')
     .description('stop the background daemon')
     .action(() => stop());
+
+  program
+    .command('doctor')
+    .description('check tools, the approval key and the agent sandbox (live probe) for a project')
+    .argument('[host]', 'the registered project id (default: the project you are in)')
+    .action((hostId: string | undefined) => doctor(hostId));
 
   program
     .command('init-key')
