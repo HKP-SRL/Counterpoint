@@ -340,9 +340,10 @@ describe('detect', () => {
 });
 
 describe('approvalInputs', () => {
-  it('throws PhaseNotFoundError until the inputs rule lands (01-07)', async () => {
+  // The full D-02 rule is covered in inputs.test.ts; here only the adapter wiring.
+  it('throws PhaseNotFoundError for a phase the roadmap does not have', async () => {
     await expect(
-      adapter.approvalInputs(createGitFileReader(synthetic.root), synthetic.commit, '02'),
+      adapter.approvalInputs(createGitFileReader(synthetic.root), synthetic.commit, '09'),
     ).rejects.toBeInstanceOf(PhaseNotFoundError);
   });
 });

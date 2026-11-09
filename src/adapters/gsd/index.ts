@@ -8,20 +8,15 @@ import {
   formatPhaseId,
   type GitFileReader,
   type PhaseFacts,
-  PhaseNotFoundError,
   type PlanSnapshot,
-  parsePhaseNumber,
 } from '../../core/framework/port.ts';
 import { isPhaseId } from '../../core/ids.ts';
+import { approvalInputs } from './inputs.ts';
+import { listPhaseDirs, PLANNING_DIR, ROADMAP_NAME, ROADMAP_PATH } from './layout.ts';
 import { readPhaseDirectory } from './plans.ts';
 import { parseRoadmap } from './roadmap.ts';
 
 const ADAPTER_ID = 'gsd';
-const PLANNING_DIR = '.planning';
-const ROADMAP_NAME = 'ROADMAP.md';
-const ROADMAP_PATH = `${PLANNING_DIR}/${ROADMAP_NAME}`;
-const PHASES_DIR = `${PLANNING_DIR}/phases`;
-const PHASE_DIR_RE = /^(\d+(?:\.\d+)?)-(.+)$/;
 
 function oneLine(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -50,11 +45,7 @@ async function snapshot(reader: GitFileReader, commit: string): Promise<PlanSnap
     return empty({ file: ROADMAP_PATH, reason: oneLine(error) });
   }
 
-  const dirs = (await reader.list(commit, PHASES_DIR)).flatMap((entry) => {
-    const match = entry.type === 'tree' ? PHASE_DIR_RE.exec(entry.name) : null;
-    const number = match ? parsePhaseNumber(match[1] as string) : null;
-    return number ? [{ path: entry.path, number }] : [];
-  });
+  const dirs = await listPhaseDirs(reader, commit);
 
   const phases: PhaseFacts[] = [];
   const seen = new Set<string>();
@@ -95,9 +86,6 @@ export function createGsdAdapter(): FrameworkAdapter {
     id: ADAPTER_ID,
     detect,
     snapshot,
-    // The approval-input rule lands in 01-07; until then no phase has inputs.
-    approvalInputs: async (_reader, _commit, phaseId) => {
-      throw new PhaseNotFoundError(phaseId);
-    },
+    approvalInputs,
   };
 }
