@@ -27,7 +27,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 ### Approvals
 
 - [ ] **APPR-01**: Owner can approve a phase into the runway: the console prepares the approval and shows a one-line command; running it asks for the passphrase and creates a signed commit on the base branch adding `.counterpoint/approvals/<item>.json`, touching nothing else in the owner's checkout
-- [ ] **APPR-02**: A runway approval binds hashes of the phase spec, its signed-off draft and the gate config; if any changes afterwards, the item leaves the runway and shows in Needs You as "approved version changed"
+- [x] **APPR-02**: A runway approval binds hashes of the phase spec, its signed-off draft and the gate config; if any changes afterwards, the item leaves the runway and shows in Needs You as "approved version changed"
 - [ ] **APPR-03**: Owner can approve a finished feature for merge by signing a `--no-ff` merge commit of the exact PR head; before signing they see the summary including every assumption the builder proceeded on; Counterpoint then pushes and the PR shows as merged
 - [x] **APPR-04**: Signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment, against the owner's public key stored outside the repo; signing is refused if the host's `.git/config` or hooks changed unexpectedly
 - [ ] **APPR-05**: Nothing merges without a verified owner-signed merge commit; approval state is recomputed from git each time, never trusted from a stored flag
@@ -97,7 +97,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 
 ### Mission View
 
-- [ ] **MISN-01**: Runway — approved, ready-to-build work ahead of the builder — is the headline metric on the console
+- [x] **MISN-01**: Runway — approved, ready-to-build work ahead of the builder — is the headline metric on the console
 - [ ] **MISN-02**: One Needs You inbox collects council cards, parked items, seat conflicts, PRs awaiting signed merge, approved items whose content changed, and council backlog-filing summaries
 - [ ] **MISN-03**: Each work item shows its status (queued, running, waiting on owner, parked, gates failing, ready for approval, merged)
 - [ ] **MISN-04**: Beside runway, a few honest counters (e.g. first-attempt gate pass rate, items merged without intervention), each paired with a counter-metric so it can't reward a failure mode
@@ -178,7 +178,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ADPT-04 | Phase 5 | Pending |
 | ADPT-05 | Phase 2 | Pending |
 | APPR-01 | Phase 1 | Pending |
-| APPR-02 | Phase 1 | Pending |
+| APPR-02 | Phase 1 | Complete |
 | APPR-03 | Phase 3 | Pending |
 | APPR-04 | Phase 1 | Complete |
 | APPR-05 | Phase 3 | Pending |
@@ -227,7 +227,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CARD-05 | Phase 5 | Pending |
 | CARD-06 | Phase 5 | Pending |
 | CARD-07 | Phase 5 | Pending |
-| MISN-01 | Phase 1 | Pending |
+| MISN-01 | Phase 1 | Complete |
 | MISN-02 | Phase 1 (partial: the inbox and "approved items whose content changed"); parked items Phase 2 (BUILD-08); PRs awaiting signed merge Phase 3 (APPR-03); council cards Phase 5; backlog-filing summaries Phase 6 (CNCL-09); seat conflicts unassigned (open roadmap gap) | Pending |
 | MISN-03 | Phase 3 | Pending |
 | MISN-04 | Phase 3 | Pending |
