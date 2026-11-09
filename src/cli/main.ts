@@ -32,6 +32,7 @@ import {
   SocketPathTooLongError,
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
+import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { doctorCommand } from './doctor.ts';
 import {
@@ -453,6 +454,18 @@ async function doctor(hostId: string | undefined): Promise<void> {
   exitWith(await doctorCommand(home, hostId));
 }
 
+async function approve(hostId: string, phaseId: string): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(
+    await approveCommand({
+      home,
+      hostId,
+      phaseId,
+      isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    }),
+  );
+}
+
 async function daemon(options: { port?: number }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
@@ -514,6 +527,15 @@ export function buildProgram(): Command {
     .description("review a project's .git config and hooks and accept them as the baseline")
     .argument('<host>', 'the registered project id')
     .action((hostId: string) => trustHost(hostId));
+
+  program
+    .command('approve')
+    .description(
+      'sign a planned phase into the runway with your approval key (asks for its passphrase)',
+    )
+    .argument('<host>', 'the registered project id')
+    .argument('<phase>', 'the phase id, for example 02 or 01.1')
+    .action((hostId: string, phaseId: string) => approve(hostId, phaseId));
 
   program
     .command('__daemon', { hidden: true })
