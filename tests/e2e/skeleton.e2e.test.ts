@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { type Browser, chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { hostIdFromName } from '../../src/core/ids.ts';
 import {
   commitAll,
   initScratchRepo,
@@ -52,10 +53,30 @@ async function cli(args: readonly string[], home: string, cwd: string): Promise<
   };
 }
 
-function httpGet(port: number, path: string, hostHeader: string): Promise<number> {
+const LINK_RE =
+  /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:\d+\/login\?code=[A-Za-z0-9_-]{43})$/m;
+
+function signInLink(stdout: string): string {
+  const link = LINK_RE.exec(stdout)?.[1];
+  if (link === undefined) throw new Error(`no sign-in link in: ${stdout}`);
+  return link;
+}
+
+/** Follows a one-time sign-in link without a browser and returns the `cp_session=…` pair. */
+async function sessionCookie(link: string): Promise<string> {
+  const res = await fetch(link, { redirect: 'manual' });
+  expect(res.status).toBe(302);
+  const pair = (res.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+  expect(pair).toMatch(/^cp_session=/);
+  return pair;
+}
+
+function httpGet(port: number, path: string, hostHeader: string, cookie?: string): Promise<number> {
   return new Promise((resolvePromise, reject) => {
+    const headers: Record<string, string> = { host: hostHeader };
+    if (cookie !== undefined) headers.cookie = cookie;
     const req = request(
-      { host: '127.0.0.1', port, path, method: 'GET', agent: false, headers: { host: hostHeader } },
+      { host: '127.0.0.1', port, path, method: 'GET', agent: false, headers },
       (res) => {
         res.resume();
         res.on('end', () => resolvePromise(res.statusCode ?? 0));
@@ -84,6 +105,7 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
   let otherHome: string;
   let repo: string;
   let port = 0;
+  let cookie = '';
   let browser: Browser | undefined;
 
   beforeAll(async () => {
@@ -112,7 +134,10 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
     port = Number(match?.[1]);
     expect(port).toBeGreaterThan(0);
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/hosts`);
+    // The console API needs a session: sign in through the printed one-time link first.
+    expect((await fetch(`http://127.0.0.1:${port}/api/hosts`)).status).toBe(401);
+    cookie = await sessionCookie(signInLink(result.stdout));
+    const res = await fetch(`http://127.0.0.1:${port}/api/hosts`, { headers: { cookie } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { hosts: { id: string; name: string; root: string }[] };
     expect(body.hosts).toHaveLength(1);
@@ -121,15 +146,18 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
   });
 
   it('serves the Astryx console, which shows the registered host', async () => {
+    const opened = await cli(['open', '--no-open'], home, repo);
+    expect(opened.exitCode).toBe(0);
     browser = await chromium.launch({ executablePath: CHROME, headless: true });
     const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.goto(signInLink(opened.stdout));
+    expect(new URL(page.url()).pathname).toBe(`/h/${hostIdFromName(basename(repo))}`);
     await page.getByText(basename(repo), { exact: true }).waitFor({ timeout: 15_000 });
     expect(await page.getByRole('heading', { name: 'Repositories' }).count()).toBe(1);
   });
 
   it('answers 403 to a Host header other than 127.0.0.1:{port}', async () => {
-    expect(await httpGet(port, '/api/hosts', `127.0.0.1:${port}`)).toBe(200);
+    expect(await httpGet(port, '/api/hosts', `127.0.0.1:${port}`, cookie)).toBe(200);
     expect(await httpGet(port, '/api/hosts', `localhost:${port}`)).toBe(403);
     expect(await httpGet(port, '/', `evil.example:${port}`)).toBe(403);
   });

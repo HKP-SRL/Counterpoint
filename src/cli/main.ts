@@ -1,11 +1,24 @@
 // The `counterpoint` command. The default action starts (or attaches to) the one background
-// daemon and registers the current repository; `stop` stops the daemon. The CLI re-enters itself
-// as the daemon through the hidden `__daemon` command, so the daemon runs the same code.
+// daemon, registers the current repository and prints a one-time sign-in link; `open` prints a
+// fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon. The CLI
+// re-enters itself as the daemon through the hidden `__daemon` command, so the daemon runs the
+// same code.
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Command, InvalidArgumentError } from 'commander';
+import { execa } from 'execa';
 import { runGit } from '../core/git/run.ts';
 import {
   ConfigError,
@@ -14,6 +27,7 @@ import {
   homePaths,
   readConfig,
   requireHome,
+  resolveHome,
   SocketPathTooLongError,
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
@@ -31,6 +45,9 @@ const DAEMON_ENV_ALLOW_LIST = ['PATH', 'HOME', 'LANG', 'TMPDIR', 'COUNTERPOINT_H
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const consoleUrl = (port: number) => `http://127.0.0.1:${port}/`;
+
+/** The only shape of sign-in link the CLI prints or hands to a browser opener. */
+const LOGIN_URL_RE = /^http:\/\/127\.0\.0\.1:\d{1,5}\/login\?code=[A-Za-z0-9_-]{43}$/;
 
 class CliExit extends Error {
   readonly code: number;
@@ -168,6 +185,7 @@ async function start(options: StartOptions): Promise<void> {
   if (running !== null) {
     console.log(`Counterpoint is already running at ${consoleUrl(running.port)}`);
     const refusal = await registerCwd(home, options.base);
+    await printSignInLink(home, options.open);
     if (refusal !== null) throw new CliExit(1, refusal);
     return;
   }
@@ -207,8 +225,112 @@ async function start(options: StartOptions): Promise<void> {
 
   const refusal = await registerCwd(home, options.base);
   console.log(`Counterpoint is running at ${consoleUrl(status.port)}`);
-  // Sign-in link and opening the browser (options.open) arrive with the sign-in flow.
+  await printSignInLink(home, options.open);
   if (refusal !== null) throw new CliExit(1, refusal);
+}
+
+/** Asks the daemon (over the token-protected socket) for a fresh one-time sign-in link. */
+async function mintSignInLink(home: string): Promise<string> {
+  const res = await controlRequest(home, 'POST', '/control/login-code');
+  const url = (res.body as { url?: unknown } | null)?.url;
+  if (res.status !== 200 || typeof url !== 'string' || !LOGIN_URL_RE.test(url)) {
+    throw new CliExit(1, "Counterpoint's daemon didn't return a sign-in link.");
+  }
+  return url;
+}
+
+/** Opens a validated sign-in link in the default browser (argument array, never a shell). */
+async function openInBrowser(url: string): Promise<void> {
+  const opener =
+    process.platform === 'darwin'
+      ? '/usr/bin/open'
+      : process.platform === 'linux'
+        ? 'xdg-open'
+        : undefined;
+  if (opener === undefined || !LOGIN_URL_RE.test(url)) return;
+  const result = await execa(opener, [url], { stdio: 'ignore', reject: false, timeout: 10_000 });
+  if (result.exitCode !== 0) {
+    console.error("Couldn't open a browser. Open the sign-in link above yourself.");
+  }
+}
+
+async function printSignInLink(home: string, open: boolean): Promise<void> {
+  const url = await mintSignInLink(home);
+  console.log(`Sign-in link (works once): ${url}`);
+  if (open) await openInBrowser(url);
+}
+
+async function openCommand(options: { open: boolean }): Promise<void> {
+  const { home } = homeOrExit();
+  if ((await isDaemonRunning(home)) === null) {
+    throw new CliExit(1, 'Counterpoint is not running. Start it with "counterpoint".');
+  }
+  await printSignInLink(home, options.open);
+}
+
+interface StatusHost {
+  id: string;
+  runway?: unknown;
+  needsYou?: unknown;
+}
+
+function isStatusHost(value: unknown): value is StatusHost {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === 'string'
+  );
+}
+
+/** `{host}  running on 127.0.0.1:{port}` per host; runway and needs-you once the daemon has them. */
+async function status(): Promise<void> {
+  const { home } = homeOrExit();
+  const running = await isDaemonRunning(home);
+  if (running === null) {
+    console.log('not running');
+    return;
+  }
+  const hosts = running.hosts.filter(isStatusHost);
+  if (hosts.length === 0) {
+    console.log(`running on 127.0.0.1:${running.port}, no repositories registered yet`);
+    return;
+  }
+  for (const host of hosts) {
+    let line = `${host.id}  running on 127.0.0.1:${running.port}`;
+    if (typeof host.runway === 'number') line += `  runway ${host.runway}`;
+    if (typeof host.needsYou === 'number') line += `  needs you ${host.needsYou}`;
+    console.log(line);
+  }
+}
+
+/** Creates the home (only the final directory, mode 0700). Its parent must already exist (D-08). */
+function init(): void {
+  const home = resolveHome();
+  try {
+    homePaths(home);
+  } catch (error) {
+    if (error instanceof SocketPathTooLongError) throw new CliExit(2, error.message);
+    throw error;
+  }
+  const existing = statSync(home, { throwIfNoEntry: false });
+  if (existing !== undefined) {
+    if (!existing.isDirectory()) {
+      throw new CliExit(2, `"${home}" exists and is not a folder. Nothing was created.`);
+    }
+    console.log(`Counterpoint home is ready at "${home}".`);
+    return;
+  }
+  const parent = dirname(home);
+  if (statSync(parent, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    throw new CliExit(2, `The parent folder "${parent}" does not exist. Nothing was created.`);
+  }
+  try {
+    mkdirSync(home, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  chmodSync(home, 0o700);
+  console.log(`Created the Counterpoint home at "${home}".`);
 }
 
 function pidFromDaemonJson(paths: HomePaths): { pid?: number; port?: number } {
@@ -305,6 +427,22 @@ export function buildProgram(): Command {
     .option('--base <branch>', "this repository's base branch (default: detected)")
     .option('--no-open', "don't open the console in a browser")
     .action((options: StartOptions) => start(options));
+
+  program
+    .command('open')
+    .description('print (and open) a fresh one-time sign-in link for the console')
+    .option('--no-open', "print the link but don't open a browser")
+    .action((options: { open: boolean }) => openCommand(options));
+
+  program
+    .command('status')
+    .description('show whether the daemon runs and which repositories it serves')
+    .action(() => status());
+
+  program
+    .command('init')
+    .description('create the Counterpoint home folder (its parent folder must exist)')
+    .action(() => init());
 
   program
     .command('stop')

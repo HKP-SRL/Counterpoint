@@ -22,7 +22,10 @@ import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { detectFramework } from '../compose.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
+import { hostCheckedServer } from '../core/security/guard.ts';
+import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
+import { EventBus } from '../core/store/events.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createControlApp, hashToken } from './control.ts';
 
@@ -162,6 +165,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
+  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes.
+  clearAllSessions(store);
+  deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no
   // request can arrive before `listening`.
@@ -173,6 +179,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     port: options.port,
     hostname: '127.0.0.1',
+    // Every wrong Host is a 403 even before the adapter parses the request.
+    createServer: hostCheckedServer,
   }) as Server;
 
   // serve() has already called listen(); wait for the outcome.
@@ -206,7 +214,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.exit(1);
   });
 
-  app = createApp({ store, port: bound, uiDir: resolveUiDir() });
+  // One bus: the control socket publishes, the console's SSE streams listen.
+  const bus = new EventBus();
+  app = createApp({ store, port: bound, uiDir: resolveUiDir(), bus });
 
   let stopping = false;
   let control: Server | undefined;
@@ -226,6 +236,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const controlApp = createControlApp({
     store,
+    bus,
     tokenHash,
     port: bound,
     onStop: () => void stop('control'),
