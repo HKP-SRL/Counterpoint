@@ -1,7 +1,14 @@
 // Unit tests for the differential sandbox probe (01-04 Task 2): the step plan, the
 // mirror-confined control session, the launch builder, the stale-artifact sweep and the probe
 // lifecycle with a fake runner. No `claude` is started here.
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -301,7 +308,11 @@ describe('planProbe', () => {
 
   it('rejects a malformed nonce', () => {
     expect(() =>
-      planProbe({ protectedPaths: paths, nonce: 'XYZ', mirrorRoot: join(probeDir, 'cp-mirror-XYZ') }),
+      planProbe({
+        protectedPaths: paths,
+        nonce: 'XYZ',
+        mirrorRoot: join(probeDir, 'cp-mirror-XYZ'),
+      }),
     ).toThrow(/nonce/);
   });
 
@@ -317,7 +328,11 @@ describe('planProbe', () => {
     ['inside the Counterpoint home', () => join(paths.counterpointHome, `cp-mirror-${NONCE}`)],
   ])('rejects a mirror root %s', (_name, mirror) => {
     expect(() =>
-      planProbe({ protectedPaths: { ...paths, workdir: undefined }, nonce: NONCE, mirrorRoot: mirror() }),
+      planProbe({
+        protectedPaths: { ...paths, workdir: undefined },
+        nonce: NONCE,
+        mirrorRoot: mirror(),
+      }),
     ).toThrow(/protected/);
   });
 
@@ -395,7 +410,10 @@ describe('buildControlSettings', () => {
   it('refuses a treatment whose sandbox is off', () => {
     const treatment = buildAgentSandboxSettings(paths).settings;
     expect(() =>
-      buildControlSettings({ ...treatment, sandbox: { ...treatment.sandbox, enabled: false } }, plan()),
+      buildControlSettings(
+        { ...treatment, sandbox: { ...treatment.sandbox, enabled: false } },
+        plan(),
+      ),
     ).toThrow(/sandbox/);
   });
 });
@@ -416,10 +434,16 @@ describe('buildProbeLaunch', () => {
     expect(valuesAfter(l.treatment.argv, '--settings')[0]).toBe(JSON.stringify(treatment));
   });
 
-  it('gives the control Bash only and its own settings', () => {
+  it('gives the control Bash plus mirror-scoped Grep only, and its own settings', () => {
     const p = plan();
     const l = launch(buildAgentSandboxSettings(paths).settings, p);
-    expect(valuesAfter(l.control.argv, '--allowedTools')).toEqual(['Bash']);
+    expect(valuesAfter(l.control.argv, '--allowedTools')).toEqual([
+      'Bash',
+      `Grep(/${mirrorRoot}/**)`,
+    ]);
+    for (const tool of ['Read', 'Write', 'Edit', 'Grep', 'Glob']) {
+      expect(valuesAfter(l.control.argv, '--allowedTools')).not.toContain(tool);
+    }
     expect(l.control.argv[l.control.argv.indexOf('--settings') + 1]).toBe(
       JSON.stringify(l.control.settings),
     );
@@ -450,7 +474,8 @@ describe('sweepStaleArtifacts', () => {
     const base = makeScratchDir('sweep');
     const ssh = join(base, '.ssh');
     const git = join(base, 'repo.git');
-    for (const dir of [ssh, join(git, 'hooks'), join(git, 'info')]) mkdirSync(dir, { recursive: true });
+    for (const dir of [ssh, join(git, 'hooks'), join(git, 'info')])
+      mkdirSync(dir, { recursive: true });
     const stale = [
       join(ssh, `.cp-canary-${NONCE}`),
       join(git, 'hooks', `cp-${NONCE}`),
@@ -495,7 +520,9 @@ describe('runSandboxProbe (fake runner)', () => {
       this.seen[`${session}:ssh-canary`] =
         nonce !== undefined && existsSync(join(paths.homeDir, '.ssh', `.cp-canary-${nonce}`));
       this.seen[`${session}:prompt`] = prompt.length > 0;
-      writeFileSync(request.rawLogPath, `{"type":"result","session":"${session}"}\n`, { flag: 'a' });
+      writeFileSync(request.rawLogPath, `{"type":"result","session":"${session}"}\n`, {
+        flag: 'a',
+      });
       return {
         events: [{ type: 'result', subtype: 'success' }],
         raw: `{"type":"result","subtype":"success"}\n`,

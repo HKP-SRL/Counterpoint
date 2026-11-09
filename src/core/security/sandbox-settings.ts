@@ -99,8 +99,8 @@ export function rulePath(absolutePath: string): string {
   return `/${absolutePath}`;
 }
 
-/** `Read(//abs/**)` or `Edit(//abs/**)`. */
-export function pathRule(tool: 'Read' | 'Edit', absoluteDir: string): string {
+/** `Read(//abs/**)`, `Edit(//abs/**)` or `Grep(//abs/**)`. */
+export function pathRule(tool: 'Read' | 'Edit' | 'Grep', absoluteDir: string): string {
   return `${tool}(${rulePath(absoluteDir)}/**)`;
 }
 
