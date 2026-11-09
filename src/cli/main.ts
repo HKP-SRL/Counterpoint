@@ -15,6 +15,7 @@ import {
   statSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Command, InvalidArgumentError } from 'commander';
@@ -32,6 +33,13 @@ import {
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
+import { doctorCommand } from './doctor.ts';
+import {
+  initKeyCommand,
+  type TrustCommandOptions,
+  trustHostCommand,
+  trustKeyCommand,
+} from './trust.ts';
 
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 10_000;
@@ -410,6 +418,41 @@ async function stop(): Promise<void> {
   );
 }
 
+/** Owner confirmation at the terminal: both stdin and stdout must be a TTY. */
+function terminalPrompt(): TrustCommandOptions {
+  return {
+    isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    confirm: async (question) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await rl.question(question);
+      } finally {
+        rl.close();
+      }
+    },
+  };
+}
+
+/** Turns a command's exit code into the CLI's exit (0 returns normally). */
+function exitWith(code: number): void {
+  if (code !== 0) throw new CliExit(code);
+}
+
+async function trustKey(pub: string): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await trustKeyCommand(home, pub, terminalPrompt()));
+}
+
+async function trustHost(hostId: string): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await trustHostCommand(home, hostId, terminalPrompt()));
+}
+
+async function doctor(hostId: string | undefined): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await doctorCommand(home, hostId));
+}
+
 async function daemon(options: { port?: number }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
@@ -448,6 +491,29 @@ export function buildProgram(): Command {
     .command('stop')
     .description('stop the background daemon')
     .action(() => stop());
+
+  program
+    .command('doctor')
+    .description('check tools, the approval key and the agent sandbox (live probe) for a project')
+    .argument('[host]', 'the registered project id (default: the project you are in)')
+    .action((hostId: string | undefined) => doctor(hostId));
+
+  program
+    .command('init-key')
+    .description('print how to create the dedicated, passphrase-protected approval key')
+    .action(() => initKeyCommand());
+
+  program
+    .command('trust-key')
+    .description('trust a public key for signing approvals (asks you to confirm)')
+    .argument('<pub>', 'the public key file, for example ~/.ssh/counterpoint_approval.pub')
+    .action((pub: string) => trustKey(pub));
+
+  program
+    .command('trust')
+    .description("review a project's .git config and hooks and accept them as the baseline")
+    .argument('<host>', 'the registered project id')
+    .action((hostId: string) => trustHost(hostId));
 
   program
     .command('__daemon', { hidden: true })
