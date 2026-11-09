@@ -220,7 +220,14 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
-  app = createApp({ store, port: bound, uiDir: resolveUiDir(), bus, runtimes });
+  app = createApp({
+    store,
+    port: bound,
+    uiDir: resolveUiDir(),
+    bus,
+    runtimes,
+    home: options.home,
+  });
 
   let stopping = false;
   let control: Server | undefined;

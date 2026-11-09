@@ -38,5 +38,7 @@ export function isPhaseStatus(value: unknown): value is PhaseStatus {
 
 export function StatusBadge({ status }: { status: PhaseStatus }) {
   const look = PHASE_STATUS[status];
-  return <Badge variant={look.variant} label={look.label} icon={<Icon icon={look.icon} />} />;
+  return (
+    <Badge variant={look.variant} label={look.label} icon={<Icon icon={look.icon} size="xsm" />} />
+  );
 }

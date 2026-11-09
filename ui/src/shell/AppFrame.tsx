@@ -1,6 +1,6 @@
 // The console chrome (UI-SPEC "AppShell chrome"): TopNav with the wordmark, host switcher,
 // live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves the
-// SideNav into its mobile drawer. Later plans add Needs You and Trust to the SideNav.
+// SideNav into its mobile drawer. Needs You (01-15) goes between Phases and Trust.
 // The frame owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AppShell } from '@astryxdesign/core/AppShell';
@@ -102,6 +102,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const missionPath = `/h/${hostId}`;
   const phasesPath = `${missionPath}/phases`;
   const onPhases = pathname === phasesPath || pathname.startsWith(`${phasesPath}/`);
+  const trustPath = `${missionPath}/trust`;
   const queryClient = useQueryClient();
   useLiveEvents(queryClient);
   const connected = useConnectionState() === 'connected';
@@ -135,6 +136,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
             isSelected={pathname === missionPath || pathname === `${missionPath}/`}
           />
           <SideNavItem label="Phases" href={phasesPath} isSelected={onPhases} />
+          <SideNavItem label="Trust" href={trustPath} isSelected={pathname === trustPath} />
         </SideNav>
       }
     >

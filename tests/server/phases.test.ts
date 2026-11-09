@@ -1,8 +1,9 @@
 // The phases API (ADPT-01, D-01, D-02, D-03): per-host runtimes read the GSD snapshot at the base
 // branch tip through compose.ts, core derives status and prerequisites, and the base-tip watcher
-// pushes a `phase` event within seconds of a commit to the base branch.
+// pushes a `phase` event within seconds of a commit to the base branch. Also the read-only doctor
+// report route behind the Trust page (T-01-40).
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectFramework } from '../../src/compose.ts';
@@ -76,9 +77,10 @@ let runtimes: HostRuntimes;
 let hostId = '';
 let cookie = '';
 let uiDir = '';
+let home = '';
 
 function app() {
-  return createApp({ store: db, port: PORT, uiDir, bus, runtimes });
+  return createApp({ store: db, port: PORT, uiDir, bus, runtimes, home });
 }
 
 async function get(path: string, withCookie = true): Promise<Response> {
@@ -97,7 +99,8 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<void> {
 
 beforeAll(async () => {
   repo = await materializeFixtureRepo('synthetic');
-  db = openStore(makeScratchDir('phases-home'));
+  home = makeScratchDir('phases-home');
+  db = openStore(home);
   bus = new EventBus();
   uiDir = makeScratchDir('ui');
   writeFileIn(uiDir, 'index.html', '<!doctype html><title>Counterpoint</title>');
@@ -290,5 +293,98 @@ describe('base-tip watcher', () => {
       watcher.stop();
       unsubscribe();
     }
+  });
+
+  it('pushes a phase event when the base branch moved before the watcher first looked at the host', async () => {
+    // The console is served a snapshot, then the base branch moves before any watcher poll.
+    const served = (await (await get(`/api/hosts/${hostId}/phases`)).json()) as PhasesBody;
+    const tip = await commitChange(repo.root, CONTEXT_02, '# Phase 02 context, third take\n');
+    expect(tip).not.toBe(served.tip);
+
+    const events: StoredEvent[] = [];
+    const unsubscribe = bus.subscribe((event) => events.push(event));
+    const watcher = startWatcher({ runtimes, db, bus, intervalMs: 100 });
+    try {
+      await waitFor(
+        () => events.some((event) => event.family === 'phase' && event.payload.tip === tip),
+        3000,
+      );
+    } finally {
+      watcher.stop();
+      unsubscribe();
+    }
+  });
+});
+
+describe('GET /api/hosts/:hostId/doctor', () => {
+  const PROBE_IDS = ['signing-key', 'ssh', 'gh', 'state', 'git-config', 'git-hooks', 'git-info'];
+  const reportFile = () => join(home, 'hosts', hostId, 'doctor.json');
+  const report = (overrides: Record<string, unknown> = {}) => {
+    const check = (id: string) => ({ id, label: id, result: 'pass', detail: 'ok' });
+    return {
+      schema: 'counterpoint/doctor/v1',
+      hostId,
+      checkedAt: new Date().toISOString(),
+      claudeVersion: '2.1.0',
+      matcherVersion: '1',
+      tools: [check('claude'), check('git'), check('gh')],
+      signingKey: [check('passphrase')],
+      integrity: check('integrity'),
+      probe: PROBE_IDS.map((id, index) => ({
+        id,
+        label: id,
+        mode: 'read',
+        result: overrides.reachableIndex === index ? 'reachable' : 'blocked',
+        evidence: 'probe',
+      })),
+      ...(overrides.checkedAt === undefined ? {} : { checkedAt: overrides.checkedAt }),
+      ...(overrides.hostId === undefined ? {} : { hostId: overrides.hostId }),
+    };
+  };
+  const write = (value: unknown) => {
+    mkdirSync(join(home, 'hosts', hostId), { recursive: true });
+    rmSync(reportFile(), { force: true });
+    writeFileSync(reportFile(), JSON.stringify(value));
+  };
+  const doctor = async () => {
+    const res = await get(`/api/hosts/${hostId}/doctor`);
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+
+  it('answers report null before doctor has run', async () => {
+    rmSync(reportFile(), { force: true });
+    expect(await doctor()).toEqual({ status: 200, body: { report: null } });
+  });
+
+  it('returns a valid report with its verdict and staleness', async () => {
+    write(report());
+    const fresh = await doctor();
+    expect(fresh.body.verdict).toBe('pass');
+    expect(fresh.body.stale).toBe(false);
+
+    write(report({ checkedAt: new Date(Date.now() - 25 * 3_600_000).toISOString() }));
+    expect((await doctor()).body.stale).toBe(true);
+
+    write(report({ reachableIndex: 1 }));
+    expect((await doctor()).body.verdict).toBe('fail');
+  });
+
+  it('refuses a symlinked, malformed or other-host report as unreadable, never as a verdict', async () => {
+    const elsewhere = join(makeScratchDir('elsewhere'), 'doctor.json');
+    writeFileSync(elsewhere, JSON.stringify(report()));
+    rmSync(reportFile(), { force: true });
+    symlinkSync(elsewhere, reportFile());
+    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
+
+    write('not a report');
+    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
+
+    write(report({ hostId: 'some-other-host' }));
+    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
+  });
+
+  it('answers 400 for a malformed host id and 404 for an unknown host', async () => {
+    expect((await get('/api/hosts/Bad_Host/doctor')).status).toBe(400);
+    expect((await get('/api/hosts/no-such-host/doctor')).status).toBe(404);
   });
 });

@@ -285,20 +285,29 @@ export function PhasesPage({ hostId }: { hostId: string }) {
       />
     );
   } else {
+    // The source line also keeps the Table off the top edge of the content area, where Astryx's
+    // edge compensation would pull its header row under the page header.
     body = (
-      <Table<PhaseRow>
-        data={visible}
-        columns={columns}
-        idKey="id"
-        hasHover
-        plugins={{ rowLink }}
-        emptyState={
-          <VStack gap={2} hAlign="center" padding={6}>
-            <Text>No phases match this filter</Text>
-            <Link onClick={() => setFilter('all')}>Show all phases</Link>
-          </VStack>
-        }
-      />
+      <VStack gap={4}>
+        <Text type="supporting" color="secondary">
+          {data.tip === null
+            ? `Read from ${hostName}'s .planning/ROADMAP.md.`
+            : `Read from ${data.baseBranch} at ${data.tip.slice(0, 7)} (committed content only).`}
+        </Text>
+        <Table<PhaseRow>
+          data={visible}
+          columns={columns}
+          idKey="id"
+          hasHover
+          plugins={{ rowLink }}
+          emptyState={
+            <VStack gap={2} hAlign="center" padding={6}>
+              <Text>No phases match this filter</Text>
+              <Link onClick={() => setFilter('all')}>Show all phases</Link>
+            </VStack>
+          }
+        />
+      </VStack>
     );
   }
 

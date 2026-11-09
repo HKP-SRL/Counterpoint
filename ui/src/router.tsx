@@ -2,6 +2,7 @@
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
 //   /h/$hostId/phases[/$phaseId] → Phases and Phase detail
+//   /h/$hostId/trust → Trust (the last doctor report)
 //   /signed-out      → signed-out, used-link and blocked screens, without AppShell
 // Host ids from the address bar are checked against the slug rule and against GET /api/hosts
 // before use; an unknown id goes back to `/`.
@@ -22,6 +23,7 @@ import { MissionPage } from './pages/MissionPage';
 import { PhaseDetailPage } from './pages/PhaseDetailPage';
 import { PhasesPage } from './pages/PhasesPage';
 import { SignedOutPage } from './pages/SignedOutPage';
+import { TrustPage } from './pages/TrustPage';
 import { AppFrame } from './shell/AppFrame';
 
 /** Host ids: lowercase slug, 1-32 characters, never starting with a dash (src/core/ids.ts). */
@@ -150,6 +152,17 @@ function PhaseRoute() {
   return <PhaseDetailPage key={`${hostId}/${phaseId}`} hostId={hostId} phaseId={phaseId} />;
 }
 
+const trustRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/trust',
+  component: TrustRoute,
+});
+
+function TrustRoute() {
+  const { hostId } = hostRoute.useParams();
+  return <TrustPage hostId={hostId} />;
+}
+
 const signedOutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/signed-out',
@@ -166,7 +179,7 @@ function SignedOutRoute() {
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  hostRoute.addChildren([missionRoute, phasesRoute, phaseRoute]),
+  hostRoute.addChildren([missionRoute, phasesRoute, phaseRoute, trustRoute]),
   signedOutRoute,
 ]);
 
