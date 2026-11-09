@@ -12,6 +12,7 @@ import { APPROVALS_DIR } from '../core/approvals/statement.ts';
 import { readTrust, type Trust } from '../core/approvals/trust-store.ts';
 import { homePaths } from '../core/host/home.ts';
 import { approvalItemId, isPhaseId } from '../core/ids.ts';
+import type { ChangedApproval, NeedsYouItem } from '../core/runway/needs-you.ts';
 import {
   type ApprovalState,
   approvalState,
@@ -33,6 +34,14 @@ export interface ApprovalViews {
   state(runtime: HostRuntime, phaseId: string): Promise<ApprovalState>;
   /** The runway at the current base tip. */
   runway(runtime: HostRuntime): Promise<Runway>;
+  /** The Needs You items at the current base tip. */
+  needsYou(runtime: HostRuntime): Promise<NeedsYouSnapshot>;
+}
+
+export interface NeedsYouSnapshot {
+  tip: string | null;
+  items: NeedsYouItem[];
+  changed: ChangedApproval[];
 }
 
 function emptyRunway(tip: string | null): Runway {
@@ -154,6 +163,10 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
       if (opts === null) return emptyRunway(tip);
       const cacheKey = `${runtime.host.id}:${tip}:runway:${key?.fingerprint ?? 'none'}`;
       return cached(cacheKey, runtime, tip, () => computeRunway(opts));
+    },
+
+    async needsYou(_runtime) {
+      return { tip: null, items: [], changed: [] };
     },
   };
 }

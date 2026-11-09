@@ -13,6 +13,7 @@ import type { EventBus } from '../core/store/events.ts';
 import { type ApprovalViews, createApprovalViews } from './approval-views.ts';
 import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
 import { mountApprovalRoutes } from './routes/approvals.ts';
+import { mountNeedsYouRoutes } from './routes/needs-you.ts';
 import { mountPhaseRoutes } from './routes/phases.ts';
 import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
@@ -129,6 +130,7 @@ export function createApp(options: AppOptions): Hono {
     mountTrustRoutes(app, { home: options.home, store: options.store });
     if (approvals !== undefined) {
       mountApprovalRoutes(app, { runtimes, home: options.home, approvals });
+      mountNeedsYouRoutes(app, { runtimes, home: options.home, approvals });
     }
   }
 

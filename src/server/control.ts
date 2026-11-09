@@ -33,6 +33,8 @@ export interface ControlAppOptions {
   nudge?: (hostId: string) => void;
   /** The host's runway count recomputed from git, or null when unknown. */
   runwayCount?: (hostId: string) => Promise<number | null>;
+  /** The host's Needs You item count recomputed from git, or null when unknown. */
+  needsYouCount?: (hostId: string) => Promise<number | null>;
 }
 
 /** How long `/control/status` waits for a runway figure before leaving it out. */
