@@ -4,7 +4,9 @@
 //
 // `Approve phase` (01-13) is the page's one primary action, rendered only for Ready to approve; it
 // opens the approval dialog, which previews and hands over the terminal command (no signing in
-// the browser). Approval facts (signed at, commit) are the server's verification from git.
+// the browser). A Changed-since-signed phase offers `Review changes` (its Needs You change view)
+// instead, and an approved phase with uncommitted edits shows the D-03 soft hint under the header.
+// Approval facts (signed at, commit) are the server's verification from git.
 // Every string comes from the host's planning files (untrusted) and renders as React text only.
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -24,7 +26,13 @@ import { type ReactNode, useEffect, useState } from 'react';
 import { ApiError, apiGet, queryKeys } from '../api';
 import { ApprovalDialog } from '../components/ApprovalDialog';
 import { StatusBadge } from '../components/StatusBadge';
-import { type PhaseRow, parsePhaseRow, plansText, setupItemText } from './PhasesPage';
+import {
+  type PhaseRow,
+  parsePhaseRow,
+  plansText,
+  setupItemText,
+  UncommittedHint,
+} from './PhasesPage';
 
 type PlanRow = {
   id: string;
@@ -358,17 +366,30 @@ export function PhaseDetailPage({ hostId, phaseId }: { hostId: string; phaseId: 
         <Skeleton width={320} height={28} />
       )
     ) : (
-      <HStack gap={4} vAlign="center" justify="between" wrap="wrap">
-        <HStack gap={4} vAlign="center" wrap="wrap">
-          <Heading level={2} accessibilityLevel={1}>
-            {`Phase ${phase.id}: ${phase.name}`}
-          </Heading>
-          <StatusBadge status={phase.status} />
+      <VStack gap={2}>
+        <HStack gap={4} vAlign="center" justify="between" wrap="wrap">
+          <HStack gap={4} vAlign="center" wrap="wrap">
+            <Heading level={2} accessibilityLevel={1}>
+              {`Phase ${phase.id}: ${phase.name}`}
+            </Heading>
+            <StatusBadge status={phase.status} />
+          </HStack>
+          {phase.status === 'ready' ? (
+            <Button label="Approve phase" variant="primary" onClick={() => setApproving(true)} />
+          ) : null}
+          {phase.status === 'changed' ? (
+            // The Needs You item for this phase (its change view), where the owner re-signs.
+            <Button
+              label="Review changes"
+              variant="secondary"
+              href={`/h/${hostId}/needs-you/phase-${phase.id}`}
+            />
+          ) : null}
         </HStack>
-        {phase.status === 'ready' ? (
-          <Button label="Approve phase" variant="primary" onClick={() => setApproving(true)} />
-        ) : null}
-      </HStack>
+        {/* D-03 soft hint (shared with the Phases row), reading:
+            `Uncommitted edits to this approved phase. The approval only follows what is committed on {base}.` */}
+        {phase.uncommittedEdits ? <UncommittedHint baseBranch={phase.baseBranch} /> : null}
+      </VStack>
     );
 
   let body: ReactNode = null;

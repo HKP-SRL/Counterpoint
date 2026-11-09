@@ -10,6 +10,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
+import { Icon } from '@astryxdesign/core/Icon';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
 import { Link } from '@astryxdesign/core/Link';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
@@ -47,6 +48,8 @@ export type PhaseRow = {
   userSetup: UserSetupRow[];
   unreadable: UnreadableFile | null;
   approval: ApprovalFacts | null;
+  /** D-03: the owner's checkout has uncommitted edits to this approved phase's inputs. */
+  uncommittedEdits: boolean;
 };
 
 export type PhasesSnapshot = {
@@ -104,6 +107,7 @@ export function parsePhaseRow(value: unknown): PhaseRow | null {
       : [],
     unreadable: parseUnreadable(value.unreadable),
     approval: parseApproval(value.approval),
+    uncommittedEdits: value.uncommittedEdits === true,
   };
 }
 
@@ -138,6 +142,21 @@ export function plansText(n: number): string {
 
 export function setupItemText(item: UserSetupRow): string {
   return item.why === null || item.why === '' ? item.service : `${item.service}: ${item.why}`;
+}
+
+/**
+ * The D-03 soft hint: the owner's checkout has uncommitted edits to an approved phase. Purely
+ * informational; the approval and the runway only follow what is committed on the base branch.
+ */
+export function UncommittedHint({ baseBranch }: { baseBranch: string }) {
+  return (
+    <HStack gap={1} vAlign="start">
+      <Icon icon="info" size="xsm" color="secondary" />
+      <Text type="supporting" color="secondary">
+        {`Uncommitted edits to this approved phase. The approval only follows what is committed on ${baseBranch}.`}
+      </Text>
+    </HStack>
+  );
 }
 
 type Filter = 'all' | 'ready' | 'on-runway' | 'changed';
@@ -217,7 +236,15 @@ export function PhasesPage({ hostId }: { hostId: string }) {
     {
       key: 'status',
       header: 'Status',
-      renderCell: (row) => <StatusBadge status={row.status} />,
+      renderCell: (row) =>
+        row.uncommittedEdits ? (
+          <VStack gap={1} hAlign="start">
+            <StatusBadge status={row.status} />
+            <UncommittedHint baseBranch={data?.baseBranch ?? ''} />
+          </VStack>
+        ) : (
+          <StatusBadge status={row.status} />
+        ),
     },
     {
       key: 'plans',

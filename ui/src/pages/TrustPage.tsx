@@ -40,7 +40,7 @@ type CheckRow = {
 };
 type ProbeRow = { id: string; label: string; mode: 'read' | 'write'; result: ProbeResult };
 
-type Report = {
+export type Report = {
   checkedAt: string;
   tools: CheckRow[];
   signingKey: CheckRow[];
@@ -48,7 +48,7 @@ type Report = {
   probe: ProbeRow[];
 };
 
-type DoctorAnswer = {
+export type DoctorAnswer = {
   hostId: string;
   report: Report | null;
   stale: boolean;
@@ -129,7 +129,8 @@ async function fetchDoctor(hostId: string, signal?: AbortSignal): Promise<Doctor
   };
 }
 
-const doctorQuery = (hostId: string) =>
+/** The last doctor report for a host; shared by this page and the Mission Trust card. */
+export const doctorQuery = (hostId: string) =>
   queryOptions({
     queryKey: queryKeys.doctor(hostId),
     queryFn: ({ signal }) => fetchDoctor(hostId, signal),
@@ -139,20 +140,22 @@ const doctorQuery = (hostId: string) =>
 // ---------------------------------------------------------------------------------------------
 // Wording.
 
-const CHECK_LOOK: Record<CheckResult, { label: string; variant: BadgeVariant; icon: IconName }> = {
+export type ResultLook = { label: string; variant: BadgeVariant; icon: IconName };
+
+export const CHECK_LOOK: Record<CheckResult, ResultLook> = {
   pass: { label: 'Pass', variant: 'success', icon: 'success' },
   fail: { label: 'Fail', variant: 'error', icon: 'error' },
   'not-checked': { label: 'Not checked', variant: 'neutral', icon: 'clock' },
 };
 
 // Probe rows never say Pass/Fail: a pass means blocked, which would read backwards.
-const PROBE_LOOK: Record<ProbeResult, { label: string; variant: BadgeVariant; icon: IconName }> = {
+export const PROBE_LOOK: Record<ProbeResult, ResultLook> = {
   blocked: { label: 'Blocked', variant: 'success', icon: 'success' },
   reachable: { label: 'Reachable', variant: 'error', icon: 'error' },
   'not-checked': { label: 'Not checked', variant: 'neutral', icon: 'clock' },
 };
 
-function ResultBadge({ look }: { look: { label: string; variant: BadgeVariant; icon: IconName } }) {
+export function ResultBadge({ look }: { look: ResultLook }) {
   return (
     <Badge variant={look.variant} label={look.label} icon={<Icon icon={look.icon} size="xsm" />} />
   );
@@ -195,32 +198,68 @@ export function reachableText(n: number): string {
   return n === 1 ? '1 target was reachable' : `${n} targets were reachable`;
 }
 
-function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: string }) {
-  const report = answer.report;
-  if (report === null) return null;
+/**
+ * The verdict of a report, shared by the Trust page's Banner and the Mission Trust card so both
+ * always use the same words. Never all-pass unless every check passed and every probe target was
+ * blocked: anything `Not checked`, failed, reachable or missing counts against it.
+ */
+export type TrustVerdict =
+  | { kind: 'reachable'; reachable: number; title: string; badge: ResultLook }
+  | { kind: 'pass'; title: string; badge: ResultLook }
+  | { kind: 'not-passing'; notPassing: number; title: string; badge: ResultLook };
+
+export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: string): TrustVerdict {
   const probes = probeRows(report, hostName);
   const reachable = probes.filter((row) => row.result === 'reachable').length;
+  const checks = allChecks(report);
   const notPassing =
-    allChecks(report).filter((check) => check.result !== 'pass').length +
+    checks.filter((check) => check.result !== 'pass').length +
     probes.filter((row) => row.result !== 'blocked').length +
     (report.tools.length === 0 ? 1 : 0) +
     (report.signingKey.length === 0 ? 1 : 0);
-  const checked = <Timestamp value={report.checkedAt} />;
 
   if (reachable > 0) {
+    return {
+      kind: 'reachable',
+      reachable,
+      title: 'Agent sandbox is not confining sessions',
+      badge: PROBE_LOOK.reachable,
+    };
+  }
+  if (answer.verdict === 'pass' && notPassing === 0) {
+    return { kind: 'pass', title: 'Agents are boxed in', badge: CHECK_LOOK.pass };
+  }
+  const n = Math.max(notPassing, 1);
+  // `Fail` when anything failed outright; `Not checked` when the only gaps are unchecked rows.
+  const failed = checks.some((check) => check.result === 'fail');
+  return {
+    kind: 'not-passing',
+    notPassing: n,
+    title: n === 1 ? '1 check did not pass' : `${n} checks did not pass`,
+    badge: failed ? CHECK_LOOK.fail : CHECK_LOOK['not-checked'],
+  };
+}
+
+function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: string }) {
+  const report = answer.report;
+  if (report === null) return null;
+  const verdict = trustVerdict(answer, report, hostName);
+  const checked = <Timestamp value={report.checkedAt} />;
+
+  if (verdict.kind === 'reachable') {
     return (
       <Banner
         status="error"
-        title="Agent sandbox is not confining sessions"
-        description={`${reachableText(reachable)}. Approvals still work, but builds will refuse to start until this passes.`}
+        title={verdict.title}
+        description={`${reachableText(verdict.reachable)}. Approvals still work, but builds will refuse to start until this passes.`}
       />
     );
   }
-  if (answer.verdict === 'pass' && notPassing === 0) {
+  if (verdict.kind === 'pass') {
     return (
       <Banner
         status="success"
-        title="Agents are boxed in"
+        title={verdict.title}
         description={
           <>
             Checked {checked}. A headless claude session could not read your signing key, ~/.ssh, gh
@@ -231,11 +270,10 @@ function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: s
       />
     );
   }
-  const n = Math.max(notPassing, 1);
   return (
     <Banner
       status="warning"
-      title={n === 1 ? '1 check did not pass' : `${n} checks did not pass`}
+      title={verdict.title}
       description={
         <>Checked {checked}. Fix what is listed below, then run "counterpoint doctor" again.</>
       }
@@ -303,7 +341,7 @@ function TableCard({ title, children }: { title: string; children: ReactNode }) 
   );
 }
 
-function DoctorCommand() {
+export function DoctorCommand() {
   return <CodeBlock code="counterpoint doctor" language="bash" hasCopyButton isWrapped={false} />;
 }
 
