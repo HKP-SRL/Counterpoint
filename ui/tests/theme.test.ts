@@ -7,7 +7,7 @@ import {
   THEME_OPTIONS,
   THEME_STORAGE_KEY,
   themeOptionAfter,
-} from '../src/theme.ts';
+} from '../src/theme';
 
 describe('THEME_STORAGE_KEY', () => {
   it('is counterpoint.theme', () => {

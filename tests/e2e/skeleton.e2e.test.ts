@@ -152,8 +152,15 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
     const page = await browser.newPage();
     await page.goto(signInLink(opened.stdout));
     expect(new URL(page.url()).pathname).toBe(`/h/${hostIdFromName(basename(repo))}`);
-    await page.getByText(basename(repo), { exact: true }).waitFor({ timeout: 15_000 });
-    expect(await page.getByRole('heading', { name: 'Repositories' }).count()).toBe(1);
+    // The TopNav host switcher names the registered host (and its base branch).
+    const switcher = page.getByRole('button', { name: `Project ${basename(repo)}, base branch` });
+    await switcher.waitFor({ timeout: 15_000 });
+    expect(await switcher.textContent()).toContain(basename(repo));
+    // The page title is a visual h2 announced as level 1 (UI-SPEC Typography); Playwright's role
+    // engine reports the native tag level, so the announced level is read from aria-level.
+    const heading = page.getByRole('heading', { name: 'Mission' });
+    await heading.waitFor({ timeout: 15_000 });
+    expect(await heading.getAttribute('aria-level')).toBe('1');
   });
 
   it('answers 403 to a Host header other than 127.0.0.1:{port}', async () => {
