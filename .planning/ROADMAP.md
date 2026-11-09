@@ -32,7 +32,22 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: TBD
+**Plans**: 13 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Walking skeleton: owner vets packages; toolchain; `counterpoint` → background daemon → SQLite host → 127.0.0.1 → Astryx page *(wave 1)*
+- [ ] 01-02-PLAN.md — One-time sign-in, request guard and CSP, SSE live events, init/status/open *(wave 2)*
+- [ ] 01-03-PLAN.md — Sandbox spike as code: one settings builder, claude -p runner, differential probe that cannot false-pass *(wave 2)*
+- [ ] 01-04-PLAN.md — GSD adapter over committed `.planning/`, D-02 inputs, `cp-gsd-roadmap-section/v1` normalizer, core status, lint-enforced boundary *(wave 2)*
+- [ ] 01-05-PLAN.md — Signed-approval plumbing (CAS landing, ssh-keygen sign/verify, adversarial suite) and integrity snapshot *(wave 2)*
+- [ ] 01-06-PLAN.md — Console shell: AppShell, Light/Dark/System, signed-out screens, live client *(wave 3)*
+- [ ] 01-07-PLAN.md — `counterpoint doctor`, init-key / trust-key / trust {host} *(wave 3)*
+- [ ] 01-08-PLAN.md — Phases, Phase detail and Trust in the console; base-tip watcher *(wave 4)*
+- [ ] 01-09-PLAN.md — Owner confirms the statement format; `counterpoint approve`; runway recomputed from git *(wave 4)*
+- [ ] 01-10-PLAN.md — Approve from the console; runway headline *(wave 5)*
+- [ ] 01-11-PLAN.md — Needs You and the change view (approved version changed) *(wave 6)*
+- [ ] 01-12-PLAN.md — Mission cards, drift hints, end-to-end drift test, visual backstops *(wave 7)*
+- [ ] 01-13-PLAN.md — Package and install `@hkp/counterpoint`; owner key + Cena Phase 2 plan; first real approval on Cena *(wave 8)*
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
 
@@ -117,7 +132,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 0/TBD | Not started | - |
+| 1. Trusted Shell & Signed Runway | 0/13 | Planned | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
