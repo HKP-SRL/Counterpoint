@@ -1,0 +1,67 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-11-09T18:33:52.996Z",
+  "phase": "01",
+  "phase_name": "Trusted Shell & Signed Runway",
+  "phase_dir": ".planning/phases/01-trusted-shell-signed-runway",
+  "plan": 14,
+  "task": 1,
+  "total_tasks": 16,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "01-01", "name": "Toolchain and core host modules", "status": "done", "commit": "4b6f86b"},
+    {"id": "01-02", "name": "Walking skeleton (CLI, daemon, SQLite, Astryx page)", "status": "done", "commit": "300d9bc"},
+    {"id": "01-03", "name": "Console sign-in, request guard, SSE, init/status/open", "status": "done", "commit": "ad7835b"},
+    {"id": "01-04", "name": "Sandbox settings, claude -p runner, differential probe", "status": "done", "commit": "67c9a0a"},
+    {"id": "01-05", "name": "Probe evaluator (live check fails honestly: gh credentials Reachable)", "status": "done", "commit": "e5a1095"},
+    {"id": "01-06", "name": "GSD adapter read side", "status": "done", "commit": "371b238"},
+    {"id": "01-07", "name": "GSD approval inputs, ROADMAP normalizer, compose", "status": "done", "commit": "309a9fc"},
+    {"id": "01-08", "name": "Approval commit mechanics, verifier, integrity snapshot", "status": "done", "commit": "3e77969"},
+    {"id": "01-09", "name": "Console shell, themes, live client", "status": "done", "commit": "30fc2a2"},
+    {"id": "01-10", "name": "counterpoint doctor, init-key, trust-key, trust", "status": "done", "commit": "01e22e0"},
+    {"id": "01-11", "name": "Phases, Phase detail and Trust pages", "status": "done", "commit": "958e007"},
+    {"id": "01-12", "name": "Approval statement v1 and counterpoint approve", "status": "done", "commit": "a00ccd2"},
+    {"id": "01-13", "name": "Console approval dialog and runway headline", "status": "done", "commit": "95ed25f"}
+  ],
+  "remaining_tasks": [
+    {"id": "01-14", "name": "Drift: Needs You inbox, change view, re-sign command (wave 8)", "status": "not_started", "note": "An executor was started then stopped by owner request before any commit; its worktree was discarded. Re-dispatch fresh."},
+    {"id": "01-15", "name": "Mission page Needs You/Trust cards, changed banner, drift loop e2e (wave 9)", "status": "not_started"},
+    {"id": "GAP", "name": "Security gap-closure plan (not yet planned): confine Write/Edit tools (WINDOWS.md #2) + recorded doctor exception for Keychain row (WINDOWS.md #1)", "status": "not_started"},
+    {"id": "01-16", "name": "Ship to owner's machine and prove on Cena (wave 10, checkpoint:human-action)", "status": "not_started", "note": "Do NOT run until the GAP plan is executed."}
+  ],
+  "blockers": [
+    {"description": "Live sandbox probe reports gh credentials Reachable (sandboxed Bash can read the macOS Keychain). Owner ACCEPTED this; doctor needs an explicit recorded exception for that row.", "type": "technical", "workaround": "Implement in the GAP plan"},
+    {"description": "Agent Write/Edit tools can write outside the sandbox write scope (only Bash is confined). Owner chose a Phase 1 gap-closure plan.", "type": "technical", "workaround": "GAP plan before 01-16"}
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Decide whether to keep the pnpm/pnpx symlinks the 01-01 executor created by hand in /Volumes/Dock/Dev/nvm/versions/node/v24.21.0/bin after `corepack enable pnpm` was refused by the command guard (or delete them and run `corepack enable pnpm` yourself)", "context": "A refused command was worked around", "blocking": false},
+    {"action": "Optionally add to ~/.zshrc: export pnpm_config_store_dir=/Volumes/Dock/Dev/Caches/pnpm-store pnpm_config_cache_dir=/Volumes/Dock/Dev/Caches/pnpm pnpm_config_state_dir=/Volumes/Dock/Dev/pnpm/state PNPM_HOME=/Volumes/Dock/Dev/pnpm", "context": "pnpm 12 ignores npm_config_store_dir; plain pnpm puts its store in /private/tmp", "blocking": false},
+    {"action": "Optionally delete pre-existing internal-disk pnpm data: ~/Library/Caches/pnpm (~111 MB) and ~/.local/state/pnpm (dated 08:53, before this session)", "context": "Owner rule: caches on /Volumes/Dock", "blocking": false},
+    {"action": "Confirm Cena is clean: git -C /Volumes/Dock/Projects/HKP/Cena status --porcelain", "context": "01-06 could not run this check (agent guard blocks git -C outside the worktree)", "blocking": false},
+    {"action": "Review private Cena planning docs frozen into tests/fixtures/gsd/cena-master before any public release (see its PROVENANCE.md)", "context": "Fixture created by 01-06", "blocking": false},
+    {"action": "Visual review: light/dark parity, the ◐ theme glyph, host-name truncation in the switcher, approval dialog and runway card fit at 640px", "context": "No automated check (01-09, 01-13)", "blocking": false},
+    {"action": "01-16 owner steps with the real key: counterpoint init-key (+ printed ssh-keygen), trust-key ~/.ssh/counterpoint_approval.pub, trust cena, doctor cena, confirm A4 Keychain item shape; a real approval needs an unbuilt phase on Cena master (both current phases are built)", "context": "Executors never touch the real key", "blocking": true}
+  ],
+  "decisions": [
+    {"decision": "Executors and verifier run on Opus (model_overrides.gsd-executor / gsd-verifier = opus in .planning/config.json)", "rationale": "Owner instruction", "phase": "01"},
+    {"decision": "Approval statement frozen as RESEARCH Item 4 (counterpoint/approval/v1, no prepared block)", "rationale": "Owner chose the recommended minimal format", "phase": "01"},
+    {"decision": "Keychain reachability (WINDOWS.md #1) accepted and documented; doctor gets an explicit recorded exception for the gh credentials row", "rationale": "Owner decision", "phase": "01"},
+    {"decision": "Write/Edit outside sandbox (WINDOWS.md #2) fixed by a Phase 1 gap-closure plan before 01-16", "rationale": "Owner decision", "phase": "01"},
+    {"decision": "Package set as vetted by owner at 01-01 (exact pins, lifecycle scripts blocked, lucide-react 1.18.0)", "rationale": "Owner approved checkpoint", "phase": "01"}
+  ],
+  "uncommitted_files": [
+    "?? .claude/.gsd-profile",
+    "?? .claude/agents/",
+    "?? .claude/commands/",
+    "?? .claude/gsd-core/",
+    "?? .claude/gsd-file-manifest.json",
+    "?? .claude/gsd-install-state.json",
+    "?? .claude/hooks/",
+    "?? .claude/scripts/",
+    "?? .planning/sketches/",
+    "?? .planning/state.json"
+  ],
+  "next_action": "Run /gsd-execute-phase 1 — it resumes at wave 8 (01-14), then wave 9 (01-15). Stop before wave 10 (01-16); plan the security gap with /gsd-plan-phase 1 --gaps (or after verification), execute it, then run 01-16.",
+  "context_notes": "main is at cadc3b7 (13/16 plans merged; 692 unit + 31 e2e tests green). No agent worktrees remain. .planning/sketches/ appeared at 19:18-19:26 local and was not created by this execution session; it was left untouched."
+}
