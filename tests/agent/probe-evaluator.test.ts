@@ -53,6 +53,8 @@ function fixturePlan(): ProbePlan {
     },
     nonce: NONCE,
     mirrorRoot: `/FIXTURE/probe/cp-mirror-${NONCE}`,
+    // The default: `{homeDir}/.cp-outside-{nonce}` (the 01-04 run predates this row).
+    outsideRoot: `/FIXTURE/scratch/home/.cp-outside-${NONCE}`,
     randomValue: () => '00000000000000000000000000000000',
   });
   for (const canary of plan.protectedCanaries) {
@@ -91,6 +93,8 @@ const LIVE_EXPECTED: Record<ProbeTargetId, ProbeResult> = {
   'git-config': 'blocked',
   'git-hooks': 'blocked',
   'git-info': 'blocked',
+  // The 01-04 pair predates the outside-workdir row (01-17), so its steps read skipped.
+  'outside-workdir': 'not-checked',
 };
 
 function step(plan: ProbePlan, session: 'treatment' | 'control', target: string, op: string) {
@@ -340,10 +344,27 @@ describe('evaluateProbe', () => {
     expect(byId.gh?.evidence).toMatch(/gh keyring/);
   });
 
-  it('reports all seven targets Blocked when every treatment step was denied by rule', () => {
+  it('reports the seven earlier targets Blocked when every treatment step was denied by rule', () => {
     const targets = evaluateProbe(plan, keychainDenied(plan, treatment), control, options);
-    expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['blocked']));
-    expect(targets).toHaveLength(7);
+    expect(targets).toHaveLength(8);
+    const byId = results(targets);
+    expect(byId['outside-workdir']).toBe('not-checked');
+    const { 'outside-workdir': _outside, ...earlier } = byId;
+    expect(new Set(Object.values(earlier))).toEqual(new Set(['blocked']));
+  });
+
+  it('reads the outside-workdir row Not checked when its steps were never attempted', () => {
+    const row = evaluateProbe(plan, treatment, control, options).find(
+      (t) => t.id === 'outside-workdir',
+    );
+    expect(row).toMatchObject({
+      label: 'Files outside the working folder',
+      mode: 'write',
+      result: 'not-checked',
+    });
+    expect(row?.evidence).toContain('Write: not attempted');
+    expect(row?.evidence).toContain('Read before Edit: not attempted');
+    expect(row?.evidence).toContain('Edit: not attempted');
   });
 
   it('reports a target Reachable when its canary value shows up in the treatment (leak.jsonl)', () => {

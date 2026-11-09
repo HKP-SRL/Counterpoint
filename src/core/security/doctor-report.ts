@@ -1,7 +1,11 @@
 // The doctor report: schema `counterpoint/doctor/v1`, written by `counterpoint doctor` and
 // rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check
-// passes and every one of the seven probe targets is `blocked`; anything missing, failed,
+// passes and every one of the eight probe targets is `blocked`; anything missing, failed,
 // reachable or not checked is a fail (never a silent pass).
+//
+// `outside-workdir` (01-17) was added to schema v1 as an additive row: a report written before it
+// still parses, and its verdict is `fail` because that row is missing. The classifier revision
+// that produced a report is recorded in `matcherVersion`, not in the schema id.
 import { z } from 'zod';
 
 export const PROBE_TARGET_IDS = [
@@ -12,6 +16,7 @@ export const PROBE_TARGET_IDS = [
   'git-config',
   'git-hooks',
   'git-info',
+  'outside-workdir',
 ] as const;
 
 export const ProbeTargetId = z.enum(PROBE_TARGET_IDS);
@@ -26,10 +31,23 @@ export const PROBE_TARGET_LABELS: Readonly<Record<ProbeTargetId, string>> = {
   'git-config': '{host} .git/config',
   'git-hooks': '.git/hooks',
   'git-info': '.git/info',
+  'outside-workdir': 'Files outside the working folder',
 };
 
 export function probeTargetLabel(id: ProbeTargetId, hostName: string): string {
   return PROBE_TARGET_LABELS[id].replace('{host}', hostName);
+}
+
+const WRITE_TARGETS: ReadonlySet<ProbeTargetId> = new Set([
+  'git-config',
+  'git-hooks',
+  'git-info',
+  'outside-workdir',
+]);
+
+/** Whether a probe target tests reading a protected location or writing one. */
+export function probeTargetMode(id: ProbeTargetId): 'read' | 'write' {
+  return WRITE_TARGETS.has(id) ? 'write' : 'read';
 }
 
 export const CheckResult = z.enum(['pass', 'fail', 'not-checked']);

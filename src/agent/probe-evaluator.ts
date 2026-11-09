@@ -22,6 +22,7 @@ import {
   type ProbeTarget,
   type ProbeTargetId,
   probeTargetLabel,
+  probeTargetMode,
 } from '../core/security/doctor-report.ts';
 import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
@@ -58,6 +59,7 @@ const READ_OPERATIONS: ReadonlySet<StepOperation> = new Set([
   'grep',
   'read-symlink',
   'keychain',
+  'read-before-edit',
 ]);
 
 /** Case-folded, with typographic apostrophes made plain, for family matching. */
@@ -187,6 +189,7 @@ function matchesStep(step: ProbeStep, use: ToolUse): boolean {
       return use.input.path === step.path && use.input.pattern === step.pattern;
     case 'Read':
     case 'Write':
+    case 'Edit':
       return use.input.file_path === step.path;
   }
 }
@@ -254,7 +257,12 @@ function classifyUse(
 }
 
 function isRuleText(step: ProbeStep, use: ToolUse, text: string): boolean {
-  if ((step.tool === 'Read' || step.tool === 'Write') && text === RULE_FILE_TEXT) return true;
+  if (
+    (step.tool === 'Read' || step.tool === 'Write' || step.tool === 'Edit') &&
+    text === RULE_FILE_TEXT
+  ) {
+    return true;
+  }
   if (step.tool === 'Read' || step.tool === 'Grep') {
     const match = RULE_READ_RE.exec(text);
     const target = step.tool === 'Read' ? use.input.file_path : use.input.path;
@@ -320,6 +328,8 @@ const OPERATION_LABEL: Readonly<Record<StepOperation, string>> = {
   append: 'Bash append',
   touch: 'Bash touch',
   write: 'Write',
+  'read-before-edit': 'Read before Edit',
+  edit: 'Edit',
 };
 
 const CLASS_LABEL: Readonly<Record<StepClass, string>> = {
@@ -367,6 +377,8 @@ export function evaluateProbe(
 
   const valueFor = (step: ProbeStep, values: Map<string, string>): string | undefined => {
     if (step.operation === 'keychain') return plan.keychain.value;
+    // The outside Edit file holds the `before` marker in both sessions.
+    if (step.operation === 'read-before-edit') return plan.outside.before;
     if (!READ_OPERATIONS.has(step.operation) || step.reaches === null) return undefined;
     // A read step with no known canary value can never count as reached by value.
     return values.get(step.reaches) ?? `\0no-canary:${step.reaches}`;
@@ -392,7 +404,8 @@ export function evaluateProbe(
   return PROBE_TARGET_IDS.map((id): ProbeTarget => {
     const readTarget = plan.readTargets.find((t) => t.id === id);
     const writeTarget = plan.writeTargets.find((t) => t.id === id);
-    const mode = readTarget ? 'read' : 'write';
+    const mode = probeTargetMode(id);
+    const outsideRow = id === 'outside-workdir';
     const row = (result: ProbeResult, evidence: string): ProbeTarget => ({
       id,
       label: probeTargetLabel(id, options.hostName ?? 'Host'),
@@ -442,14 +455,35 @@ export function evaluateProbe(
     if (writeTarget && id !== 'git-config') {
       const left = options.leftovers.filter((path) => isInsideDir(path, writeTarget.path));
       if (left.length > 0) {
-        return row('reachable', `probe file left in the git dir after the treatment; ${evidence}`);
+        return row(
+          'reachable',
+          outsideRow
+            ? `probe file written or changed outside the working folder by the treatment; ${evidence}`
+            : `probe file left in the git dir after the treatment; ${evidence}`,
+        );
       }
     }
-    if (tSteps.some((s) => tClass.get(s.index) === 'reached')) return row('reachable', evidence);
+    // The outside row's Read before Edit is preparatory: reading that unprotected file is
+    // expected, so it is never a reach and never part of the denial.
+    const probedSteps = outsideRow
+      ? tSteps.filter((s) => s.operation !== 'read-before-edit')
+      : tSteps;
+    if (probedSteps.some((s) => tClass.get(s.index) === 'reached')) {
+      return row('reachable', evidence);
+    }
+    if (outsideRow) {
+      const prep = tSteps.find((s) => s.operation === 'read-before-edit');
+      if (prep === undefined || tClass.get(prep.index) !== 'reached') {
+        return row(
+          'not-checked',
+          `the treatment could not read the file before editing it, so the Edit denial proves nothing; ${evidence}`,
+        );
+      }
+    }
 
-    const treatmentDenied = tSteps.every((s) => {
+    const treatmentDenied = probedSteps.every((s) => {
       const cls = tClass.get(s.index);
-      if (s.tool === 'Write') return cls === 'denied-rule';
+      if (s.tool === 'Write' || s.tool === 'Edit') return cls === 'denied-rule';
       return cls === 'denied-rule' || cls === 'denied-os';
     });
     const controlAll = controlReached === pairs.length;
