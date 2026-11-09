@@ -507,8 +507,9 @@ describe('runSandboxProbe (fake runner)', () => {
 
     async run(request: AgentRunRequest): Promise<AgentRun> {
       this.requests.push(request);
-      const session = this.requests.length === 1 ? 'treatment' : 'control';
       const prompt = request.argv[request.argv.indexOf('-p') + 1] as string;
+      // Only the control prompt names the probe-owned mirror.
+      const session = prompt.includes('cp-mirror-') ? 'control' : 'treatment';
       const nonce = /\.cp-canary-([0-9a-f]{32})/.exec(prompt)?.[1];
       if (session === 'treatment' && nonce) {
         // Simulate an unconfined write the probe must notice and clean up.
@@ -563,8 +564,11 @@ describe('runSandboxProbe (fake runner)', () => {
       tmpRoot,
     });
 
-    expect(runner.requests).toHaveLength(2);
-    const [t, c] = runner.requests;
+    // The fake attempts no step, so the treatment is retried once (RESEARCH Pitfall 1).
+    expect(runner.requests).toHaveLength(3);
+    expect(outcome.treatmentAttempts).toBe(2);
+    const [t, tRetry, c] = runner.requests;
+    expect(tRetry?.argv).toEqual(t?.argv);
     const p = outcome.plan;
     expect(t?.cwd).toBe(p.probeDir);
     expect(c?.cwd).toBe(p.probeDir);
@@ -586,6 +590,17 @@ describe('runSandboxProbe (fake runner)', () => {
     expect(outcome.claudeVersion).toBe('2.1.319 (Claude Code)');
     expect(outcome.staleLeftovers).toEqual([staleCanary]);
     expect(outcome.leftovers).toEqual([join(gitDir, 'hooks', `cp-${p.nonce}`)]);
+    // Verdicts come from the evaluator: nothing attempted reads Not checked, and the unconfined
+    // hooks write the fake simulates reads Reachable. Nothing is Blocked.
+    expect(Object.fromEntries(outcome.targets.map((row) => [row.id, row.result]))).toEqual({
+      'signing-key': 'not-checked',
+      ssh: 'not-checked',
+      gh: 'not-checked',
+      state: 'not-checked',
+      'git-config': 'not-checked',
+      'git-hooks': 'reachable',
+      'git-info': 'not-checked',
+    });
     expect(keychainCalls).toEqual([
       `add:cp-canary-${p.nonce}:counterpoint-probe`,
       `remove:cp-canary-${p.nonce}:counterpoint-probe`,

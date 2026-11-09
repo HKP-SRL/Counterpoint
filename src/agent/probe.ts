@@ -10,8 +10,8 @@
 //   canaries. Every step should succeed. C never receives any grant on a real protected
 //   directory or the real git dir, inherited or added (T-01-18, T-01-61).
 // A target counts as Blocked only if C reached its mirror and T did not reach the real one; that
-// judgement (and the denial-text classifier) lives in the evaluator (01-05). This module plans,
-// launches, captures and cleans up.
+// judgement (and the denial-text classifier) lives in probe-evaluator.ts. This module plans,
+// launches, captures, evaluates (through evaluateProbe) and cleans up.
 //
 // The probe never reads a real secret: it targets only files it created, Grep patterns match only
 // canary content, and Keychain coverage uses a temporary canary item, never an existing one.
@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { execa } from 'execa';
 import { PROBE_CANARY_RE, PROBE_GIT_ARTIFACT_RE, PROBE_NONCE_RE } from '../core/ids.ts';
-import type { ProbeTargetId } from '../core/security/doctor-report.ts';
+import type { ProbeTarget, ProbeTargetId } from '../core/security/doctor-report.ts';
 import {
   type AgentSettings,
   buildAgentSandboxSettings,
@@ -43,6 +43,7 @@ import {
   type WriteTarget,
 } from '../core/security/sandbox-settings.ts';
 import { buildClaudeArgv } from './claude-argv.ts';
+import { classifyStep, evaluateProbe } from './probe-evaluator.ts';
 import type { AgentRun, AgentRunner } from './runner.ts';
 
 /** The production tool list; the treatment session gets exactly this (T-01-19). */
@@ -521,7 +522,16 @@ export const macKeychain: KeychainPort = {
 
 export interface ProbeOutcome {
   plan: ProbePlan;
+  /** One verdict per probe target, from evaluateProbe (never from the model's prose). */
+  targets: ProbeTarget[];
+  /**
+   * The treatment session. When the first attempt skipped a planned step it is retried once, and
+   * this run then holds both attempts (events and raw text concatenated), so a leak in the first
+   * attempt still counts.
+   */
   treatment: AgentRun;
+  /** 1, or 2 when the treatment session was retried because it skipped a step. */
+  treatmentAttempts: number;
   control: AgentRun;
   claudeVersion: string | null;
   /** Probe-named files found in the real git dir after the treatment session (then removed). */
@@ -608,14 +618,26 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       treatment: join(input.logDir, `probe-${nonce}-treatment.jsonl`),
       control: join(input.logDir, `probe-${nonce}-control.jsonl`),
     };
+    const activePlan = plan;
     const timeoutMs = input.timeoutMs ?? SESSION_TIMEOUT_MS;
 
-    const treatment = await input.runner.run({
-      argv: launch.treatment.argv,
-      cwd: probeDir,
-      timeoutMs,
-      rawLogPath: logs.treatment,
-    });
+    const runTreatment = () =>
+      input.runner.run({
+        argv: launch.treatment.argv,
+        cwd: probeDir,
+        timeoutMs,
+        rawLogPath: logs.treatment,
+      });
+    let treatment = await runTreatment();
+    let treatmentAttempts = 1;
+    // RESEARCH Pitfall 1: a model that skips a step makes "no leak" meaningless. Retry once; the
+    // evaluator sees both attempts, and a step still skipped reads Not checked.
+    const skippedStep = (run: AgentRun) =>
+      activePlan.treatment.steps.some((step) => classifyStep(step, run.events) === 'skipped');
+    if (skippedStep(treatment)) {
+      treatment = mergeRuns(treatment, await runTreatment());
+      treatmentAttempts = 2;
+    }
     const leftovers = plan.gitArtifacts.filter((path) => existsOrLink(path));
 
     const control = await input.runner.run({
@@ -625,9 +647,17 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       rawLogPath: logs.control,
     });
 
+    const targets = evaluateProbe(plan, treatment.events, control.events, {
+      claudeVersion,
+      leftovers,
+      skippedTargets,
+    });
+
     return {
       plan,
+      targets,
       treatment,
+      treatmentAttempts,
       control,
       claudeVersion,
       leftovers,
@@ -644,6 +674,21 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
     }
     rmSync(probeDir, { recursive: true, force: true });
   }
+}
+
+/** Two attempts of one session as a single run: events and raw text in order, last status. */
+function mergeRuns(first: AgentRun, second: AgentRun): AgentRun {
+  return {
+    events: [...first.events, ...second.events],
+    raw:
+      first.raw === '' || first.raw.endsWith('\n')
+        ? first.raw + second.raw
+        : `${first.raw}\n${second.raw}`,
+    stderr: `${first.stderr}${second.stderr}`,
+    exitCode: second.exitCode,
+    timedOut: first.timedOut || second.timedOut,
+    result: second.result ?? first.result,
+  };
 }
 
 function writeCanary(canary: ProbeCanary): void {
