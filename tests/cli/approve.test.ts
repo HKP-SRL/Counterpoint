@@ -195,7 +195,7 @@ describe('approveCommand: refusals before anything is signed', () => {
     const s = await setup({ trust: false });
     const result = await refused(s);
     expect(result.err).toContain(
-      'No approval key is trusted yet. Run "counterpoint init-key", then "counterpoint trust-key {path}.pub".',
+      'No approval key is trusted yet. Run "counterpoint init-key", then "counterpoint trust-key ~/.ssh/counterpoint_approval.pub".',
     );
   });
 

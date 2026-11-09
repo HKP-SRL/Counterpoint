@@ -47,8 +47,16 @@ beforeAll(async () => {
 
 afterAll(() => removeScratchDirs());
 
-async function showAtMaster(root: string, path: string): Promise<string> {
-  return gitIn(root, ['show', `master:${path}`]);
+/** The exact committed bytes at master (git output through execa would lose the final newline). */
+async function showAtMaster(root: string, path: string): Promise<Uint8Array> {
+  const reader = createGitFileReader(root);
+  const bytes = await reader.read((await reader.resolve('refs/heads/master')) as string, path);
+  if (bytes === null) throw new Error(`${path} missing at master`);
+  return bytes;
+}
+
+function appended(bytes: Uint8Array, text: string): Uint8Array {
+  return Buffer.concat([bytes, Buffer.from(text)]);
 }
 
 /** Prepares and lands a real signed approval of `phaseId` at master's tip. */
@@ -146,7 +154,7 @@ describe('approvalState: inputs', () => {
 
   it('moves to changed after a committed edit to an input, listing signed and current digests', async () => {
     const original = await showAtMaster(repo.root, CONTEXT);
-    await commitChange(repo.root, CONTEXT, `${original}\nOne more decision.\n`);
+    await commitChange(repo.root, CONTEXT, appended(original, '\nOne more decision.\n'));
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
     expect(state.changes).toHaveLength(1);
@@ -192,7 +200,7 @@ describe('approvalState: inputs', () => {
   it('lists several changes sorted by path', async () => {
     const context = await showAtMaster(repo.root, CONTEXT);
     await commitChange(repo.root, SPEC, '# Spec\n');
-    await commitChange(repo.root, CONTEXT, `${context}x\n`);
+    await commitChange(repo.root, CONTEXT, appended(context, 'x\n'));
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
     expect(state.changes.map((c) => c.path)).toEqual([CONTEXT, SPEC]);
@@ -245,6 +253,8 @@ describe('approvalState: gate config (ROADMAP SC5)', () => {
   });
 
   it('starts on-runway with no gate config signed', async () => {
+    // The gates live in the host's .counterpoint/config.yaml (only its `gates` key counts).
+    expect(COUNTERPOINT_CONFIG_PATH).toBe('.counterpoint/config.yaml');
     const state = await stateOf(repo);
     expect(state.state).toBe('on-runway');
     if (state.state === 'on-runway')
@@ -373,7 +383,7 @@ describe('computeRunway', () => {
     expect(runway.invalid).toEqual([]);
 
     const original = await showAtMaster(repo.root, CONTEXT);
-    await commitChange(repo.root, CONTEXT, `${original}edit\n`);
+    await commitChange(repo.root, CONTEXT, appended(original, 'edit\n'));
     const changed = await runwayOf(repo);
     expect(changed.count).toBe(0);
     expect(changed.changed.map((c) => c.phaseId)).toEqual(['02']);

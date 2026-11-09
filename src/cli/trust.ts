@@ -212,7 +212,7 @@ function describeValue(value: string | null): string {
   return printable(value);
 }
 
-function describeChange(change: IntegrityChange): string {
+export function describeChange(change: IntegrityChange): string {
   const value = (v: string | null) =>
     change.area === 'config' && v !== null ? printable(v) : describeValue(v);
   return `  ${change.area} ${printable(change.name)}: ${value(change.before)} -> ${value(change.after)}`;

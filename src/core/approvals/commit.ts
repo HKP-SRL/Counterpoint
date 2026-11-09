@@ -322,6 +322,8 @@ export async function landApprovalCommit(options: {
  * Builds, signs and lands an approval commit on `baseBranch`. `sign` receives the exact commit
  * payload; production passes signPayload with the trusted private key. Occupied paths are
  * refused before `sign` is called, so the owner is never asked to sign something that cannot land.
+ * With `expectedTip`, a base that already moved away from the tip the caller prepared its file at
+ * is refused as `base-moved` before signing too.
  */
 export async function signAndLand(options: {
   root: string;
@@ -331,12 +333,16 @@ export async function signAndLand(options: {
   message: string;
   ident: CommitIdent;
   sign: (payload: Uint8Array) => Promise<string>;
+  expectedTip?: string;
 }): Promise<LandResult> {
   const { root, baseBranch, itemPath } = options;
   assertApprovalPath(itemPath);
   if (!BRANCH_RE.test(baseBranch)) throw new Error('Invalid base branch name.');
   const baseRef = `refs/heads/${baseBranch}`;
   const tip = await revParse(root, `${baseRef}^{commit}`);
+  if (options.expectedTip !== undefined && tip !== options.expectedTip) {
+    return { ok: false, reason: 'base-moved' };
+  }
 
   const checked = await checkCheckouts(root, baseRef, itemPath);
   if (!checked.ok) return checked;
