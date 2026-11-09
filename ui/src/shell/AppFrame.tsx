@@ -1,7 +1,10 @@
 // The console chrome (UI-SPEC "AppShell chrome"): TopNav with the wordmark, host switcher,
 // live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves the
 // SideNav into its mobile drawer. Later plans add Phases, Needs You and Trust to the SideNav.
+// The frame owns the page's one live stream: while it is down the dot pulses warning and the
+// `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AppShell } from '@astryxdesign/core/AppShell';
+import { Banner } from '@astryxdesign/core/Banner';
 import {
   DropdownMenu,
   DropdownMenuRadioGroup,
@@ -14,10 +17,11 @@ import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { Text } from '@astryxdesign/core/Text';
 import { TopNav, TopNavHeading } from '@astryxdesign/core/TopNav';
 import { VStack } from '@astryxdesign/core/VStack';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { type HostSummary, hostsQuery } from '../api';
+import { useConnectionState, useLiveEvents } from '../live';
 import { parseThemePreference, useThemeChoice } from '../theme';
 
 function HostSwitcher({
@@ -96,7 +100,9 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const current = hosts.find((host) => host.id === hostId);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const missionPath = `/h/${hostId}`;
-  const connected = true;
+  const queryClient = useQueryClient();
+  useLiveEvents(queryClient);
+  const connected = useConnectionState() === 'connected';
 
   return (
     <AppShell
@@ -129,7 +135,16 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
         </SideNav>
       }
     >
-      <VStack gap={6}>{children}</VStack>
+      <VStack gap={6}>
+        {connected ? null : (
+          <Banner
+            status="warning"
+            title="Live updates paused"
+            description="Reconnecting to Counterpoint. What you see may be out of date."
+          />
+        )}
+        {children}
+      </VStack>
     </AppShell>
   );
 }
