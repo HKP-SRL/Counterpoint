@@ -120,7 +120,11 @@ describe('GitFileReader.read', () => {
   });
 
   it('refuses a blob over 5 MiB', async () => {
-    const commit = await commitChange(repo.root, 'docs/huge.bin', Buffer.alloc(5 * 1024 * 1024 + 1));
+    const commit = await commitChange(
+      repo.root,
+      'docs/huge.bin',
+      Buffer.alloc(5 * 1024 * 1024 + 1),
+    );
     const reader = createGitFileReader(repo.root);
     await expect(reader.read(commit, 'docs/huge.bin')).rejects.toBeInstanceOf(UnsafeTreeEntryError);
   });

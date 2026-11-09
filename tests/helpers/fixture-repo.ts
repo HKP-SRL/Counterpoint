@@ -39,7 +39,11 @@ export async function commitChange(
 }
 
 /** Commits a symbolic link at `relPath` pointing at `target`. Returns the new commit sha. */
-export async function commitSymlink(root: string, relPath: string, target: string): Promise<string> {
+export async function commitSymlink(
+  root: string,
+  relPath: string,
+  target: string,
+): Promise<string> {
   const link = join(root, relPath);
   mkdirSync(dirname(link), { recursive: true });
   rmSync(link, { force: true });

@@ -137,19 +137,32 @@ export class PhaseNotFoundError extends Error {
  * Orders phase numbers as integer tuples: element by element, and on a shared prefix the shorter
  * tuple first. So [1] < [1, 1] < [1, 9] < [1, 10] < [2].
  */
-export function comparePhaseNumbers(_a: readonly number[], _b: readonly number[]): number {
-  return 0;
+export function comparePhaseNumbers(a: readonly number[], b: readonly number[]): number {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    const diff = (a[i] as number) - (b[i] as number);
+    if (diff !== 0) return diff < 0 ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
 /** The phase id for a number: major zero-padded to two digits, minors as written. */
-export function formatPhaseId(_number: readonly number[]): string {
-  return '';
+export function formatPhaseId(number: readonly number[]): string {
+  const [major, ...minors] = number;
+  if (major === undefined) throw new RangeError('A phase number needs at least one part.');
+  return [String(major).padStart(2, '0'), ...minors.map(String)].join('.');
 }
+
+const PHASE_NUMBER_RE = /^(\d{1,6})(?:\.(\d{1,6}))?$/;
 
 /**
  * Parses `1`, `01`, `1.1`, `01.1`, `1.10` into an integer tuple; null for anything else.
  * Each segment is parsed as a base-10 integer, so `1.10` stays distinct from `1.1`.
  */
-export function parsePhaseNumber(_text: string): number[] | null {
-  return null;
+export function parsePhaseNumber(text: string): number[] | null {
+  const match = PHASE_NUMBER_RE.exec(text);
+  if (!match) return null;
+  const parts = [Number.parseInt(match[1] as string, 10)];
+  if (match[2] !== undefined) parts.push(Number.parseInt(match[2], 10));
+  return parts;
 }
