@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 2/16 plans executed
+**Plans**: 6/16 plans executed
 
 Plans:
 **Wave 1**
@@ -42,10 +42,10 @@ Plans:
 - [x] 01-02-PLAN.md — Walking-skeleton tracer: `counterpoint` → background daemon → SQLite host → 127.0.0.1 → Astryx page; composition root *(wave 2)*
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-03-PLAN.md — One-time sign-in, request guard and CSP, SSE live events, init/status/open *(wave 3)*
-- [ ] 01-04-PLAN.md — Sandbox spike as code: one settings builder, claude -p runner, differential probe with a mirror-confined control session *(wave 3)*
-- [ ] 01-06-PLAN.md — GSD adapter read side over committed `.planning/`: port, reader, fixtures, parser, `detect`, core status *(wave 3)*
-- [ ] 01-08-PLAN.md — Signed-approval plumbing (CAS landing, ssh-keygen sign/verify, adversarial suite) and integrity snapshot *(wave 3)*
+- [x] 01-03-PLAN.md — One-time sign-in, request guard and CSP, SSE live events, init/status/open *(wave 3)*
+- [x] 01-04-PLAN.md — Sandbox spike as code: one settings builder, claude -p runner, differential probe with a mirror-confined control session *(wave 3)*
+- [x] 01-06-PLAN.md — GSD adapter read side over committed `.planning/`: port, reader, fixtures, parser, `detect`, core status *(wave 3)*
+- [x] 01-08-PLAN.md — Signed-approval plumbing (CAS landing, ssh-keygen sign/verify, adversarial suite) and integrity snapshot *(wave 3)*
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 01-05-PLAN.md — Probe evaluator that cannot false-pass; seven Blocked targets live *(wave 4)*
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 2/16 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 6/16 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
