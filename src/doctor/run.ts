@@ -8,13 +8,14 @@
 // discretion; Phase 2 refuses to spawn builders while it fails).
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { runSandboxProbe } from '../agent/probe.ts';
-import { MATCHER_CLAUDE_VERSION } from '../agent/probe-evaluator.ts';
+import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
 import { ClaudeCliRunner } from '../agent/runner.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
 import { homePaths, hostDir } from '../core/host/home.ts';
+import { PROBE_OUTSIDE_DIR_RE } from '../core/ids.ts';
 import {
   type Check,
   DOCTOR_SCHEMA,
@@ -23,11 +24,13 @@ import {
   type ProbeTarget,
   type ProbeTargetId,
   probeTargetLabel,
+  probeTargetMode,
   reportVerdict,
 } from '../core/security/doctor-report.ts';
 import {
   buildAgentSandboxSettings,
   type ProtectedPaths,
+  resolveAbsolute,
 } from '../core/security/sandbox-settings.ts';
 import { checkSigningKey } from './signing-key.ts';
 import { checkTools } from './tools.ts';
@@ -129,8 +132,26 @@ function isInside(path: string, dir: string): boolean {
   return path === dir || path.startsWith(`${dir}/`);
 }
 
+/** True when `path` lies in an outside-workdir canary directory directly under the home. */
+function inOutsideDir(path: string, homeDir: string): boolean {
+  const homes = new Set([homeDir]);
+  try {
+    homes.add(resolveAbsolute(homeDir, 'homeDir'));
+  } catch {
+    // a relative home names nothing
+  }
+  for (const home of homes) {
+    const rel = relative(home, path);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
+    if (PROBE_OUTSIDE_DIR_RE.test(rel.split('/')[0] ?? '')) return true;
+  }
+  return false;
+}
+
 /** Which probe target a stale artifact path belongs to (by the directory it was found in). */
 function targetOfPath(path: string, protectedPaths: ProtectedPaths): ProbeTargetId | null {
+  if (inOutsideDir(path, protectedPaths.homeDir)) return 'outside-workdir';
+  // Without a workdir the builder emits no grants; only its target paths are used here.
   const { readTargets, writeTargets } = buildAgentSandboxSettings(protectedPaths);
   for (const target of [...writeTargets, ...readTargets]) {
     if (isInside(path, target.path)) return target.id;
@@ -142,7 +163,7 @@ function notCheckedTargets(hostName: string, evidence: string): ProbeTarget[] {
   return PROBE_TARGET_IDS.map((id) => ({
     id,
     label: probeTargetLabel(id, hostName),
-    mode: ['git-config', 'git-hooks', 'git-info'].includes(id) ? 'write' : 'read',
+    mode: probeTargetMode(id),
     result: 'not-checked',
     evidence,
   }));
@@ -206,7 +227,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
         return {
           id,
           label: probeTargetLabel(id, hostName),
-          mode: ['git-config', 'git-hooks', 'git-info'].includes(id) ? 'write' : 'read',
+          mode: probeTargetMode(id),
           result: 'not-checked',
           evidence: 'The probe returned no result for this target.',
         };
@@ -241,7 +262,8 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     hostId: host.id,
     checkedAt,
     claudeVersion,
-    matcherVersion: MATCHER_CLAUDE_VERSION,
+    // The classifier revision rides in this string; the report schema stays v1.
+    matcherVersion: `${MATCHER_CLAUDE_VERSION}+r${MATCHER_REVISION}`,
     tools,
     signingKey,
     integrity,

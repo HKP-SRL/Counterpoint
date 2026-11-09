@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
@@ -599,6 +600,57 @@ describe('sweepStaleArtifacts', () => {
     expect([...removed].sort()).toEqual([...stale].sort());
     for (const file of stale) expect(existsSync(file)).toBe(false);
     for (const file of keep) expect(readFileSync(file, 'utf8')).toBe('x');
+  });
+
+  it('removes stale outside-workdir canary dirs under the home, and nothing else', () => {
+    const home = makeScratchDir('swhome');
+    const hex = 'a'.repeat(32);
+    const other = 'b'.repeat(32);
+    // A stale dir holding exactly the probe's two files: both go, then the dir.
+    const stale = join(home, `.cp-outside-${hex}`);
+    mkdirSync(stale);
+    const staleFiles = [join(stale, `cp-${hex}-w`), join(stale, `cp-${hex}-e`)];
+    for (const file of staleFiles) writeFileSync(file, 'x');
+    // A probe-named dir that also holds something else: probe files go, the dir and the rest stay.
+    const mixed = join(home, `.cp-outside-${other}`);
+    mkdirSync(mixed);
+    writeFileSync(join(mixed, `cp-${other}-w`), 'x');
+    writeFileSync(join(mixed, 'notes.txt'), 'keep');
+    // Unrelated entries and look-alikes stay.
+    const keepFiles = [
+      join(home, '.bashrc'),
+      join(home, '.cp-outside-short'),
+      join(home, `cp-${hex}-w`),
+    ];
+    for (const file of keepFiles) writeFileSync(file, 'keep');
+    const keepDir = join(home, '.cp-outside-not-hex');
+    mkdirSync(keepDir);
+    writeFileSync(join(keepDir, `cp-${hex}-w`), 'keep');
+    // A symlink named like a canary dir is never followed.
+    const target = makeScratchDir('swtarget');
+    writeFileSync(join(target, `cp-${hex}-e`), 'keep');
+    symlinkSync(target, join(home, `.cp-outside-${'c'.repeat(32)}`));
+
+    const git = join(makeScratchDir('swgit'), 'repo.git');
+    const removed = sweepStaleArtifacts({ readDirs: [], gitDir: git, homeDir: home });
+
+    expect([...removed].sort()).toEqual(
+      [...staleFiles, stale, join(mixed, `cp-${other}-w`)].sort(),
+    );
+    expect(existsSync(stale)).toBe(false);
+    expect(readFileSync(join(mixed, 'notes.txt'), 'utf8')).toBe('keep');
+    for (const file of keepFiles) expect(readFileSync(file, 'utf8')).toBe('keep');
+    expect(readFileSync(join(keepDir, `cp-${hex}-w`), 'utf8')).toBe('keep');
+    expect(readFileSync(join(target, `cp-${hex}-e`), 'utf8')).toBe('keep');
+  });
+
+  it('leaves the home alone when no homeDir is given', () => {
+    const home = makeScratchDir('swhome2');
+    const hex = 'd'.repeat(32);
+    mkdirSync(join(home, `.cp-outside-${hex}`));
+    writeFileSync(join(home, `.cp-outside-${hex}`, `cp-${hex}-w`), 'x');
+    expect(sweepStaleArtifacts({ readDirs: [], gitDir: join(home, 'nope.git') })).toEqual([]);
+    expect(existsSync(join(home, `.cp-outside-${hex}`, `cp-${hex}-w`))).toBe(true);
   });
 });
 

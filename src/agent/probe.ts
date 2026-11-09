@@ -35,12 +35,19 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { execa } from 'execa';
-import { PROBE_CANARY_RE, PROBE_GIT_ARTIFACT_RE, PROBE_NONCE_RE } from '../core/ids.ts';
+import {
+  PROBE_CANARY_RE,
+  PROBE_GIT_ARTIFACT_RE,
+  PROBE_NONCE_RE,
+  PROBE_OUTSIDE_ARTIFACT_RE,
+  PROBE_OUTSIDE_DIR_RE,
+} from '../core/ids.ts';
 import type { ProbeTarget, ProbeTargetId } from '../core/security/doctor-report.ts';
 import {
   type AgentSandbox,
   type AgentSettings,
   buildAgentSandboxSettings,
+  fileEditGrants,
   type ProtectedPaths,
   pathRule,
   type ReadTarget,
@@ -584,12 +591,16 @@ export function buildProbeLaunch(input: ProbeLaunchInput): ProbeLaunch {
 
 /**
  * Removes probe artifacts left by an earlier killed run: files named like a canary in the
- * protected read directories, and probe-named files in the git dir's `hooks/` and `info/`.
- * Nothing else is touched. Returns the removed paths.
+ * protected read directories, probe-named files in the git dir's `hooks/` and `info/`, and, when
+ * `homeDir` is given, outside-workdir canary directories directly under it (`.cp-outside-{nonce}`,
+ * real directories only, never a symlink): only their regular `cp-{nonce}-w|e` files are
+ * unlinked, then the directory is removed if nothing else remains. Nothing else is touched and
+ * nothing is deleted recursively. Returns the removed paths.
  */
 export function sweepStaleArtifacts(input: {
   readDirs: readonly string[];
   gitDir: string;
+  homeDir?: string;
 }): string[] {
   const removed: string[] = [];
   const sweep = (dir: string, pattern: RegExp): void => {
@@ -614,6 +625,46 @@ export function sweepStaleArtifacts(input: {
   for (const dir of new Set(input.readDirs)) sweep(dir, PROBE_CANARY_RE);
   sweep(join(input.gitDir, 'hooks'), PROBE_GIT_ARTIFACT_RE);
   sweep(join(input.gitDir, 'info'), PROBE_GIT_ARTIFACT_RE);
+  if (input.homeDir !== undefined) removed.push(...sweepOutsideDirs(input.homeDir));
+  return removed;
+}
+
+function sweepOutsideDirs(homeDir: string): string[] {
+  const removed: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(homeDir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!PROBE_OUTSIDE_DIR_RE.test(name)) continue;
+    const dir = join(homeDir, name);
+    let inner: string[];
+    try {
+      if (!lstatSync(dir).isDirectory()) continue;
+      inner = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const file of inner) {
+      if (!PROBE_OUTSIDE_ARTIFACT_RE.test(file)) continue;
+      const path = join(dir, file);
+      try {
+        if (!lstatSync(path).isFile()) continue;
+        unlinkSync(path);
+        removed.push(path);
+      } catch {
+        // vanished or not removable; leave it
+      }
+    }
+    try {
+      rmdirSync(dir);
+      removed.push(dir);
+    } catch {
+      // something else remains inside; leave the directory in place
+    }
+  }
   return removed;
 }
 
@@ -705,6 +756,7 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
     const staleLeftovers = sweepStaleArtifacts({
       readDirs: plan.readTargets.map((t) => t.path),
       gitDir: plan.gitDir,
+      homeDir: input.protectedPaths.homeDir,
     });
 
     // Mirror layout, control canary and symlinks: all inside the probe directory.
@@ -793,6 +845,8 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       claudeVersion,
       leftovers,
       skippedTargets,
+      // What the launched treatment could edit, read off the exact profile it ran with.
+      treatmentEditGrants: fileEditGrants(launch.treatment),
     });
 
     return {

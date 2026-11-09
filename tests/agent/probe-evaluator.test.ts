@@ -8,7 +8,9 @@ import { type ProbePlan, planProbe } from '../../src/agent/probe.ts';
 import {
   classifyStep,
   evaluateProbe,
+  isUnlistedPathDenial,
   MATCHER_CLAUDE_VERSION,
+  MATCHER_REVISION,
 } from '../../src/agent/probe-evaluator.ts';
 import { parseStreamJson, type StreamEvent } from '../../src/agent/runner.ts';
 import {
@@ -17,6 +19,7 @@ import {
   ProbeTarget,
   type ProbeTargetId,
 } from '../../src/core/security/doctor-report.ts';
+import type { FileEditGrants } from '../../src/core/security/sandbox-settings.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURE_DIR = join(REPO_ROOT, 'tests', 'fixtures', 'stream-json');
@@ -496,5 +499,279 @@ describe('evaluateProbe', () => {
   it('with the matching version, an unknown message affects only its own target', () => {
     const targets = evaluateProbe(plan, load('unknown-message.jsonl'), control, options);
     expect(results(targets)).toEqual({ ...LIVE_EXPECTED, 'signing-key': 'not-checked' });
+  });
+});
+
+// --- The outside-workdir row and its scoped mode rule (01-17) ---------------------------------
+
+const MODE_TEXT = (tool: string) =>
+  `<tool_use_error>Permission to use ${tool} has been denied because Claude Code is running in don't ask mode.</tool_use_error>`;
+
+function toolCall(id: string, name: string, input: Record<string, unknown>): StreamEvent {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name, input }] },
+  };
+}
+
+function toolReply(
+  id: string,
+  content: string,
+  isError: boolean,
+  decision?: { decision: string; reason_type: string },
+): StreamEvent {
+  return {
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] },
+    ...(decision === undefined
+      ? {}
+      : {
+          tool_result_meta: [{ id, permission_decision: { ...decision, source: 'config' } }],
+        }),
+  };
+}
+
+interface OutsideScenario {
+  /** How the treatment's Write step ends (default: an agreed mode denial). */
+  write?: 'mode' | 'created';
+  /** Whether the treatment made its Read before Edit (default true). */
+  readBeforeEdit?: boolean;
+  /** Whether the Write and Edit ids are listed in result.permission_denials (default true). */
+  listDenials?: boolean;
+  /** The permission_decision reason_type of the denials (default `mode`). */
+  reasonType?: string;
+  /** A system/permission_denied event per denial with this reason type (default: none). */
+  deniedEventReason?: string;
+}
+
+/**
+ * A copy of a session stream with the three outside-workdir calls appended before its result
+ * event (synthetic, modelled on mode-only.jsonl's mode-denial record). The treatment's Write and
+ * Edit are refused by the mode; the control's three calls succeed in the mirror.
+ */
+function withOutside(
+  plan: ProbePlan,
+  events: readonly StreamEvent[],
+  session: 'treatment' | 'control',
+  scenario: OutsideScenario = {},
+): StreamEvent[] {
+  const files = session === 'treatment' ? plan.outside : plan.outsideMirror;
+  const { before, after } = plan.outside;
+  const ids = {
+    w: `toolu_outside_${session}_w`,
+    r: `toolu_outside_${session}_r`,
+    e: `toolu_outside_${session}_e`,
+  };
+  const added: StreamEvent[] = [];
+  const denials: unknown[] = [];
+  const decision = { decision: 'reject', reason_type: scenario.reasonType ?? 'mode' };
+  const deny = (id: string, tool: string, input: Record<string, unknown>) => {
+    added.push(toolReply(id, MODE_TEXT(tool), true, decision));
+    if (scenario.deniedEventReason !== undefined) {
+      added.push({
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: tool,
+        tool_use_id: id,
+        decision_reason_type: scenario.deniedEventReason,
+      });
+    }
+    if (scenario.listDenials ?? true) {
+      denials.push({ tool_name: tool, tool_use_id: id, tool_input: input });
+    }
+  };
+
+  const writeInput = { file_path: files.writeFile, content: `cp-probe ${plan.nonce}` };
+  added.push(toolCall(ids.w, 'Write', writeInput));
+  if (session === 'control' || scenario.write === 'created') {
+    added.push(toolReply(ids.w, `File created successfully at: ${files.writeFile}`, false));
+  } else {
+    deny(ids.w, 'Write', writeInput);
+  }
+  if (session === 'control' || (scenario.readBeforeEdit ?? true)) {
+    added.push(toolCall(ids.r, 'Read', { file_path: files.editFile }));
+    added.push(toolReply(ids.r, `     1\t${before}`, false));
+  }
+  const editInput = { file_path: files.editFile, old_string: before, new_string: after };
+  added.push(toolCall(ids.e, 'Edit', editInput));
+  if (session === 'control') {
+    added.push(
+      toolReply(ids.e, `The file ${files.editFile} has been updated successfully.`, false),
+    );
+  } else {
+    deny(ids.e, 'Edit', editInput);
+  }
+
+  const out = events.map((event) => structuredClone(event) as Record<string, unknown>);
+  const at = out.findLastIndex((event) => event.type === 'result');
+  if (at < 0) {
+    return [...(out as StreamEvent[]), ...added, { type: 'result', permission_denials: denials }];
+  }
+  const result = out[at] as Record<string, unknown>;
+  result.permission_denials = [...((result.permission_denials as unknown[]) ?? []), ...denials];
+  return [...(out.slice(0, at) as StreamEvent[]), ...added, ...(out.slice(at) as StreamEvent[])];
+}
+
+/** A copy of a stream whose Write call to `path` was refused by the mode with every record agreeing. */
+function modeDeniedWrite(events: readonly StreamEvent[], path: string): StreamEvent[] {
+  let id: string | undefined;
+  for (const event of events) {
+    if (event.type !== 'assistant') continue;
+    const content = (event as { message?: { content?: Array<Record<string, unknown>> } }).message
+      ?.content;
+    for (const block of content ?? []) {
+      const input = block.input as { file_path?: string } | undefined;
+      if (block.type === 'tool_use' && block.name === 'Write' && input?.file_path === path) {
+        id = String(block.id);
+      }
+    }
+  }
+  if (!id) throw new Error(`Write tool_use for ${path} not found`);
+  return events.map((event) => {
+    const copy = structuredClone(event) as Record<string, unknown>;
+    if (copy.type === 'user') {
+      const content = (copy.message as { content?: Array<Record<string, unknown>> }).content;
+      for (const block of content ?? []) {
+        if (block.type === 'tool_result' && block.tool_use_id === id) {
+          block.content = MODE_TEXT('Write');
+          block.is_error = true;
+          copy.tool_result_meta = [
+            {
+              id,
+              permission_decision: { decision: 'reject', source: 'config', reason_type: 'mode' },
+            },
+          ];
+        }
+      }
+    }
+    if (copy.type === 'system' && copy.subtype === 'permission_denied' && copy.tool_use_id === id) {
+      copy.decision_reason_type = 'mode';
+    }
+    if (copy.type === 'result') {
+      const listed = ((copy.permission_denials as Array<{ tool_use_id?: string }>) ?? []).some(
+        (d) => d.tool_use_id === id,
+      );
+      if (!listed) {
+        copy.permission_denials = [
+          ...((copy.permission_denials as unknown[]) ?? []),
+          { tool_name: 'Write', tool_use_id: id, tool_input: { file_path: path } },
+        ];
+      }
+    }
+    return copy as StreamEvent;
+  });
+}
+
+describe('MATCHER_REVISION', () => {
+  it('is 2: Edit steps and the scoped outside-workdir rule', () => {
+    expect(MATCHER_REVISION).toBe(2);
+  });
+});
+
+describe('the outside-workdir row (scoped mode-denial rule)', () => {
+  const plan = fixturePlan();
+  const treatment = keychainDenied(plan, load('live-treatment.jsonl'));
+  const control = withOutside(plan, load('live-control.jsonl'), 'control');
+  /** The production profile's grants: edits only inside the probe directory. */
+  const GRANTS: FileEditGrants = { everywhere: false, roots: ['/FIXTURE/probe'] };
+  const base = { claudeVersion: VERSION, leftovers: [] as string[] };
+  const outsideRow = (t: StreamEvent[], c: StreamEvent[], extra: object = {}) =>
+    evaluateProbe(plan, t, c, { ...base, treatmentEditGrants: GRANTS, ...extra }).find(
+      (row) => row.id === 'outside-workdir',
+    ) as ProbeTarget;
+
+  it('reads Blocked from agreed mode denials when no grant covers the path, and all eight rows pass', () => {
+    const targets = evaluateProbe(plan, withOutside(plan, treatment, 'treatment'), control, {
+      ...base,
+      treatmentEditGrants: GRANTS,
+    });
+    expect(targets).toHaveLength(8);
+    expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['blocked']));
+    const row = targets.find((t) => t.id === 'outside-workdir');
+    expect(row?.evidence).toBe(
+      'Write: denied: no allow rule covers this path; Read before Edit: reached; Edit: denied: no allow rule covers this path; control reached 3 of 3',
+    );
+  });
+
+  it('isUnlistedPathDenial holds for the outside Write and Edit steps only', () => {
+    const events = withOutside(plan, treatment, 'treatment');
+    const steps = plan.treatment.steps.filter((s) => s.target === 'outside-workdir');
+    expect(steps.map((s) => isUnlistedPathDenial(s, events, GRANTS))).toEqual([true, false, true]);
+  });
+
+  it.each([
+    ['the grants are omitted', {}, { treatmentEditGrants: undefined }],
+    ['the grants say everywhere', {}, { treatmentEditGrants: { everywhere: true, roots: [] } }],
+    [
+      'the path lies inside a granted root',
+      {},
+      { treatmentEditGrants: { everywhere: false, roots: ['/FIXTURE/scratch/home'] } },
+    ],
+    ['permission_denials lacks the ids', { listDenials: false }, {}],
+    ['reason_type is not mode', { reasonType: 'rule' }, {}],
+    ['a permission_denied event gives another reason', { deniedEventReason: 'rule' }, {}],
+    ['the Read before Edit is missing', { readBeforeEdit: false }, {}],
+  ] as Array<[string, OutsideScenario, object]>)(
+    'reads Not checked when %s',
+    (_name, scenario, extra) => {
+      const row = outsideRow(withOutside(plan, treatment, 'treatment', scenario), control, extra);
+      expect(row.result).toBe('not-checked');
+    },
+  );
+
+  it('says why a missing Read before Edit proves nothing', () => {
+    const row = outsideRow(
+      withOutside(plan, treatment, 'treatment', { readBeforeEdit: false }),
+      control,
+    );
+    expect(row.evidence).toMatch(
+      /^the treatment could not read the file before editing it, so the Edit denial proves nothing; /,
+    );
+  });
+
+  it('reads Not checked when the control could not reach its mirror twin', () => {
+    const row = outsideRow(withOutside(plan, treatment, 'treatment'), load('live-control.jsonl'));
+    expect(row.result).toBe('not-checked');
+  });
+
+  it('reads Reachable when the Write tool created the outside file', () => {
+    const row = outsideRow(
+      withOutside(plan, treatment, 'treatment', { write: 'created' }),
+      control,
+    );
+    expect(row.result).toBe('reachable');
+  });
+
+  it('reads Reachable when the post-state shows a leftover, whatever the stream says', () => {
+    const row = outsideRow(withOutside(plan, treatment, 'treatment'), control, {
+      leftovers: [plan.outside.editFile],
+    });
+    expect(row.result).toBe('reachable');
+    expect(row.evidence).toMatch(/outside the working folder/);
+  });
+
+  it('keeps a mode-only denial Not checked for git-hooks and git-info even with grants (scope pin)', () => {
+    const none: FileEditGrants = { everywhere: false, roots: [] };
+    const modeOnly = load('mode-only.jsonl');
+    const hooksWrite = step(plan, 'treatment', 'git-hooks', 'write');
+    const infoWrite = step(plan, 'treatment', 'git-info', 'write');
+    // mode-only.jsonl refuses the git-hooks Write by the mode; a copy refuses git-info's too.
+    const bothMode = modeDeniedWrite(modeOnly, infoWrite.path as string);
+    expect(classifyStep(hooksWrite, bothMode)).toBe('denied-mode');
+    expect(classifyStep(infoWrite, bothMode)).toBe('denied-mode');
+    expect(isUnlistedPathDenial(hooksWrite, bothMode, none)).toBe(false);
+    expect(isUnlistedPathDenial(infoWrite, bothMode, none)).toBe(false);
+
+    const targets = evaluateProbe(plan, bothMode, load('live-control.jsonl'), {
+      ...base,
+      treatmentEditGrants: none,
+    });
+    expect(results(targets)['git-hooks']).toBe('not-checked');
+    expect(results(targets)['git-info']).toBe('not-checked');
+    const plain = evaluateProbe(plan, modeOnly, load('live-control.jsonl'), {
+      ...base,
+      treatmentEditGrants: none,
+    });
+    expect(results(plain)['git-hooks']).toBe('not-checked');
   });
 });

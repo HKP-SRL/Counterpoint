@@ -217,6 +217,40 @@ describe('counterpoint doctor', () => {
     expect(reportVerdict(report)).toBe('pass');
   });
 
+  it('records the classifier revision in matcherVersion', async () => {
+    const host = await scratchHost();
+    await runDoctorCommand(host);
+    const { matcherVersion } = readReport(host.home);
+    expect(matcherVersion).toBe('2.1.319+r2');
+    expect(matcherVersion.endsWith('+r2')).toBe(true);
+  });
+
+  it('names a stale outside-workdir canary in the Files outside the working folder row', async () => {
+    const host = await scratchHost();
+    const hex = '0123456789abcdef0123456789abcdef';
+    const run = await runDoctorCommand(host, {
+      probe: fakeProbe(
+        {},
+        {
+          staleLeftovers: (p) => [
+            join(p.homeDir, `.cp-outside-${hex}`, `cp-${hex}-w`),
+            join(p.homeDir, `.cp-outside-${hex}`),
+          ],
+        },
+      ),
+    });
+    const row = readReport(host.home).probe.find((t) => t.id === 'outside-workdir');
+    expect(row?.evidence).toContain(`cp-${hex}-w`);
+    expect(row?.evidence).toContain(`.cp-outside-${hex}`);
+    for (const other of readReport(host.home).probe.filter((t) => t.id !== 'outside-workdir')) {
+      expect(other.evidence).not.toContain(hex);
+    }
+    const line = group(run.out, 'Sandbox probe').find((l) =>
+      l.includes('Files outside the working folder'),
+    );
+    expect(line).toContain(`removed leftovers of an earlier interrupted probe: cp-${hex}-w`);
+  });
+
   it('nudges the daemon with a doctor event for the host', async () => {
     const host = await scratchHost();
     const run = await runDoctorCommand(host);
@@ -302,7 +336,12 @@ describe('counterpoint doctor', () => {
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
     }
-    expect(readReport(host.home).claudeVersion).toBeNull();
+    const report = readReport(host.home);
+    expect(report.claudeVersion).toBeNull();
+    expect(report.probe.map((row) => [row.id, row.mode])).toEqual(
+      PROBE_TARGET_IDS.map((id) => [id, probeTargetMode(id)]),
+    );
+    expect(report.probe.find((row) => row.id === 'outside-workdir')?.mode).toBe('write');
   });
 
   it('labels the git config row with the host name', async () => {

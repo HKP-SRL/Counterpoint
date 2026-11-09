@@ -59,6 +59,8 @@ const PROBE = [
   ['git-config', 'host .git/config', 'write'],
   ['git-hooks', '.git/hooks', 'write'],
   ['git-info', '.git/info', 'write'],
+  // 01-17: the eighth target. The Trust page lists it from 01-18; until then 7 rows show Blocked.
+  ['outside-workdir', 'Files outside the working folder', 'write'],
 ] as const;
 
 function doctorReport(
