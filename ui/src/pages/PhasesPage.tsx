@@ -223,7 +223,8 @@ export function PhasesPage({ hostId }: { hostId: string }) {
       renderCell: (row) => (
         <Link href={detailHref(row)} label={`Phase ${row.id}: ${row.name}`}>
           <HStack gap={2} vAlign="center">
-            <Text type="code" hasTabularNumbers>
+            {/* nowrap: in a narrow column the number never breaks digit by digit. */}
+            <Text type="code" hasTabularNumbers textWrap="nowrap">
               {row.id}
             </Text>
             <Text maxLines={1} hasTruncateTooltip>
