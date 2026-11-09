@@ -34,6 +34,8 @@ export interface HostRuntime {
   readonly adapter: FrameworkAdapter | null;
   /** The commit `refs/heads/{base}` points at now. */
   tip(): Promise<string | null>;
+  /** The tip of the snapshot last served to the console, or null before the first one. */
+  servedTip(): string | null;
   /** The view at the current tip (cached per tip). */
   view(): Promise<HostView>;
 }
@@ -141,6 +143,7 @@ function createRuntime(
     reader,
     adapter,
     tip: () => reader.resolve(ref),
+    servedTip: () => cache?.tip ?? null,
     async view() {
       const tip = await reader.resolve(ref);
       if (tip === null || adapter === null) return { tip, snapshot: null, retryPending: false };

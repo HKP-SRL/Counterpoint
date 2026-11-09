@@ -59,10 +59,11 @@ export function startWatcher(options: WatcherOptions): Watcher {
       try {
         // The ref is `refs/heads/{base}`; the runtime resolves it through the git reader.
         const tip = await runtime.tip();
-        const known = lastTips.has(id);
-        const previous = lastTips.get(id);
+        // On the first look at a host, the baseline is what the console was last served: the base
+        // branch may have moved between a page load and this host's first poll.
+        const previous = lastTips.has(id) ? lastTips.get(id) : runtime.servedTip();
         lastTips.set(id, tip);
-        if (!known || previous === tip) continue;
+        if (previous === undefined || previous === null || previous === tip) continue;
         // Refresh before announcing, so the refetch the event triggers hits a warm cache.
         await runtime.view().catch((error: unknown) => {
           log('watch-snapshot-failed', { hostId: id, message: (error as Error).message });
