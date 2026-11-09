@@ -19,7 +19,8 @@ const NOW = 1_800_000_000_000;
 const FIVE_MIN = 5 * 60 * 1000;
 const TWELVE_H = 12 * 60 * 60 * 1000;
 const B64URL_32 = /^[A-Za-z0-9_-]{43}$/;
-const COOKIE_RE = /^cp_session=([A-Za-z0-9_-]{43}); HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/;
+const COOKIE_RE =
+  /^cp_session=([A-Za-z0-9_-]{43}); HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/;
 
 const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -137,7 +138,13 @@ describe('GET /login', () => {
   function addHost(id: string, now: number) {
     upsertHost(
       db,
-      { id, root: `/repos/${id}`, gitCommonDir: `/repos/${id}/.git`, baseBranch: 'main', adapter: 'none' },
+      {
+        id,
+        root: `/repos/${id}`,
+        gitCommonDir: `/repos/${id}/.git`,
+        baseBranch: 'main',
+        adapter: 'none',
+      },
       now,
     );
   }

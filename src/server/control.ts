@@ -12,6 +12,7 @@ import {
   NotARepositoryError,
   registerHost,
 } from '../core/host/registry.ts';
+import { mintLoginCode } from '../core/security/login.ts';
 import { hostRegistryStore, listHosts, type Store } from '../core/store/db.ts';
 
 export interface ControlAppOptions {
@@ -85,6 +86,13 @@ export function createControlApp(options: ControlAppOptions): Hono {
       }
       throw error;
     }
+  });
+
+  // A fresh one-time sign-in link (D-07). Only the owner's CLI, holding the 0600 token, gets here;
+  // the link is printed to the owner's terminal and never logged.
+  app.post('/control/login-code', (c) => {
+    const code = mintLoginCode(options.store);
+    return c.json({ url: `http://127.0.0.1:${options.port}/login?code=${code}` });
   });
 
   app.post('/control/stop', (c) => {

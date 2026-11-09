@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
 
 export const PACKAGE_NAME = '@hkp/counterpoint';
@@ -51,6 +52,28 @@ export function createApp(options: AppOptions): Hono {
   app.use('*', async (c, next) => {
     if (c.req.header('host') !== allowedHost) return c.json({ error: 'blocked' }, 403);
     await next();
+  });
+
+  // The one-time sign-in exchange (D-07). Outside /api and the session check, behind the Host
+  // check. The query string carries the code, so it is never logged. Only a real GET consumes a
+  // code: HEAD (link previews, prefetch) must not burn the owner's link.
+  app.get('/login', (c) => {
+    c.header('Cache-Control', 'no-store');
+    if (c.req.method !== 'GET') return c.body(null, 405);
+    if (!consumeLoginCode(options.store, c.req.query('code'))) {
+      return c.redirect('/signed-out?reason=used', 302);
+    }
+    const session = createSession(options.store);
+    // No Secure flag and no __Host- prefix: Safari drops Secure cookies on http://127.0.0.1 (A7).
+    // Max-Age is SESSION_TTL_MS (12 h) in seconds.
+    c.header(
+      'Set-Cookie',
+      `${SESSION_COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`,
+    );
+    const newest = listHosts(options.store)
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+      .at(-1);
+    return c.redirect(newest === undefined ? '/' : `/h/${newest.id}`, 302);
   });
 
   app.get('/api/hosts', (c) =>

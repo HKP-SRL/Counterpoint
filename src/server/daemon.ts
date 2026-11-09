@@ -22,6 +22,7 @@ import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { detectFramework } from '../compose.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
+import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createControlApp, hashToken } from './control.ts';
@@ -162,6 +163,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
+  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes.
+  clearAllSessions(store);
+  deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no
   // request can arrive before `listening`.

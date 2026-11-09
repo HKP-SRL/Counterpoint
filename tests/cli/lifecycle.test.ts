@@ -18,7 +18,8 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = join(REPO_ROOT, 'src', 'cli', 'main.ts');
-const LINK_RE = /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:(\d+)\/login\?code=[A-Za-z0-9_-]{43})$/m;
+const LINK_RE =
+  /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:(\d+)\/login\?code=[A-Za-z0-9_-]{43})$/m;
 
 interface CliResult {
   exitCode: number;
