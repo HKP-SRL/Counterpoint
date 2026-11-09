@@ -4,10 +4,10 @@ current_phase: 01
 current_phase_name: Trusted Shell & Signed Runway
 status: executing
 stopped_at: Phase 1 UI-SPEC approved
-last_updated: "2026-11-09T17:39:15.274Z"
+last_updated: "2026-11-09T17:49:13.088Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 01 execution started
-state_head: 221d491d3a512b563b42886d47b89228ff0a27d2
+state_head: 472b4ccfc29996eb3dbb66e032c384f27695d3ef
 progress:
   total_phases: 6
   completed_phases: 0
@@ -65,6 +65,9 @@ Recent decisions affecting current work:
 - [Roadmap]: Phase 2 is CLI first. One unattended overnight run on a Cena QR-menu phase ending in a green PR is the exit gate for later phases.
 - [Roadmap]: The variants / "More like B" round model is built once in Phase 4 (drafts) and reused by council cards in Phase 5.
 - [Owner]: Approvals live in the host repo's normal history (research D2 rejected). The console uses Astryx. The package is `@hkp/counterpoint`.
+- [Phase 01]: [Owner] Approval statement format frozen as RESEARCH Item 4 (counterpoint/approval/v1, no prepared block)
+- [Phase 01]: [Owner] Keychain reachability (WINDOWS.md #1) accepted and documented; doctor gets an explicit recorded exception for the gh credentials row (to implement in a Phase 1 gap plan)
+- [Phase 01]: [Owner] Write/Edit tools writing outside the sandbox (WINDOWS.md #2) to be fixed by a Phase 1 gap-closure plan before 01-16
 
 ### Pending Todos
 
