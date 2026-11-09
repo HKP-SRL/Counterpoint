@@ -109,7 +109,10 @@ async function prepare(
   });
 }
 
-async function phaseRow(phaseId: string, options: { approvals?: ApprovalViews; home?: string } = {}) {
+async function phaseRow(
+  phaseId: string,
+  options: { approvals?: ApprovalViews; home?: string } = {},
+) {
   const body = (await (await get(`/api/hosts/${hostId}/phases`, options)).json()) as {
     phases: PhaseRow[];
   };

@@ -4,6 +4,11 @@
 // status and prerequisites are derived here by core (src/core/runway/status.ts). Ids are checked
 // against the strict id rules before any lookup (T-01-41). Input bytes never leave the server:
 // only their `sha256:` digests do.
+//
+// Approval overlay (APPR-02): each row's approval state comes from the approval views (verified
+// from git at the base tip, src/server/approval-views.ts). `on-runway` / `changed` become the
+// status overlay; an `invalid` approval keeps the base status and is reported as invalid with its
+// reason (fail closed). No stored row ever decides a status.
 import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { sha256Digest } from '../../core/approvals/digest.ts';
@@ -14,17 +19,54 @@ import {
 } from '../../core/framework/port.ts';
 import { UnsafeTreeEntryError } from '../../core/git/reader.ts';
 import { HOST_ID_RE, PHASE_ID_RE } from '../../core/ids.ts';
+import type { ApprovalState } from '../../core/runway/runway.ts';
 import { derivePhaseStatus, phasePrerequisites } from '../../core/runway/status.ts';
-import type { HostRuntimes } from '../hosts.ts';
+import type { ApprovalViews } from '../approval-views.ts';
+import type { HostRuntime, HostRuntimes } from '../hosts.ts';
 
 export interface PhaseRoutesOptions {
   runtimes: HostRuntimes;
+  /** Approval views; without them no approval is shown and no overlay applied. */
+  approvals?: ApprovalViews;
+}
+
+type ApprovalFacts =
+  | { state: 'on-runway' | 'changed'; signedAt: string; commit: string }
+  | { state: 'invalid'; reason: string };
+
+function approvalFacts(state: ApprovalState | undefined): ApprovalFacts | null {
+  if (state === undefined) return null;
+  switch (state.state) {
+    case 'on-runway':
+    case 'changed':
+      return { state: state.state, signedAt: state.signedAt, commit: state.commit };
+    case 'invalid':
+      return { state: 'invalid', reason: state.reason };
+    case 'none':
+      return null;
+  }
+}
+
+/** Approval states at `tip` by phase id; an empty map when they cannot be computed. */
+async function approvalStates(
+  approvals: ApprovalViews | undefined,
+  runtime: HostRuntime,
+  tip: string | null,
+): Promise<Map<string, ApprovalState>> {
+  if (approvals === undefined || tip === null) return new Map();
+  try {
+    return await approvals.states(runtime, tip);
+  } catch {
+    return new Map();
+  }
 }
 
 const INPUTS_UNREADABLE = "Couldn't read this phase's inputs.";
 
-function phaseRow(phase: PhaseFacts) {
-  const { status, notReadyReason } = derivePhaseStatus(phase);
+function phaseRow(phase: PhaseFacts, approval: ApprovalState | undefined) {
+  const overlay =
+    approval?.state === 'on-runway' || approval?.state === 'changed' ? approval.state : null;
+  const { status, notReadyReason } = derivePhaseStatus(phase, overlay);
   const prerequisites = phasePrerequisites(phase);
   return {
     id: phase.id,
@@ -36,6 +78,7 @@ function phaseRow(phase: PhaseFacts) {
     nonAutonomousCount: prerequisites.nonAutonomous,
     userSetup: prerequisites.userSetup.map((item) => ({ service: item.service, why: item.why })),
     unreadable: phase.unreadable,
+    approval: approvalFacts(approval),
   };
 }
 
@@ -47,7 +90,7 @@ function inputsErrorText(error: unknown): string {
 }
 
 export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
-  const { runtimes } = options;
+  const { runtimes, approvals } = options;
 
   app.get('/api/hosts/:hostId/phases', async (c) => {
     const hostId = c.req.param('hostId');
@@ -59,13 +102,14 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
     const phases = [...(view.snapshot?.phases ?? [])].sort((a, b) =>
       comparePhaseNumbers(a.number, b.number),
     );
+    const states = await approvalStates(approvals, runtime, view.tip);
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
       unreadable: view.snapshot?.unreadable ?? null,
-      phases: phases.map(phaseRow),
+      phases: phases.map((phase) => phaseRow(phase, states.get(phase.id))),
     });
   });
 
@@ -83,6 +127,7 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
       return c.json({ error: 'not found' }, 404);
     }
 
+    const states = await approvalStates(approvals, runtime, view.tip);
     let inputs: {
       path: string;
       label: string;
@@ -112,7 +157,7 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
-      ...phaseRow(phase),
+      ...phaseRow(phase, states.get(phase.id)),
       goal: phase.goal,
       dependsOn: phase.dependsOn,
       requirements: phase.requirements,
