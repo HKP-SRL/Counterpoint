@@ -214,7 +214,7 @@ See `key-decisions` in the frontmatter.
 ## Issues Encountered
 
 - **The live doctor will fail on this machine, by design.** No live doctor run was made here. The plan does not require one: its tests use an injected probe, and the live path was proven in 01-04/01-05. A live run would also plant canaries in the owner's real `~/.ssh` and gh config. When the owner runs it (01-16), the probe is expected to report `gh credentials: REACHABLE` (WINDOWS.md #1, sandboxed Bash can read the login Keychain). Doctor then prints `Agent sandbox is not confining sessions: 1 target was reachable.` and exits 1. This is the intended fail-closed behaviour. No check was weakened. WINDOWS.md #2 (Write/Edit outside the sandbox write scope) is not covered by the probe's seven targets. It stays an open owner decision.
-- **Edit tool and U+2028.** The first `printable()` regex was written with ` `/` ` escapes, and the file write turned them into literal line separators, which broke parsing. The function now checks code points numerically, and the file has no literal separator characters.
+- **Edit tool and U+2028.** The first `printable()` regex was written with `U+2028`/`U+2029` escapes, and the file write turned them into literal line separators, which broke parsing. The function now checks code points numerically, and the file has no literal separator characters.
 - **Vitest 5 `-t` filter.** Vitest 5 matches `-t` against the full name joined with ` > ` (for example `trustKeyCommand > refuses without a terminal`), not with spaces. This matters when isolating a RED target.
 
 ## Known Stubs
