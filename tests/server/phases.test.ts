@@ -317,7 +317,17 @@ describe('base-tip watcher', () => {
 });
 
 describe('GET /api/hosts/:hostId/doctor', () => {
-  const PROBE_IDS = ['signing-key', 'ssh', 'gh', 'state', 'git-config', 'git-hooks', 'git-info'];
+  const PROBE_IDS = [
+    'signing-key',
+    'ssh',
+    'gh',
+    'state',
+    'git-config',
+    'git-hooks',
+    'git-info',
+    'outside-workdir',
+  ];
+  const WRITE_IDS = new Set(['git-config', 'git-hooks', 'git-info', 'outside-workdir']);
   const reportFile = () => join(home, 'hosts', hostId, 'doctor.json');
   const report = (overrides: Record<string, unknown> = {}) => {
     const check = (id: string) => ({ id, label: id, result: 'pass', detail: 'ok' });
@@ -333,7 +343,7 @@ describe('GET /api/hosts/:hostId/doctor', () => {
       probe: PROBE_IDS.map((id, index) => ({
         id,
         label: id,
-        mode: 'read',
+        mode: WRITE_IDS.has(id) ? 'write' : 'read',
         result: overrides.reachableIndex === index ? 'reachable' : 'blocked',
         evidence: 'probe',
       })),

@@ -1,9 +1,11 @@
 // `counterpoint doctor` with an injected probe (no live claude), fake tool and key checks, a
 // throwaway trusted key and scratch hosts. The live probe path is proven in 01-04/01-05 and
 // exercised by the owner in 01-16.
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
+import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { type TrustResult, writeTrust } from '../../src/core/approvals/trust-store.ts';
@@ -14,6 +16,7 @@ import {
   type ProbeResult,
   type ProbeTarget,
   probeTargetLabel,
+  probeTargetMode,
   reportVerdict,
 } from '../../src/core/security/doctor-report.ts';
 import type { ProtectedPaths } from '../../src/core/security/sandbox-settings.ts';
@@ -112,7 +115,7 @@ function fakeProbe(
     const targets: ProbeTarget[] = PROBE_TARGET_IDS.map((id) => ({
       id,
       label: probeTargetLabel(id, 'Host'),
-      mode: id.startsWith('git-') ? 'write' : 'read',
+      mode: probeTargetMode(id),
       result: results[id] ?? 'blocked',
       evidence: `evidence for ${id}`,
     }));
@@ -194,8 +197,11 @@ describe('counterpoint doctor', () => {
       /^ {2}PASS {9}drepo-\S+ \.git\/config and hooks match your baseline: /,
     );
     const probeRows = group(run.out, 'Sandbox probe');
-    expect(probeRows).toHaveLength(7);
+    expect(probeRows).toHaveLength(8);
     for (const row of probeRows) expect(row).toMatch(/^ {2}BLOCKED {5}/);
+    expect(probeRows.at(-1)).toBe(
+      '  BLOCKED      Files outside the working folder: evidence for outside-workdir',
+    );
     expect(run.out).toContain('Agents are boxed in');
   });
 
@@ -209,6 +215,40 @@ describe('counterpoint doctor', () => {
     expect(report.hostId).toBe('demo');
     expect(report.claudeVersion).toBe('2.1.319 (Claude Code)');
     expect(reportVerdict(report)).toBe('pass');
+  });
+
+  it('records the classifier revision in matcherVersion', async () => {
+    const host = await scratchHost();
+    await runDoctorCommand(host);
+    const { matcherVersion } = readReport(host.home);
+    expect(matcherVersion).toBe('2.1.319+r2');
+    expect(matcherVersion.endsWith('+r2')).toBe(true);
+  });
+
+  it('names a stale outside-workdir canary in the Files outside the working folder row', async () => {
+    const host = await scratchHost();
+    const hex = '0123456789abcdef0123456789abcdef';
+    const run = await runDoctorCommand(host, {
+      probe: fakeProbe(
+        {},
+        {
+          staleLeftovers: (p) => [
+            join(p.homeDir, `.cp-outside-${hex}`, `cp-${hex}-w`),
+            join(p.homeDir, `.cp-outside-${hex}`),
+          ],
+        },
+      ),
+    });
+    const row = readReport(host.home).probe.find((t) => t.id === 'outside-workdir');
+    expect(row?.evidence).toContain(`cp-${hex}-w`);
+    expect(row?.evidence).toContain(`.cp-outside-${hex}`);
+    for (const other of readReport(host.home).probe.filter((t) => t.id !== 'outside-workdir')) {
+      expect(other.evidence).not.toContain(hex);
+    }
+    const line = group(run.out, 'Sandbox probe').find((l) =>
+      l.includes('Files outside the working folder'),
+    );
+    expect(line).toContain(`removed leftovers of an earlier interrupted probe: cp-${hex}-w`);
   });
 
   it('nudges the daemon with a doctor event for the host', async () => {
@@ -292,11 +332,16 @@ describe('counterpoint doctor', () => {
     });
     expect(run.code).toBe(1);
     const rows = group(run.out, 'Sandbox probe');
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
     }
-    expect(readReport(host.home).claudeVersion).toBeNull();
+    const report = readReport(host.home);
+    expect(report.claudeVersion).toBeNull();
+    expect(report.probe.map((row) => [row.id, row.mode])).toEqual(
+      PROBE_TARGET_IDS.map((id) => [id, probeTargetMode(id)]),
+    );
+    expect(report.probe.find((row) => row.id === 'outside-workdir')?.mode).toBe('write');
   });
 
   it('labels the git config row with the host name', async () => {
@@ -385,6 +430,84 @@ describe('counterpoint doctor', () => {
     const row = report.probe.find((target) => target.id === 'signing-key');
     expect(row?.result).toBe('not-checked');
     expect(row?.evidence).toContain('No trusted signing key');
+  });
+
+  it('reads Files outside the working folder REACHABLE through the real probe pipeline (fake claude)', async () => {
+    // The real runSandboxProbe (launch profile, plan, launch, evaluator, cleanup) behind
+    // doctorCommand, with a fake claude whose Write tool is unconfined: it creates the outside
+    // Write file the treatment prompt names. No live claude, no real Keychain.
+    class OutsideWriter implements AgentRunner {
+      readonly outsideDirs: string[] = [];
+
+      async run(request: AgentRunRequest): Promise<AgentRun> {
+        const prompt = request.argv[request.argv.indexOf('-p') + 1] as string;
+        const target =
+          /Write tool, file_path: (\/[^,]*\/\.cp-outside-[0-9a-f]{32}\/cp-[0-9a-f]{32}-w),/.exec(
+            prompt,
+          )?.[1];
+        if (target !== undefined) {
+          this.outsideDirs.push(dirname(target));
+          writeFileSync(target, 'cp-probe');
+        }
+        writeFileSync(request.rawLogPath, '{"type":"result","subtype":"success"}\n', { flag: 'a' });
+        return {
+          events: [{ type: 'result', subtype: 'success' }],
+          raw: '{"type":"result","subtype":"success"}\n',
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+          result: { type: 'result', subtype: 'success' },
+        };
+      }
+
+      async version(): Promise<string | null> {
+        return '2.1.319 (Claude Code)';
+      }
+    }
+    const keychain: KeychainPort = {
+      async add() {
+        return true;
+      },
+      async remove() {},
+    };
+    const runner = new OutsideWriter();
+    const tmpRoot = makeScratchDir('dptmp');
+    const host = await scratchHost();
+
+    const run = await runDoctorCommand(host, {
+      probe: async ({ protectedPaths, logDir }) => {
+        const outcome = await runSandboxProbe({
+          protectedPaths,
+          runner,
+          logDir,
+          keychain,
+          tmpRoot,
+        });
+        return {
+          targets: outcome.targets,
+          claudeVersion: outcome.claudeVersion,
+          staleLeftovers: outcome.staleLeftovers,
+        };
+      },
+    });
+
+    // The treatment prompt named a canary dir in the scratch user home, and the probe planted it.
+    const outsideRoot = runner.outsideDirs[0] as string;
+    expect(dirname(outsideRoot)).toBe(userHome);
+    const row = readReport(host.home).probe.find((target) => target.id === 'outside-workdir');
+    expect(row?.result).toBe('reachable');
+    expect(row?.mode).toBe('write');
+    const line = group(run.out, 'Sandbox probe').find((l) =>
+      l.includes('Files outside the working folder'),
+    );
+    expect(line).toMatch(/^ {2}REACHABLE {4}Files outside the working folder: /);
+    expect(run.out).toContain(
+      'Approvals still work, but builds will refuse to start until this passes.',
+    );
+    // Nothing of the probe is left in the user home.
+    expect(existsSync(outsideRoot)).toBe(false);
+    expect(readdirSync(userHome).filter((name) => name.startsWith('.cp-outside-'))).toEqual([]);
+    expect(run.code).toBe(1);
   });
 
   it('formats a stored report the same way', async () => {

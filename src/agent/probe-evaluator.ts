@@ -13,6 +13,15 @@
 // mirror canary) reached it. Anything else, including a skipped step, a mode-based denial, an
 // unrecognised message and a control session that could not reach its mirror, is Not checked.
 //
+// One scoped exception (01-17, MATCHER_REVISION 2): the `outside-workdir` row's Write and Edit
+// steps target a home path no deny rule covers, so their expected refusal comes from the
+// permission mode (dontAsk), not from a rule. Such a mode denial counts only for those two
+// steps, only when every record agrees (is_error, mode text, `permission_decision` reject with
+// `reason_type` mode, listed in `result.permission_denials`, and a `system/permission_denied`
+// event, if any, giving `mode`), and only when the launched treatment profile grants no file edit
+// covering the path (`treatmentEditGrants`, from fileEditGrants). For every other target a
+// mode-family denial stays Not checked.
+//
 // The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live in 01-04 and
 // 01-05). Update the families together with MATCHER_CLAUDE_VERSION when Claude Code changes its
 // messages; until then another version that prints anything unfamiliar reads Not checked.
@@ -22,12 +31,21 @@ import {
   type ProbeTarget,
   type ProbeTargetId,
   probeTargetLabel,
+  probeTargetMode,
 } from '../core/security/doctor-report.ts';
+import type { FileEditGrants } from '../core/security/sandbox-settings.ts';
 import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
 /** The claude version the denial-text families below were verified against. */
 export const MATCHER_CLAUDE_VERSION = '2.1.319';
+
+/**
+ * The classifier revision, recorded in the doctor report's `matcherVersion`
+ * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped
+ * outside-workdir mode-denial rule (01-17).
+ */
+export const MATCHER_REVISION = 2;
 
 export type StepClass =
   | 'reached'
@@ -58,6 +76,7 @@ const READ_OPERATIONS: ReadonlySet<StepOperation> = new Set([
   'grep',
   'read-symlink',
   'keychain',
+  'read-before-edit',
 ]);
 
 /** Case-folded, with typographic apostrophes made plain, for family matching. */
@@ -187,6 +206,7 @@ function matchesStep(step: ProbeStep, use: ToolUse): boolean {
       return use.input.path === step.path && use.input.pattern === step.pattern;
     case 'Read':
     case 'Write':
+    case 'Edit':
       return use.input.file_path === step.path;
   }
 }
@@ -254,7 +274,12 @@ function classifyUse(
 }
 
 function isRuleText(step: ProbeStep, use: ToolUse, text: string): boolean {
-  if ((step.tool === 'Read' || step.tool === 'Write') && text === RULE_FILE_TEXT) return true;
+  if (
+    (step.tool === 'Read' || step.tool === 'Write' || step.tool === 'Edit') &&
+    text === RULE_FILE_TEXT
+  ) {
+    return true;
+  }
   if (step.tool === 'Read' || step.tool === 'Grep') {
     const match = RULE_READ_RE.exec(text);
     const target = step.tool === 'Read' ? use.input.file_path : use.input.path;
@@ -304,6 +329,12 @@ export interface EvaluateProbeOptions {
   skippedTargets?: readonly ProbeTargetId[];
   /** Host display name for the `{host} .git/config` label. */
   hostName?: string;
+  /**
+   * Where the launched treatment profile lets file tools write (fileEditGrants of the exact
+   * settings and tool list the treatment ran with). Without it no step is ever `denied-unlisted`,
+   * so the outside-workdir row cannot read Blocked from a mode denial.
+   */
+  treatmentEditGrants?: FileEditGrants;
 }
 
 /** The `x.y.z` part of a `claude --version` string, or null. */
@@ -320,16 +351,60 @@ const OPERATION_LABEL: Readonly<Record<StepOperation, string>> = {
   append: 'Bash append',
   touch: 'Bash touch',
   write: 'Write',
+  'read-before-edit': 'Read before Edit',
+  edit: 'Edit',
 };
 
-const CLASS_LABEL: Readonly<Record<StepClass, string>> = {
+const CLASS_LABEL: Readonly<Record<StepClass | 'denied-unlisted', string>> = {
   reached: 'reached',
   'denied-rule': 'denied by permission rule',
   'denied-os': 'Operation not permitted (sandbox)',
   'denied-mode': 'denied by the permission mode, not a rule',
+  'denied-unlisted': 'denied: no allow rule covers this path',
   skipped: 'not attempted',
   unknown: 'unrecognised result',
 };
+
+/**
+ * True only for the `outside-workdir` row's Write or Edit step when the treatment profile grants
+ * no file edit covering the step's path (not everywhere, no root containing it) AND every matching
+ * tool call's records agree that the permission mode refused it: `is_error`, the mode-family
+ * text, a `permission_decision` reject with `reason_type` mode, its id in
+ * `result.permission_denials`, and a `system/permission_denied` event, when present, giving
+ * `mode`. Anything else is false, so the step stays `denied-mode` (Not checked).
+ */
+export function isUnlistedPathDenial(
+  step: ProbeStep,
+  events: readonly StreamEvent[],
+  grants: FileEditGrants,
+): boolean {
+  if (step.target !== 'outside-workdir') return false;
+  const editStep =
+    (step.tool === 'Write' && step.operation === 'write') ||
+    (step.tool === 'Edit' && step.operation === 'edit');
+  if (!editStep || step.path === null) return false;
+  const path = step.path;
+  if (grants.everywhere) return false;
+  if (grants.roots.some((root) => isInsideDir(path, root))) return false;
+
+  const uses = toolUses(events).filter((use) => matchesStep(step, use));
+  if (uses.length === 0) return false;
+  const denied = deniedIds(events);
+  const eventReasons = deniedEventReasons(events);
+  return uses.every((use) => {
+    const result = toolResult(events, use.id);
+    if (result === null) return false;
+    const eventReason = eventReasons.get(use.id);
+    return (
+      result.isError === true &&
+      folded(result.text).includes(folded(MODE_FAMILY_TEXT)) &&
+      result.decision?.decision === 'reject' &&
+      result.decision.reasonType === 'mode' &&
+      denied.has(use.id) &&
+      (eventReason === undefined || eventReason === 'mode')
+    );
+  });
+}
 
 const KEYCHAIN_NOTE =
   "the Keychain sub-step used a temporary canary item as a proxy for the owner's gh keyring entry";
@@ -367,6 +442,8 @@ export function evaluateProbe(
 
   const valueFor = (step: ProbeStep, values: Map<string, string>): string | undefined => {
     if (step.operation === 'keychain') return plan.keychain.value;
+    // The outside Edit file holds the `before` marker in both sessions.
+    if (step.operation === 'read-before-edit') return plan.outside.before;
     if (!READ_OPERATIONS.has(step.operation) || step.reaches === null) return undefined;
     // A read step with no known canary value can never count as reached by value.
     return values.get(step.reaches) ?? `\0no-canary:${step.reaches}`;
@@ -392,7 +469,8 @@ export function evaluateProbe(
   return PROBE_TARGET_IDS.map((id): ProbeTarget => {
     const readTarget = plan.readTargets.find((t) => t.id === id);
     const writeTarget = plan.writeTargets.find((t) => t.id === id);
-    const mode = readTarget ? 'read' : 'write';
+    const mode = probeTargetMode(id);
+    const outsideRow = id === 'outside-workdir';
     const row = (result: ProbeResult, evidence: string): ProbeTarget => ({
       id,
       label: probeTargetLabel(id, options.hostName ?? 'Host'),
@@ -418,10 +496,24 @@ export function evaluateProbe(
       return row('not-checked', 'the treatment and control plans do not match step for step');
     }
 
+    // The scoped rule: on the outside row only, a Write or Edit step denied by the mode counts as
+    // denied when isUnlistedPathDenial holds (every record agrees and no grant covers the path).
+    const unlisted = new Set<number>();
+    const grants = options.treatmentEditGrants;
+    if (outsideRow && grants !== undefined) {
+      for (const s of tSteps) {
+        if (tClass.get(s.index) === 'denied-mode' && isUnlistedPathDenial(s, treatment, grants)) {
+          unlisted.add(s.index);
+        }
+      }
+    }
     const stepSummary = tSteps
-      .map(
-        (s) => `${OPERATION_LABEL[s.operation]}: ${CLASS_LABEL[tClass.get(s.index) ?? 'unknown']}`,
-      )
+      .map((s) => {
+        const label = unlisted.has(s.index)
+          ? CLASS_LABEL['denied-unlisted']
+          : CLASS_LABEL[tClass.get(s.index) ?? 'unknown'];
+        return `${OPERATION_LABEL[s.operation]}: ${label}`;
+      })
       .join('; ');
     const controlReached = pairs.filter(({ c }) => c && cClass.get(c.index) === 'reached').length;
     const controlSummary = `control reached ${controlReached} of ${pairs.length}`;
@@ -442,14 +534,36 @@ export function evaluateProbe(
     if (writeTarget && id !== 'git-config') {
       const left = options.leftovers.filter((path) => isInsideDir(path, writeTarget.path));
       if (left.length > 0) {
-        return row('reachable', `probe file left in the git dir after the treatment; ${evidence}`);
+        return row(
+          'reachable',
+          outsideRow
+            ? `probe file written or changed outside the working folder by the treatment; ${evidence}`
+            : `probe file left in the git dir after the treatment; ${evidence}`,
+        );
       }
     }
-    if (tSteps.some((s) => tClass.get(s.index) === 'reached')) return row('reachable', evidence);
+    // The outside row's Read before Edit is preparatory: reading that unprotected file is
+    // expected, so it is never a reach and never part of the denial.
+    const probedSteps = outsideRow
+      ? tSteps.filter((s) => s.operation !== 'read-before-edit')
+      : tSteps;
+    if (probedSteps.some((s) => tClass.get(s.index) === 'reached')) {
+      return row('reachable', evidence);
+    }
+    if (outsideRow) {
+      const prep = tSteps.find((s) => s.operation === 'read-before-edit');
+      if (prep === undefined || tClass.get(prep.index) !== 'reached') {
+        return row(
+          'not-checked',
+          `the treatment could not read the file before editing it, so the Edit denial proves nothing; ${evidence}`,
+        );
+      }
+    }
 
-    const treatmentDenied = tSteps.every((s) => {
+    const treatmentDenied = probedSteps.every((s) => {
       const cls = tClass.get(s.index);
-      if (s.tool === 'Write') return cls === 'denied-rule';
+      if (s.tool === 'Write' || s.tool === 'Edit')
+        return cls === 'denied-rule' || unlisted.has(s.index);
       return cls === 'denied-rule' || cls === 'denied-os';
     });
     const controlAll = controlReached === pairs.length;

@@ -9,10 +9,14 @@ import {
   DoctorReport,
   isReportStale,
   PROBE_TARGET_IDS,
+  probeTargetMode,
   reportVerdict,
 } from '../../../src/core/security/doctor-report.ts';
 import {
+  AGENT_TOOLS,
   buildAgentSandboxSettings,
+  FILE_EDIT_TOOLS,
+  fileEditGrants,
   type ProtectedPaths,
 } from '../../../src/core/security/sandbox-settings.ts';
 import { initScratchRepo, makeScratchDir, removeScratchDirs } from '../../helpers/scratch.ts';
@@ -105,7 +109,7 @@ describe('buildAgentSandboxSettings', () => {
 
   it('uses the //abs rule form, never a doubled leading slash', () => {
     const { settings } = buildAgentSandboxSettings(paths);
-    for (const rule of settings.permissions.deny) {
+    for (const rule of [...settings.permissions.deny, ...(settings.permissions.allow ?? [])]) {
       expect(rule).toMatch(/^(Read|Edit)\(\/\/[^/].*\/\*\*\)$/);
     }
   });
@@ -142,15 +146,39 @@ describe('buildAgentSandboxSettings', () => {
     }
   });
 
-  it('carries no permissions.allow rule and no additionalDirectories', () => {
-    const { settings } = buildAgentSandboxSettings(paths);
+  it('grants file edits only inside the workdir: permissions.allow is exactly Edit(//work/**)', () => {
+    const profile = buildAgentSandboxSettings(paths);
+    const { settings } = profile;
     expect(Object.keys(settings).sort()).toEqual(['permissions', 'sandbox']);
-    expect(Object.keys(settings.permissions)).toEqual(['deny']);
+    expect(Object.keys(settings.permissions).sort()).toEqual(['allow', 'deny']);
+    expect(settings.permissions.allow).toEqual([`Edit(/${work}/**)`]);
+    expect(settings.permissions).not.toHaveProperty('additionalDirectories');
     expect(Object.keys(settings.sandbox.filesystem).sort()).toEqual([
       'allowWrite',
       'denyRead',
       'denyWrite',
     ]);
+    expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
+    expect(profile.workdir).toBe(work);
+    // Deny rules win over allow rules, so the workdir's .claude stays unwritable (T-01-67).
+    expect(settings.permissions.deny).toContain(`Edit(/${work}/.claude/**)`);
+  });
+
+  it('has no allow side at all without a workdir, so nothing can be edited', () => {
+    const { workdir: _omit, ...rest } = paths;
+    const profile = buildAgentSandboxSettings(rest);
+    expect(Object.keys(profile.settings.permissions)).toEqual(['deny']);
+    expect(profile.settings.permissions).not.toHaveProperty('additionalDirectories');
+    expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
+    expect(profile.workdir).toBeNull();
+  });
+
+  it('launches every session with exactly Bash, Read, Grep and Glob, as a fresh copy', () => {
+    expect([...AGENT_TOOLS]).toEqual(['Bash', 'Read', 'Grep', 'Glob']);
+    const a = buildAgentSandboxSettings(paths);
+    const b = buildAgentSandboxSettings(paths);
+    expect(a.allowedTools).not.toBe(b.allowedTools);
+    for (const tool of FILE_EDIT_TOOLS) expect(a.allowedTools).not.toContain(tool);
   });
 
   it('resolves a symlinked input directory to its realpath', () => {
@@ -206,6 +234,68 @@ describe('buildAgentSandboxSettings', () => {
       ['git-hooks', 'write', join(gitDir, 'hooks')],
       ['git-info', 'write', join(gitDir, 'info')],
     ]);
+  });
+});
+
+describe('fileEditGrants', () => {
+  const profile = (allow: string[] | undefined, allowedTools: string[] = [...AGENT_TOOLS]) => {
+    const { settings } = buildAgentSandboxSettings(paths);
+    const permissions =
+      allow === undefined
+        ? { deny: settings.permissions.deny }
+        : { ...settings.permissions, allow };
+    return { settings: { ...settings, permissions }, allowedTools };
+  };
+
+  it('reads the production profile as edits inside the workdir only', () => {
+    expect(fileEditGrants(buildAgentSandboxSettings(paths))).toEqual({
+      everywhere: false,
+      roots: [work],
+    });
+  });
+
+  it('reads the no-workdir profile as no edit grant anywhere', () => {
+    const { workdir: _omit, ...rest } = paths;
+    expect(fileEditGrants(buildAgentSandboxSettings(rest))).toEqual({
+      everywhere: false,
+      roots: [],
+    });
+  });
+
+  it('reads a bare Write allow rule as a grant everywhere', () => {
+    expect(fileEditGrants(profile(['Write'])).everywhere).toBe(true);
+  });
+
+  it('reads a bare NotebookEdit in allowedTools as a grant everywhere', () => {
+    expect(fileEditGrants(profile(undefined, ['Bash', 'NotebookEdit'])).everywhere).toBe(true);
+  });
+
+  it.each([
+    ['a relative scope', 'Edit(./x)'],
+    ['a home-relative scope', 'Edit(~/x/**)'],
+    ['a single-slash scope', 'Edit(/x/**)'],
+    ['a glob inside the path', 'Edit(//x/*/y/**)'],
+    ['a dot-dot segment', 'Edit(//x/../y/**)'],
+    ['the filesystem root', 'Edit(///**)'],
+    ['a lowercase tool name', 'edit'],
+    ['a bare MultiEdit', 'MultiEdit'],
+  ])('fails closed on %s', (_name, entry) => {
+    expect(fileEditGrants(profile([entry])).everywhere).toBe(true);
+  });
+
+  it('lists a scoped Write rule elsewhere as a root, not everywhere', () => {
+    expect(fileEditGrants(profile(['Write(//elsewhere/**)']))).toEqual({
+      everywhere: false,
+      roots: ['/elsewhere'],
+    });
+    expect(fileEditGrants(profile(['Edit(//elsewhere)'])).roots).toEqual(['/elsewhere']);
+  });
+
+  it('ignores entries for tools that do not edit files', () => {
+    expect(fileEditGrants(profile(['Read(//x/**)', 'Grep(//x/**)'], ['Bash', 'Read']))).toEqual({
+      everywhere: false,
+      roots: [],
+    });
   });
 });
 
@@ -363,7 +453,7 @@ describe('DoctorReport', () => {
       probe: PROBE_TARGET_IDS.map((id) => ({
         id,
         label: id,
-        mode: id.startsWith('git-') ? ('write' as const) : ('read' as const),
+        mode: probeTargetMode(id),
         result: 'blocked' as const,
         evidence: 'denied by your permission settings',
       })),
@@ -411,6 +501,28 @@ describe('DoctorReport', () => {
     const report = validReport();
     report.probe = report.probe.slice(1);
     expect(reportVerdict(DoctorReport.parse(report))).toBe('fail');
+  });
+
+  it('fails a report that holds only the seven pre-gap probe rows', () => {
+    // A report written before 01-17 has no outside-workdir row: it still parses as schema v1,
+    // and it can never pass.
+    const report = validReport();
+    report.probe = report.probe.filter((row) => row.id !== 'outside-workdir');
+    expect(report.probe).toHaveLength(7);
+    const parsed = DoctorReport.parse(report);
+    expect(parsed.schema).toBe('counterpoint/doctor/v1');
+    expect(reportVerdict(parsed)).toBe('fail');
+  });
+
+  it('lists eight probe targets, outside-workdir last, with their modes', () => {
+    expect(PROBE_TARGET_IDS).toHaveLength(8);
+    expect(PROBE_TARGET_IDS.at(-1)).toBe('outside-workdir');
+    expect(PROBE_TARGET_IDS.filter((id) => probeTargetMode(id) === 'write')).toEqual([
+      'git-config',
+      'git-hooks',
+      'git-info',
+      'outside-workdir',
+    ]);
   });
 
   it('is stale only after 24 hours', () => {

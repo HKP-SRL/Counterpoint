@@ -1,6 +1,6 @@
-// The one agent sandbox-settings builder (RESEARCH Pattern 3). The doctor probe tests exactly
-// this output, and the Phase 2 runner launches builders with it, so a probe pass is a statement
-// about the production configuration.
+// The one agent launch profile (RESEARCH Pattern 3): sandbox settings plus the tool list. The
+// doctor probe launches exactly this output as its treatment session, and the Phase 2 runner
+// launches builders with it, so a probe pass is a statement about the production configuration.
 //
 // Recipe verified on claude 2.1.319 / macOS (RESEARCH "Sandbox spike"):
 // - Every read-protected directory gets a `Read(//abs/**)` + `Edit(//abs/**)` deny twin. Read
@@ -12,6 +12,15 @@
 //   narrow builder grant as an explicit input; the deny rules above still win over it.
 // - Permission rules use the `//abs` prefix form; `sandbox.filesystem.*` uses plain absolute
 //   paths. Every path is absolute and realpath-resolved (`/tmp` is `/private/tmp` on macOS).
+//
+// File edits (WINDOWS.md #2, 01-17). `sandbox.filesystem.allowWrite` confines only Bash. The
+// Write, Edit, MultiEdit and NotebookEdit tools are governed by permission rules alone, and under
+// `--permission-mode dontAsk` a bare `Write` or `Edit` in `--allowedTools` is a grant over every
+// path. So the profile's tool list (AGENT_TOOLS) names no file-edit tool, and the allow side is
+// builder output: with a workdir it is exactly `Edit(//{workdir}/**)` (Edit rules apply to every
+// built-in file-editing tool); without one there is no allow side, so nothing can be edited.
+// dontAsk refuses every other file edit. Deny rules are evaluated before allow rules, so the
+// workdir's `.claude/` folder and every protected directory stay unwritable.
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -26,11 +35,17 @@ export interface ProtectedPaths {
   ghConfigDir: string;
   /** The host repository's git common dir (`git rev-parse --git-common-dir`), not a worktree `.git` file. */
   hostGitDir: string;
-  /** The session's working directory; its `.claude/` folder is made unwritable. */
+  /**
+   * The session's working directory: the only place file tools may edit. Its `.claude/` folder
+   * stays unwritable. Without a workdir nothing can be edited.
+   */
   workdir?: string;
 }
 
-/** Settings passed to `claude --settings`. Optional members exist only on inputs, never on builder output. */
+/**
+ * Settings passed to `claude --settings`. On builder output `allow` is present only as the single
+ * workdir edit grant; `additionalDirectories` and the sandbox exceptions are never emitted.
+ */
 export interface AgentSettings {
   permissions: {
     deny: string[];
@@ -67,8 +82,18 @@ export interface WriteTarget {
   path: string;
 }
 
+/** The `--allowedTools` list of every agent session. No file-edit tool: edits come from `allow`. */
+export const AGENT_TOOLS = ['Bash', 'Read', 'Grep', 'Glob'] as const;
+
+/** The built-in tools that write files. `Edit(...)` permission rules govern all of them. */
+export const FILE_EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
+
 export interface AgentSandbox {
   settings: AgentSettings;
+  /** The `--allowedTools` list: always a fresh copy of AGENT_TOOLS. */
+  allowedTools: string[];
+  /** The realpath-resolved working directory, or null when none was given. */
+  workdir: string | null;
   readTargets: ReadTarget[];
   writeTargets: WriteTarget[];
   /** The realpath-resolved git common dir. */
@@ -134,8 +159,14 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
   deny.push(pathRule('Edit', gitDir));
   if (workdir !== undefined) deny.push(pathRule('Edit', join(workdir, '.claude')));
 
+  // The only grant: file edits inside the workdir. No workdir, no allow side at all.
+  const permissions: AgentSettings['permissions'] =
+    workdir === undefined
+      ? { deny: unique(deny) }
+      : { deny: unique(deny), allow: [pathRule('Edit', workdir)] };
+
   const settings: AgentSettings = {
-    permissions: { deny: unique(deny) },
+    permissions,
     sandbox: {
       enabled: true,
       failIfUnavailable: true,
@@ -147,7 +178,64 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
       },
     },
   };
-  return { settings, readTargets, writeTargets, gitDir };
+  return {
+    settings,
+    allowedTools: [...AGENT_TOOLS],
+    workdir: workdir ?? null,
+    readTargets,
+    writeTargets,
+    gitDir,
+  };
+}
+
+export interface FileEditGrants {
+  /** True when some entry grants a file-edit tool over every path, or over a scope not understood. */
+  everywhere: boolean;
+  /** Absolute directories a scoped `Tool(//abs/**)` or `Tool(//abs)` entry grants edits in. */
+  roots: string[];
+}
+
+const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set(FILE_EDIT_TOOLS.map((t) => t.toLowerCase()));
+/** `Tool(//abs/**)` or `Tool(//abs)`; group 1 is the absolute path without its leading slash. */
+const SCOPED_RULE_RE = /^[A-Za-z]+\(\/\/([^()]*?)(?:\/\*\*)?\)$/;
+
+/**
+ * Where a launch profile lets file-edit tools write. Reads every `permissions.allow` and
+ * `allowedTools` entry whose tool is Edit, Write, MultiEdit or NotebookEdit (case-insensitive):
+ * a bare name is a grant everywhere; `Tool(//abs/**)` or `Tool(//abs)` adds `/abs` to `roots`;
+ * any other argument form (relative, `~`, a glob, `..`, the filesystem root) sets `everywhere`,
+ * so a scope this function does not understand fails closed.
+ */
+export function fileEditGrants(profile: {
+  settings: AgentSettings;
+  allowedTools: readonly string[];
+}): FileEditGrants {
+  let everywhere = false;
+  const roots: string[] = [];
+  const entries = [...(profile.settings.permissions.allow ?? []), ...profile.allowedTools];
+  for (const raw of entries) {
+    const entry = String(raw).trim();
+    const name = (entry.split('(')[0] ?? '').trim().toLowerCase();
+    if (!EDIT_TOOL_NAMES.has(name)) continue;
+    const scoped = SCOPED_RULE_RE.exec(entry);
+    const root = scoped ? `/${scoped[1] ?? ''}` : null;
+    if (root === null || !isPlainRoot(root)) {
+      everywhere = true;
+      continue;
+    }
+    if (!roots.includes(root)) roots.push(root);
+  }
+  return { everywhere, roots };
+}
+
+/** An absolute, normalised directory without glob characters that is not the filesystem root. */
+function isPlainRoot(root: string): boolean {
+  if (!isAbsolute(root) || root === '/' || root.endsWith('/')) return false;
+  if (/[*?[\]{}\\]/.test(root)) return false;
+  return root
+    .split('/')
+    .slice(1)
+    .every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
 function unique(values: readonly string[]): string[] {

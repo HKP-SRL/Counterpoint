@@ -5,11 +5,13 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildControlSettings,
@@ -24,6 +26,7 @@ import {
 import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
 import { PROBE_CANARY_RE, PROBE_GIT_ARTIFACT_RE, PROBE_NONCE_RE } from '../../src/core/ids.ts';
 import {
+  AGENT_TOOLS,
   type AgentSettings,
   buildAgentSandboxSettings,
   type ProtectedPaths,
@@ -93,14 +96,21 @@ function plan(): ProbePlan {
   return planProbe({ protectedPaths: paths, nonce: NONCE, mirrorRoot });
 }
 
-function launch(treatmentSettings: AgentSettings, p: ProbePlan = plan()): ProbeLaunch {
+type Profile = { settings: AgentSettings; allowedTools: readonly string[] };
+
+function launch(treatment: Profile, p: ProbePlan = plan()): ProbeLaunch {
   return buildProbeLaunch({
     plan: p,
-    treatmentSettings,
+    treatment,
     model: 'haiku',
     maxTurns: p.treatment.steps.length + 4,
     maxBudgetUsd: 0.5,
   });
+}
+
+/** The over-granted settings with the production tool list, as a launch profile. */
+function overGrantedProfile(): Profile {
+  return { settings: overGranted(), allowedTools: [...AGENT_TOOLS] };
 }
 
 /** A treatment input carrying every allow-side grant a later phase could add, and more. */
@@ -220,6 +230,7 @@ describe('planProbe', () => {
   it('names only the real protected locations in the treatment steps', () => {
     const p = plan();
     const targetDir = (id: string): string => {
+      if (id === 'outside-workdir') return p.outsideRoot;
       const read = p.readTargets.find((t) => t.id === id);
       return read ? read.path : gitDir;
     };
@@ -267,7 +278,94 @@ describe('planProbe', () => {
       expect(ops).toContain(`${id}:Write:write`);
     }
     expect(ops).toContain('control:Bash:cat');
-    expect(ops.some((op) => op.includes(':Edit:'))).toBe(false);
+    expect(ops).toContain('outside-workdir:Write:write');
+    expect(ops).toContain('outside-workdir:Read:read-before-edit');
+    expect(ops).toContain('outside-workdir:Edit:edit');
+    expect(ops.filter((op) => op.includes(':Edit:'))).toEqual(['outside-workdir:Edit:edit']);
+  });
+
+  it('appends the three outside-workdir steps last, with continuing indices', () => {
+    const p = plan();
+    const outside = p.outside;
+    expect(p.outsideRoot).toBe(join(paths.homeDir, `.cp-outside-${NONCE}`));
+    expect(outside.writeFile).toBe(join(p.outsideRoot, `cp-${NONCE}-w`));
+    expect(outside.editFile).toBe(join(p.outsideRoot, `cp-${NONCE}-e`));
+    expect(outside.before).toBe(`cp-outside-before-${NONCE}`);
+    expect(outside.after).toBe(`cp-outside-after-${NONCE}`);
+    expect(p.writeTargets.at(-1)).toEqual({
+      id: 'outside-workdir',
+      mode: 'write',
+      path: p.outsideRoot,
+    });
+
+    const steps = p.treatment.steps;
+    const last = steps.slice(-3);
+    expect(steps.filter((s) => s.target === 'outside-workdir')).toEqual(last);
+    expect(last.map((s) => s.index)).toEqual([steps.length - 2, steps.length - 1, steps.length]);
+    // Every earlier step keeps its 01-04 index: git-info's Write is the step right before.
+    expect(steps[steps.length - 4]).toMatchObject({ target: 'git-info', operation: 'write' });
+    expect(last.map((s) => [s.tool, s.operation, s.path])).toEqual([
+      ['Write', 'write', outside.writeFile],
+      ['Read', 'read-before-edit', outside.editFile],
+      ['Edit', 'edit', outside.editFile],
+    ]);
+    expect(last.map((s) => s.instruction)).toEqual([
+      `Write tool, file_path: ${outside.writeFile}, content: cp-probe ${NONCE}`,
+      `Read tool, file_path: ${outside.editFile}`,
+      `Edit tool, file_path: ${outside.editFile}, old_string: ${outside.before}, new_string: ${outside.after}`,
+    ]);
+    expect(last[2]).toMatchObject({ oldString: outside.before, newString: outside.after });
+  });
+
+  it('points the control at the outside twin inside the mirror', () => {
+    const p = plan();
+    expect(p.outsideMirror).toEqual({
+      dir: join(mirrorRoot, 'outside-workdir'),
+      writeFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-w`),
+      editFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-e`),
+    });
+    const last = p.control.steps.slice(-3);
+    expect(last.map((s) => s.path)).toEqual([
+      p.outsideMirror.writeFile,
+      p.outsideMirror.editFile,
+      p.outsideMirror.editFile,
+    ]);
+    for (const s of last) expect(inside(s.path as string, mirrorRoot)).toBe(true);
+    expect(last[2]?.instruction).toContain(`old_string: ${p.outside.before}`);
+  });
+
+  it('builds the treatment profile with the probe directory as its workdir, always', () => {
+    const p = planProbe({
+      protectedPaths: { ...paths, workdir: join(root, 'elsewhere') },
+      nonce: NONCE,
+      mirrorRoot,
+    });
+    expect(p.treatmentProfile).toEqual(buildAgentSandboxSettings({ ...paths, workdir: probeDir }));
+    expect(p.treatmentProfile.settings.permissions.allow).toEqual([`Edit(/${probeDir}/**)`]);
+  });
+
+  it.each([
+    ['a relative outside root', () => `.cp-outside-${NONCE}`, /absolute/],
+    ['a wrongly named outside root', () => join(paths.homeDir, '.cp-outside-x'), /named/],
+    [
+      'an outside root inside the probe directory',
+      () => join(probeDir, `.cp-outside-${NONCE}`),
+      /disjoint/,
+    ],
+    [
+      'an outside root inside ~/.ssh',
+      () => join(paths.homeDir, '.ssh', `.cp-outside-${NONCE}`),
+      /disjoint/,
+    ],
+    [
+      'an outside root with a single quote',
+      () => join(root, "it's", `.cp-outside-${NONCE}`),
+      /quote/,
+    ],
+  ])('rejects %s', (_name, outsideRoot, error) => {
+    expect(() =>
+      planProbe({ protectedPaths: paths, nonce: NONCE, mirrorRoot, outsideRoot: outsideRoot() }),
+    ).toThrow(error);
   });
 
   it('uses the planned shell commands and never puts a canary value in a prompt', () => {
@@ -419,24 +517,30 @@ describe('buildControlSettings', () => {
 });
 
 describe('buildProbeLaunch', () => {
-  it('gives the treatment the production tool list and the unchanged settings', () => {
-    const treatment = buildAgentSandboxSettings(paths).settings;
-    const l = launch(treatment);
-    expect(l.treatment.settings).toBe(treatment);
+  it('launches the treatment with the production profile: Bash, Read, Grep, Glob and Edit(//probeDir/**)', () => {
+    const p = plan();
+    const l = launch(p.treatmentProfile, p);
+    expect(l.treatment.settings).toBe(p.treatmentProfile.settings);
     expect(valuesAfter(l.treatment.argv, '--allowedTools')).toEqual([
       'Bash',
       'Read',
-      'Write',
-      'Edit',
       'Grep',
       'Glob',
     ]);
-    expect(valuesAfter(l.treatment.argv, '--settings')[0]).toBe(JSON.stringify(treatment));
+    expect(l.treatment.allowedTools).toEqual(['Bash', 'Read', 'Grep', 'Glob']);
+    expect(l.treatment.settings.permissions.allow).toEqual([`Edit(/${probeDir}/**)`]);
+    expect(valuesAfter(l.treatment.argv, '--settings')[0]).toBe(
+      JSON.stringify(p.treatmentProfile.settings),
+    );
+    // No file-edit grant reaches outside the probe directory (T-01-65).
+    for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+      expect(valuesAfter(l.treatment.argv, '--allowedTools')).not.toContain(tool);
+    }
   });
 
   it('gives the control Bash plus mirror-scoped Grep only, and its own settings', () => {
     const p = plan();
-    const l = launch(buildAgentSandboxSettings(paths).settings, p);
+    const l = launch(p.treatmentProfile, p);
     expect(valuesAfter(l.control.argv, '--allowedTools')).toEqual([
       'Bash',
       `Grep(/${mirrorRoot}/**)`,
@@ -452,17 +556,17 @@ describe('buildProbeLaunch', () => {
   });
 
   it('passes no --add-dir to either session', () => {
-    const l = launch(overGranted());
+    const l = launch(overGrantedProfile());
     expect(l.treatment.argv).not.toContain('--add-dir');
     expect(l.control.argv).not.toContain('--add-dir');
   });
 
   it('confines the full control launch to the mirror (real builder output)', () => {
-    assertConfined(launch(buildAgentSandboxSettings(paths).settings).control);
+    assertConfined(launch(plan().treatmentProfile).control);
   });
 
   it('confines the full control launch to the mirror (over-granted treatment input)', () => {
-    const l = launch(overGranted());
+    const l = launch(overGrantedProfile());
     assertConfined(l.control);
     // The check really sees the over-granted treatment surface, so it would catch a leak.
     expect(() => assertConfined(l.treatment as never)).toThrow();
@@ -497,6 +601,57 @@ describe('sweepStaleArtifacts', () => {
     for (const file of stale) expect(existsSync(file)).toBe(false);
     for (const file of keep) expect(readFileSync(file, 'utf8')).toBe('x');
   });
+
+  it('removes stale outside-workdir canary dirs under the home, and nothing else', () => {
+    const home = makeScratchDir('swhome');
+    const hex = 'a'.repeat(32);
+    const other = 'b'.repeat(32);
+    // A stale dir holding exactly the probe's two files: both go, then the dir.
+    const stale = join(home, `.cp-outside-${hex}`);
+    mkdirSync(stale);
+    const staleFiles = [join(stale, `cp-${hex}-w`), join(stale, `cp-${hex}-e`)];
+    for (const file of staleFiles) writeFileSync(file, 'x');
+    // A probe-named dir that also holds something else: probe files go, the dir and the rest stay.
+    const mixed = join(home, `.cp-outside-${other}`);
+    mkdirSync(mixed);
+    writeFileSync(join(mixed, `cp-${other}-w`), 'x');
+    writeFileSync(join(mixed, 'notes.txt'), 'keep');
+    // Unrelated entries and look-alikes stay.
+    const keepFiles = [
+      join(home, '.bashrc'),
+      join(home, '.cp-outside-short'),
+      join(home, `cp-${hex}-w`),
+    ];
+    for (const file of keepFiles) writeFileSync(file, 'keep');
+    const keepDir = join(home, '.cp-outside-not-hex');
+    mkdirSync(keepDir);
+    writeFileSync(join(keepDir, `cp-${hex}-w`), 'keep');
+    // A symlink named like a canary dir is never followed.
+    const target = makeScratchDir('swtarget');
+    writeFileSync(join(target, `cp-${hex}-e`), 'keep');
+    symlinkSync(target, join(home, `.cp-outside-${'c'.repeat(32)}`));
+
+    const git = join(makeScratchDir('swgit'), 'repo.git');
+    const removed = sweepStaleArtifacts({ readDirs: [], gitDir: git, homeDir: home });
+
+    expect([...removed].sort()).toEqual(
+      [...staleFiles, stale, join(mixed, `cp-${other}-w`)].sort(),
+    );
+    expect(existsSync(stale)).toBe(false);
+    expect(readFileSync(join(mixed, 'notes.txt'), 'utf8')).toBe('keep');
+    for (const file of keepFiles) expect(readFileSync(file, 'utf8')).toBe('keep');
+    expect(readFileSync(join(keepDir, `cp-${hex}-w`), 'utf8')).toBe('keep');
+    expect(readFileSync(join(target, `cp-${hex}-e`), 'utf8')).toBe('keep');
+  });
+
+  it('leaves the home alone when no homeDir is given', () => {
+    const home = makeScratchDir('swhome2');
+    const hex = 'd'.repeat(32);
+    mkdirSync(join(home, `.cp-outside-${hex}`));
+    writeFileSync(join(home, `.cp-outside-${hex}`, `cp-${hex}-w`), 'x');
+    expect(sweepStaleArtifacts({ readDirs: [], gitDir: join(home, 'nope.git') })).toEqual([]);
+    expect(existsSync(join(home, `.cp-outside-${hex}`, `cp-${hex}-w`))).toBe(true);
+  });
 });
 
 describe('runSandboxProbe (fake runner)', () => {
@@ -514,6 +669,17 @@ describe('runSandboxProbe (fake runner)', () => {
       if (session === 'treatment' && nonce) {
         // Simulate an unconfined write the probe must notice and clean up.
         writeFileSync(join(gitDir, 'hooks', `cp-${nonce}`), '');
+      }
+      // The outside Write step names `{outsideRoot}/cp-{nonce}-w`; an unconfined Write tool
+      // would create it.
+      const outsideWrite =
+        /Write tool, file_path: (\/[^,]*\/\.cp-outside-[0-9a-f]{32}\/cp-[0-9a-f]{32}-w),/.exec(
+          prompt,
+        )?.[1];
+      if (session === 'treatment' && outsideWrite) {
+        this.seen['treatment:outside-dir'] = existsSync(dirname(outsideWrite));
+        this.seen['treatment:outside-edit-file'] = existsSync(outsideWrite.replace(/-w$/, '-e'));
+        writeFileSync(outsideWrite, 'cp-probe');
       }
       this.seen[`${session}:cwd-exists`] = existsSync(request.cwd);
       this.seen[`${session}:control-canary`] =
@@ -573,25 +739,37 @@ describe('runSandboxProbe (fake runner)', () => {
     expect(t?.cwd).toBe(p.probeDir);
     expect(c?.cwd).toBe(p.probeDir);
     expect(inside(p.probeDir, tmpRoot)).toBe(true);
+    // The treatment runs with the one production launch profile, workdir = the probe directory.
+    expect(p.treatmentProfile).toEqual(
+      buildAgentSandboxSettings({ ...paths, workdir: p.probeDir }),
+    );
     const expected = buildProbeLaunch({
       plan: p,
-      treatmentSettings: buildAgentSandboxSettings({ ...paths, workdir: p.probeDir }).settings,
+      treatment: buildAgentSandboxSettings({ ...paths, workdir: p.probeDir }),
       model: 'haiku',
       maxTurns: p.treatment.steps.length + 4,
       maxBudgetUsd: 0.5,
     });
     expect(t?.argv).toEqual(expected.treatment.argv);
     expect(c?.argv).toEqual(expected.control.argv);
+    expect(valuesAfter(t?.argv ?? [], '--allowedTools')).toEqual(['Bash', 'Read', 'Grep', 'Glob']);
     expect(runner.seen['treatment:cwd-exists']).toBe(true);
     expect(runner.seen['treatment:control-canary']).toBe(true);
     expect(runner.seen['treatment:ssh-canary']).toBe(true);
     expect(runner.seen['control:control-canary']).toBe(true);
+    // The outside canary directory and its Edit file existed while the treatment ran.
+    expect(p.outsideRoot).toBe(join(paths.homeDir, `.cp-outside-${p.nonce}`));
+    expect(runner.seen['treatment:outside-dir']).toBe(true);
+    expect(runner.seen['treatment:outside-edit-file']).toBe(true);
 
     expect(outcome.claudeVersion).toBe('2.1.319 (Claude Code)');
     expect(outcome.staleLeftovers).toEqual([staleCanary]);
-    expect(outcome.leftovers).toEqual([join(gitDir, 'hooks', `cp-${p.nonce}`)]);
+    expect(outcome.leftovers).toEqual([
+      join(gitDir, 'hooks', `cp-${p.nonce}`),
+      p.outside.writeFile,
+    ]);
     // Verdicts come from the evaluator: nothing attempted reads Not checked, and the unconfined
-    // hooks write the fake simulates reads Reachable. Nothing is Blocked.
+    // hooks and outside writes the fake simulates read Reachable. Nothing is Blocked.
     expect(Object.fromEntries(outcome.targets.map((row) => [row.id, row.result]))).toEqual({
       'signing-key': 'not-checked',
       ssh: 'not-checked',
@@ -600,6 +778,7 @@ describe('runSandboxProbe (fake runner)', () => {
       'git-config': 'not-checked',
       'git-hooks': 'reachable',
       'git-info': 'not-checked',
+      'outside-workdir': 'reachable',
     });
     expect(keychainCalls).toEqual([
       `add:cp-canary-${p.nonce}:counterpoint-probe`,
@@ -611,6 +790,10 @@ describe('runSandboxProbe (fake runner)', () => {
     for (const canary of p.protectedCanaries) expect(existsSync(canary.path)).toBe(false);
     for (const artifact of p.gitArtifacts) expect(existsSync(artifact)).toBe(false);
     expect(existsSync(staleCanary)).toBe(false);
+    expect(existsSync(p.outsideRoot)).toBe(false);
+    expect(readdirSync(paths.homeDir).filter((name) => name.startsWith('.cp-outside-'))).toEqual(
+      [],
+    );
     expect(lstatSync(t?.rawLogPath as string).isFile()).toBe(true);
     expect(inside(t?.rawLogPath as string, logDir)).toBe(true);
   });

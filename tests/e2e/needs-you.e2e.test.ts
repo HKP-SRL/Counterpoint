@@ -109,6 +109,8 @@ const PROBE = [
   ['git-config', 'host .git/config', 'write'],
   ['git-hooks', '.git/hooks', 'write'],
   ['git-info', '.git/info', 'write'],
+  // 01-17: the eighth target, so this all-pass report still passes reportVerdict.
+  ['outside-workdir', 'Files outside the working folder', 'write'],
 ] as const;
 
 /** A stored doctor report in which every check passed and every probe target was blocked. */
