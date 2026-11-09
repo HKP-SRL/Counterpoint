@@ -29,7 +29,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 - [ ] **APPR-01**: Owner can approve a phase into the runway: the console prepares the approval and shows a one-line command; running it asks for the passphrase and creates a signed commit on the base branch adding `.counterpoint/approvals/<item>.json`, touching nothing else in the owner's checkout
 - [ ] **APPR-02**: A runway approval binds hashes of the phase spec, its signed-off draft and the gate config; if any changes afterwards, the item leaves the runway and shows in Needs You as "approved version changed"
 - [ ] **APPR-03**: Owner can approve a finished feature for merge by signing a `--no-ff` merge commit of the exact PR head; before signing they see the summary including every assumption the builder proceeded on; Counterpoint then pushes and the PR shows as merged
-- [ ] **APPR-04**: Signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment, against the owner's public key stored outside the repo; signing is refused if the host's `.git/config` or hooks changed unexpectedly
+- [x] **APPR-04**: Signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment, against the owner's public key stored outside the repo; signing is refused if the host's `.git/config` or hooks changed unexpectedly
 - [ ] **APPR-05**: Nothing merges without a verified owner-signed merge commit; approval state is recomputed from git each time, never trusted from a stored flag
 
 ### Build Lane
@@ -180,7 +180,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | APPR-01 | Phase 1 | Pending |
 | APPR-02 | Phase 1 | Pending |
 | APPR-03 | Phase 3 | Pending |
-| APPR-04 | Phase 1 | Pending |
+| APPR-04 | Phase 1 | Complete |
 | APPR-05 | Phase 3 | Pending |
 | BUILD-01 | Phase 2 | Pending |
 | BUILD-02 | Phase 2 | Pending |
