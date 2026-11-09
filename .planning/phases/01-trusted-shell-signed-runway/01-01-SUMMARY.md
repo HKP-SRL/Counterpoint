@@ -246,3 +246,9 @@ None. Optional: add `export pnpm_config_store_dir=/Volumes/Dock/Dev/Caches/pnpm-
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-09*
+
+## Self-Check: PASSED
+
+- All 13 key files plus this SUMMARY exist on disk.
+- Commits 7d82bde, 624dabe, 25b203e and b7fb03c are on this branch (git log 8455368..HEAD).
+- Acceptance criteria re-run after GREEN: all PASS. pnpm typecheck, pnpm lint and pnpm test exit 0.
