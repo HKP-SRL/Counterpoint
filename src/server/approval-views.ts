@@ -2,7 +2,8 @@
 // the host's base tip (RESEARCH Pattern 1, "derive, don't store").
 //
 // The only memory here is an in-process cache keyed by `{hostId}:{tip}:{itemId}:{trusted
-// fingerprint}` (and `{hostId}:{tip}:runway:{fingerprint}` for the runway). It never decides
+// fingerprint}` (and `{hostId}:{tip}:runway:{fingerprint}` for the runway,
+// `{hostId}:{tip}:needs-you:{fingerprint}` for the Needs You items). It never decides
 // authority: every entry is the output of `approvalState` / `computeRunway` (signature verified
 // against the trusted key, statement parsed strictly, every digest recomputed at that tip), a key
 // changes whenever the tip or the trusted key changes, and the cache starts empty with the daemon
@@ -12,7 +13,11 @@ import { APPROVALS_DIR } from '../core/approvals/statement.ts';
 import { readTrust, type Trust } from '../core/approvals/trust-store.ts';
 import { homePaths } from '../core/host/home.ts';
 import { approvalItemId, isPhaseId } from '../core/ids.ts';
-import type { ChangedApproval, NeedsYouItem } from '../core/runway/needs-you.ts';
+import {
+  type ChangedApproval,
+  deriveNeedsYou,
+  type NeedsYouItem,
+} from '../core/runway/needs-you.ts';
 import {
   type ApprovalState,
   approvalState,
@@ -132,7 +137,7 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
     );
   };
 
-  return {
+  const views: ApprovalViews = {
     trust,
 
     async states(runtime, tip) {
@@ -165,8 +170,30 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
       return cached(cacheKey, runtime, tip, () => computeRunway(opts));
     },
 
-    async needsYou(_runtime) {
-      return { tip: null, items: [], changed: [] };
+    async needsYou(runtime) {
+      const tip = await runtime.tip();
+      if (tip === null || runtime.adapter === null) return { tip, items: [], changed: [] };
+      const { adapter } = runtime;
+      const key = trust();
+      const cacheKey = `${runtime.host.id}:${tip}:needs-you:${key?.fingerprint ?? 'none'}`;
+      return cached(cacheKey, runtime, tip, async (): Promise<NeedsYouSnapshot> => {
+        const runway = await views.runway(runtime);
+        // A tip that moved in between is caught by `cached`, which then drops this entry.
+        if (runway.tip === null) return { tip: null, items: [], changed: [] };
+        const view = await runtime.view().catch(() => null);
+        const phases = view?.tip === runway.tip ? view.snapshot?.phases : undefined;
+        const items = await deriveNeedsYou({
+          root: runtime.host.root,
+          baseBranch: runtime.host.baseBranch,
+          tip: runway.tip,
+          changed: runway.changed,
+          reader: runtime.reader,
+          adapter,
+          ...(phases === undefined ? {} : { phases }),
+        });
+        return { tip: runway.tip, items, changed: runway.changed };
+      });
     },
   };
+  return views;
 }

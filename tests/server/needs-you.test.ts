@@ -256,7 +256,9 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
       expect.objectContaining({ path: GATES_ROW, label: 'Gate config', change: 'added' }),
     ]);
 
-    const res = await get(`/api/hosts/${hostId}/needs-you/phase-02/diff?path=.counterpoint%2Fconfig.yaml%23gates`);
+    const res = await get(
+      `/api/hosts/${hostId}/needs-you/phase-02/diff?path=.counterpoint%2Fconfig.yaml%23gates`,
+    );
     expect(res.status).toBe(200);
     const d = (await res.json()) as { diff: string; truncated: boolean };
     expect(d.truncated).toBe(false);
