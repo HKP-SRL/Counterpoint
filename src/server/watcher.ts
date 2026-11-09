@@ -9,6 +9,8 @@
 // costs one ref read). It publishes `approval` `{ hostId, tip }` when any approval's state
 // changed and `runway` `{ hostId, count }` when the count changed. The first look at a host only
 // records a baseline. `nudge(hostId)` runs the same check at once (an approval just landed).
+// It then derives the Needs You items and publishes `needs-you` `{ hostId, count }` when they
+// changed (MISN-02).
 // Checks of one host never overlap.
 //
 // Errors are logged and never thrown: one unreadable host must not stop the others.
@@ -49,6 +51,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
   const log = options.log ?? (() => {});
   const lastTips = new Map<string, string | null>();
   const lastRunway = new Map<string, RunwaySeen>();
+  const lastNeedsYou = new Map<string, string>();
   const running = new Map<string, Promise<void>>();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -100,6 +103,27 @@ export function startWatcher(options: WatcherOptions): Watcher {
     if (seen.count !== runway.count) publish(id, 'runway', { hostId: id, count: runway.count });
   };
 
+  // Needs You (MISN-02): the items derived from the changed approvals. A `needs-you` event goes
+  // out when the set of items (or what an item lists as changed) differs from the last look.
+  const checkNeedsYou = async (runtime: HostRuntime): Promise<void> => {
+    if (approvals === undefined) return;
+    const { id } = runtime.host;
+    const { items, changed } = await approvals.needsYou(runtime);
+    const signature = JSON.stringify([
+      items.map((item) => [item.id, item.changedCount, item.gatesChanged, item.unreadable]),
+      changed.map((c) => [
+        c.phaseId,
+        c.commit,
+        c.changes.map((change) => [change.path, change.change, change.nowDigest]),
+        c.gatesChange === null ? null : [c.gatesChange.change, c.gatesChange.nowDigest],
+      ]),
+    ]);
+    const seen = lastNeedsYou.get(id);
+    lastNeedsYou.set(id, signature);
+    if (seen === undefined || seen === signature) return;
+    publish(id, 'needs-you', { hostId: id, count: items.length });
+  };
+
   const checkHost = async (runtime: HostRuntime): Promise<void> => {
     const { id, baseBranch } = runtime.host;
     let tip: string | null;
@@ -117,6 +141,11 @@ export function startWatcher(options: WatcherOptions): Watcher {
       await checkRunway(runtime, tip);
     } catch (error) {
       log('watch-runway-failed', { hostId: id, message: (error as Error).message });
+    }
+    try {
+      await checkNeedsYou(runtime);
+    } catch (error) {
+      log('watch-needs-you-failed', { hostId: id, message: (error as Error).message });
     }
   };
 

@@ -264,6 +264,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       const runtime = runtimes.get(hostId);
       return runtime === null ? null : (await approvals.runway(runtime)).count;
     },
+    needsYouCount: async (hostId) => {
+      const runtime = runtimes.get(hostId);
+      return runtime === null ? null : (await approvals.needsYou(runtime)).items.length;
+    },
   });
   control = createAdaptorServer({ fetch: controlApp.fetch }) as Server;
   await listenOnSocket(control, paths.socket);

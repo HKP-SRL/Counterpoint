@@ -33,6 +33,8 @@ export interface ControlAppOptions {
   nudge?: (hostId: string) => void;
   /** The host's runway count recomputed from git, or null when unknown. */
   runwayCount?: (hostId: string) => Promise<number | null>;
+  /** The host's Needs You item count recomputed from git, or null when unknown. */
+  needsYouCount?: (hostId: string) => Promise<number | null>;
 }
 
 /** How long `/control/status` waits for a runway figure before leaving it out. */
@@ -87,14 +89,21 @@ export function createControlApp(options: ControlAppOptions): Hono {
     await next();
   });
 
-  // `runway` per host (MISN-01) once the daemon can compute it; the CLI's `status` prints it.
+  // `runway` (MISN-01) and `needsYou` (MISN-02) per host once the daemon can compute them; the
+  // CLI's `status` prints `runway {n}` and `needs you {m}`.
   app.get('/control/status', async (c) => {
-    const { runwayCount } = options;
+    const { runwayCount, needsYouCount } = options;
     const hosts = await Promise.all(
       listHosts(options.store).map(async (host) => {
-        if (runwayCount === undefined) return host;
-        const runway = await runwayWithin(runwayCount, host.id);
-        return runway === null ? host : { ...host, runway };
+        const [runway, needsYou] = await Promise.all([
+          runwayCount === undefined ? null : runwayWithin(runwayCount, host.id),
+          needsYouCount === undefined ? null : runwayWithin(needsYouCount, host.id),
+        ]);
+        return {
+          ...host,
+          ...(runway === null ? {} : { runway }),
+          ...(needsYou === null ? {} : { needsYou }),
+        };
       }),
     );
     return c.json({ running: true, pid, port: options.port, hosts });

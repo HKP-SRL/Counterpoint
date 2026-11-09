@@ -9,6 +9,9 @@
 // from git at the base tip, src/server/approval-views.ts). `on-runway` / `changed` become the
 // status overlay; an `invalid` approval keeps the base status and is reported as invalid with its
 // reason (fail closed). No stored row ever decides a status.
+//
+// Approved rows also carry `uncommittedEdits` (D-03): true when the owner's checkout has
+// uncommitted edits that change one of the phase's inputs. It is a soft hint only.
 import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { sha256Digest } from '../../core/approvals/digest.ts';
@@ -19,6 +22,7 @@ import {
 } from '../../core/framework/port.ts';
 import { UnsafeTreeEntryError } from '../../core/git/reader.ts';
 import { HOST_ID_RE, PHASE_ID_RE } from '../../core/ids.ts';
+import { uncommittedEditsHint } from '../../core/runway/needs-you.ts';
 import type { ApprovalState } from '../../core/runway/runway.ts';
 import { derivePhaseStatus, phasePrerequisites } from '../../core/runway/status.ts';
 import type { ApprovalViews } from '../approval-views.ts';
@@ -63,7 +67,36 @@ async function approvalStates(
 
 const INPUTS_UNREADABLE = "Couldn't read this phase's inputs.";
 
-function phaseRow(phase: PhaseFacts, approval: ApprovalState | undefined) {
+/**
+ * Approved phases (on the runway or changed) whose files have uncommitted edits in the owner's
+ * checkout that change an input (D-03 soft hint). The approval itself is unaffected; a failed
+ * check simply shows no hint.
+ */
+async function uncommittedEdits(
+  runtime: HostRuntime,
+  states: Map<string, ApprovalState>,
+): Promise<Set<string>> {
+  const flagged = new Set<string>();
+  const { adapter } = runtime;
+  if (adapter === null) return flagged;
+  for (const [phaseId, state] of states) {
+    if (state.state !== 'on-runway' && state.state !== 'changed') continue;
+    const edited = await uncommittedEditsHint({
+      root: runtime.host.root,
+      reader: runtime.reader,
+      adapter,
+      phaseId,
+    }).catch(() => false);
+    if (edited) flagged.add(phaseId);
+  }
+  return flagged;
+}
+
+function phaseRow(
+  phase: PhaseFacts,
+  approval: ApprovalState | undefined,
+  edited: ReadonlySet<string> = new Set(),
+) {
   const overlay =
     approval?.state === 'on-runway' || approval?.state === 'changed' ? approval.state : null;
   const { status, notReadyReason } = derivePhaseStatus(phase, overlay);
@@ -79,6 +112,7 @@ function phaseRow(phase: PhaseFacts, approval: ApprovalState | undefined) {
     userSetup: prerequisites.userSetup.map((item) => ({ service: item.service, why: item.why })),
     unreadable: phase.unreadable,
     approval: approvalFacts(approval),
+    uncommittedEdits: overlay !== null && edited.has(phase.id),
   };
 }
 
@@ -103,13 +137,14 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
       comparePhaseNumbers(a.number, b.number),
     );
     const states = await approvalStates(approvals, runtime, view.tip);
+    const edited = await uncommittedEdits(runtime, states);
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
       unreadable: view.snapshot?.unreadable ?? null,
-      phases: phases.map((phase) => phaseRow(phase, states.get(phase.id))),
+      phases: phases.map((phase) => phaseRow(phase, states.get(phase.id), edited)),
     });
   });
 
@@ -128,6 +163,8 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
     }
 
     const states = await approvalStates(approvals, runtime, view.tip);
+    const own = states.get(phase.id);
+    const onlyPhase = new Map<string, ApprovalState>(own === undefined ? [] : [[phase.id, own]]);
     let inputs: {
       path: string;
       label: string;
@@ -157,7 +194,7 @@ export function mountPhaseRoutes(app: Hono, options: PhaseRoutesOptions): void {
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
-      ...phaseRow(phase, states.get(phase.id)),
+      ...phaseRow(phase, states.get(phase.id), await uncommittedEdits(runtime, onlyPhase)),
       goal: phase.goal,
       dependsOn: phase.dependsOn,
       requirements: phase.requirements,
