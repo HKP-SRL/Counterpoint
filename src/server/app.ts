@@ -1,15 +1,18 @@
 // The console's HTTP app. The daemon binds it to 127.0.0.1 only (the bind is the LAN boundary);
-// the first middleware here rejects any Host header other than exactly `127.0.0.1:{port}`, which
-// stops DNS rebinding. `localhost` is rejected too: the session cookie lives on 127.0.0.1.
+// the guard chain (src/core/security/guard.ts) rejects any Host other than exactly
+// `127.0.0.1:{port}`, cross-site or non-JSON writes, and any /api request without a session.
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { hostGuard, mutationGuard, securityHeaders, sessionGuard } from '../core/security/guard.ts';
 import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
 
 export const PACKAGE_NAME = '@hkp/counterpoint';
+
+const isSafe = (method: string) => method === 'GET' || method === 'HEAD';
 
 export interface AppOptions {
   store: Store;
@@ -46,13 +49,15 @@ export function resolveUiDir(): string {
 export function createApp(options: AppOptions): Hono {
   const app = new Hono();
   const { port } = options;
-  const allowedHost = `127.0.0.1:${port}`;
+  const getPort = () => port;
   const indexFile = join(options.uiDir, 'index.html');
 
-  app.use('*', async (c, next) => {
-    if (c.req.header('host') !== allowedHost) return c.json({ error: 'blocked' }, 403);
-    await next();
-  });
+  // Guard chain, in this order (RESEARCH Item 6): exact Host `127.0.0.1:${port}` → security
+  // headers → Origin / Fetch Metadata / JSON body on non-GET /api → session on every /api.
+  app.use('*', hostGuard(getPort));
+  app.use('*', securityHeaders());
+  app.use('/api/*', mutationGuard(getPort));
+  app.use('/api/*', sessionGuard(options.store));
 
   // The one-time sign-in exchange (D-07). Outside /api and the session check, behind the Host
   // check. The query string carries the code, so it is never logged. Only a real GET consumes a
@@ -87,10 +92,15 @@ export function createApp(options: AppOptions): Hono {
     }),
   );
 
-  app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
+  // Unknown API reads are JSON 404s, never the console page. GET only, so API routes added to the
+  // app after createApp (later route groups, tests) stay reachable for other methods.
+  app.get('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
   app.use('*', async (c, next) => {
-    if (!existsSync(indexFile)) return c.text('Console not built. Run pnpm build:ui.', 503);
+    const page = isSafe(c.req.method) && !c.req.path.startsWith('/api/');
+    if (page && !existsSync(indexFile)) {
+      return c.text('Console not built. Run pnpm build:ui.', 503);
+    }
     await next();
   });
 

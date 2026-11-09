@@ -22,6 +22,7 @@ import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { detectFramework } from '../compose.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
+import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { createApp, resolveUiDir } from './app.ts';
@@ -177,6 +178,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     port: options.port,
     hostname: '127.0.0.1',
+    // Every wrong Host is a 403 even before the adapter parses the request.
+    createServer: hostCheckedServer,
   }) as Server;
 
   // serve() has already called listen(); wait for the outcome.
