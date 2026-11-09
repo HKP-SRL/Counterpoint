@@ -368,3 +368,10 @@ None. To try it by hand: `pnpm build:ui`, then `COUNTERPOINT_HOME=<existing dir>
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-09*
+
+## Self-Check: PASSED
+
+- All 8 created key files and this SUMMARY exist on disk.
+- All 6 task commits (6a286cc, 776e2c1, 3e3122e, c288ee2, f9b8820, 7ad992d) are on this branch (`git log fbf0412..HEAD`).
+- Acceptance criteria re-run: every grep passes; the concurrency, guard and SSE suites pass.
+- Plan verification: `pnpm test` 204/204, `CP_TEST_SCRATCH=/Volumes/Dock/Dev/Caches/cp-test-0103 pnpm test:e2e` 7/7, `pnpm typecheck` 0, `pnpm lint` 0; no daemon processes left behind.
