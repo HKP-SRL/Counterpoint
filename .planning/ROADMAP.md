@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 15/20 plans executed
+**Plans**: 16/20 plans executed
 
 Plans:
 **Wave 1**
@@ -69,7 +69,7 @@ Plans:
 - [x] 01-15-PLAN.md — Mission cards, drift hints, end-to-end drift test, visual backstops *(wave 9)*
 
 **Wave 10** *(blocked on Wave 9 completion)*
-- [ ] 01-17-PLAN.md — Gap (WINDOWS.md #2) 1/2: confine agent Write/Edit to the session folder in the one launch profile; probe row `Files outside the working folder` through evaluator and doctor *(wave 10)*
+- [x] 01-17-PLAN.md — Gap (WINDOWS.md #2) 1/2: confine agent Write/Edit to the session folder in the one launch profile; probe row `Files outside the working folder` through evaluator and doctor *(wave 10)*
 
 **Wave 11** *(blocked on Wave 10 completion)*
 - [ ] 01-18-PLAN.md — Gap (WINDOWS.md #2) 2/2: one live probe proves the row Blocked; refrozen fixtures; #2 fixed; the row on the Trust page *(wave 11)*
@@ -171,7 +171,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 15/20 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 16/20 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
