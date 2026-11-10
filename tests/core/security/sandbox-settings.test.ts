@@ -3,7 +3,7 @@
 import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildClaudeArgv } from '../../../src/agent/claude-argv.ts';
+import { AGENT_PERMISSION_MODE, buildClaudeArgv } from '../../../src/agent/claude-argv.ts';
 import { AGENT_ENV_ALLOW, agentEnv } from '../../../src/core/security/agent-env.ts';
 import {
   DoctorReport,
@@ -121,6 +121,12 @@ describe('buildAgentSandboxSettings', () => {
     expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
   });
 
+  it('turns sandbox auto-allow off explicitly, with and without a workdir (scrub replacement 1)', () => {
+    const { workdir: _omit, ...rest } = paths;
+    expect(buildAgentSandboxSettings(paths).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
+    expect(buildAgentSandboxSettings(rest).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
+  });
+
   it('lists the read-protected directories as plain absolute denyRead paths', () => {
     const { settings } = buildAgentSandboxSettings(paths);
     expect([...settings.sandbox.filesystem.denyRead].sort()).toEqual(
@@ -150,9 +156,22 @@ describe('buildAgentSandboxSettings', () => {
     const profile = buildAgentSandboxSettings(paths);
     const { settings } = profile;
     expect(Object.keys(settings).sort()).toEqual(['permissions', 'sandbox']);
-    expect(Object.keys(settings.permissions).sort()).toEqual(['allow', 'deny']);
+    expect(Object.keys(settings.permissions).sort()).toEqual([
+      'allow',
+      'blockWritesOutsideWorkingDirectories',
+      'deny',
+    ]);
     expect(settings.permissions.allow).toEqual([`Edit(/${work}/**)`]);
+    expect(settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(settings.permissions).not.toHaveProperty('additionalDirectories');
+    expect(Object.keys(settings.sandbox).sort()).toEqual([
+      'allowUnsandboxedCommands',
+      'autoAllowBashIfSandboxed',
+      'enabled',
+      'failIfUnavailable',
+      'filesystem',
+    ]);
+    expect(settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
     expect(Object.keys(settings.sandbox.filesystem).sort()).toEqual([
       'allowWrite',
       'denyRead',
@@ -167,8 +186,23 @@ describe('buildAgentSandboxSettings', () => {
   it('has no allow side at all without a workdir, so nothing can be edited', () => {
     const { workdir: _omit, ...rest } = paths;
     const profile = buildAgentSandboxSettings(rest);
-    expect(Object.keys(profile.settings.permissions)).toEqual(['deny']);
+    expect(Object.keys(profile.settings.permissions).sort()).toEqual([
+      'blockWritesOutsideWorkingDirectories',
+      'deny',
+    ]);
+    expect(profile.settings.permissions).not.toHaveProperty('allow');
+    // The outside-write block is on without a workdir too (fail closed).
+    expect(profile.settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(profile.settings.permissions).not.toHaveProperty('additionalDirectories');
+    expect(Object.keys(profile.settings.sandbox).sort()).toEqual([
+      'allowUnsandboxedCommands',
+      'autoAllowBashIfSandboxed',
+      'enabled',
+      'failIfUnavailable',
+      'filesystem',
+    ]);
+    // Sandbox auto-allow is off without a workdir too.
+    expect(profile.settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
     expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
     expect(profile.workdir).toBeNull();
   });
@@ -319,12 +353,13 @@ describe('agentEnv', () => {
     NODE_OPTIONS: '--require /tmp/evil.js',
   };
 
-  it('keeps only the allow-listed variables and adds the subprocess scrub flag', () => {
+  it("keeps only the allow-listed variables and opts out of the subprocess scrub ('0')", () => {
     const env = agentEnv(parent);
     expect(Object.keys(env).sort()).toEqual(
       [...AGENT_ENV_ALLOW, 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'].sort(),
     );
-    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('1');
+    // The owner's scrub opt-out (STATE.md [Owner] 2026-11-10): the value is exactly '0'.
+    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('0');
     expect(env.PATH).toBe(parent.PATH);
   });
 
@@ -391,7 +426,8 @@ describe('buildClaudeArgv', () => {
     }
     expect(valueAfter(argv, '--output-format')).toBe('stream-json');
     expect(valueAfter(argv, '--setting-sources')).toBe('user');
-    expect(valueAfter(argv, '--permission-mode')).toBe('dontAsk');
+    expect(AGENT_PERMISSION_MODE).toBe('auto');
+    expect(valueAfter(argv, '--permission-mode')).toBe(AGENT_PERMISSION_MODE);
     expect(valueAfter(argv, '--permission-prompts')).toBe('none');
     expect(valueAfter(argv, '--model')).toBe('haiku');
     expect(valueAfter(argv, '--max-turns')).toBe('12');

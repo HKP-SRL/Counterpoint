@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
+import { MATCHER_CLAUDE_VERSION } from '../../src/agent/probe-evaluator.ts';
 import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
@@ -221,8 +222,9 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     await runDoctorCommand(host);
     const { matcherVersion } = readReport(host.home);
-    expect(matcherVersion).toBe('2.1.319+r2');
-    expect(matcherVersion.endsWith('+r2')).toBe(true);
+    // Revision 3 (01-24): only deterministic refusals count.
+    expect(matcherVersion).toBe(`${MATCHER_CLAUDE_VERSION}+r3`);
+    expect(matcherVersion.endsWith('+r3')).toBe(true);
   });
 
   it('names a stale outside-workdir canary in the Files outside the working folder row', async () => {

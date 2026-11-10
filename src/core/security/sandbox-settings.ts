@@ -13,14 +13,29 @@
 // - Permission rules use the `//abs` prefix form; `sandbox.filesystem.*` uses plain absolute
 //   paths. Every path is absolute and realpath-resolved (`/tmp` is `/private/tmp` on macOS).
 //
-// File edits (WINDOWS.md #2, 01-17). `sandbox.filesystem.allowWrite` confines only Bash. The
-// Write, Edit, MultiEdit and NotebookEdit tools are governed by permission rules alone, and under
-// `--permission-mode dontAsk` a bare `Write` or `Edit` in `--allowedTools` is a grant over every
-// path. So the profile's tool list (AGENT_TOOLS) names no file-edit tool, and the allow side is
-// builder output: with a workdir it is exactly `Edit(//{workdir}/**)` (Edit rules apply to every
-// built-in file-editing tool); without one there is no allow side, so nothing can be edited.
-// dontAsk refuses every other file edit. Deny rules are evaluated before allow rules, so the
-// workdir's `.claude/` folder and every protected directory stay unwritable.
+// File edits (WINDOWS.md #2, 01-17; auto mode since 01-21). Sessions run in
+// `--permission-mode auto` (claude-argv.ts), where a classifier decides calls no rule covers, so
+// no confinement may rest on the mode. `permissions.blockWritesOutsideWorkingDirectories: true`
+// (claude >= 2.1.314) confines the Write, Edit and NotebookEdit tools to the working folder in
+// every permission mode, and no allow rule lifts it; the profile always emits it, with or without
+// a workdir (fail closed). It also refuses writes to Claude Code settings files inside the working
+// folder, and it removes the `EnterWorktree`/`ExitWorktree` tools (Phase 2 builders run inside
+// Counterpoint-made worktrees and do not need them). Claude-managed exempt files (plan files, the
+// scratchpad, a background session's tmp, auto-memory `.md`) stay writable: the T-01-70 residual.
+// The block does not limit shell commands: `sandbox.filesystem.allowWrite: []` (Seatbelt) still
+// confines Bash. The profile's tool list (AGENT_TOOLS) names no file-edit tool, and the allow side
+// is builder output: with a workdir it is exactly `Edit(//{workdir}/**)` (Edit rules apply to
+// every built-in file-editing tool); without one there is no allow side. Deny rules are evaluated
+// before allow rules in every mode, so the workdir's `.claude/` folder and every protected
+// directory stay unwritable.
+//
+// Sandbox auto-allow (replacement 1 for the scrub, 01-24). Claude Code's default
+// (`autoAllowBashIfSandboxed: true`) runs sandboxed Bash commands without the permission prompt
+// flow. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` kept that off; agent sessions now opt out of the scrub
+// (agent-env.ts), so the profile sets `sandbox.autoAllowBashIfSandboxed: false` explicitly, with or
+// without a workdir. With it off, an unlisted sandboxed command goes through the permission rules
+// and, in auto mode, the classifier. The `--settings` flag outranks user, project and local
+// settings but not managed settings; doctor checks managed sources for it (01-25).
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -51,11 +66,15 @@ export interface AgentSettings {
     deny: string[];
     allow?: string[];
     additionalDirectories?: string[];
+    /** Refuses Write/Edit/NotebookEdit outside the working directories, in every mode. */
+    blockWritesOutsideWorkingDirectories?: boolean;
   };
   sandbox: {
     enabled: boolean;
     failIfUnavailable: boolean;
     allowUnsandboxedCommands: boolean;
+    /** False sends sandboxed Bash commands through the permission rules (and, in auto mode, the classifier). */
+    autoAllowBashIfSandboxed?: boolean;
     excludedCommands?: string[];
     filesystem: {
       denyRead: string[];
@@ -159,11 +178,16 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
   deny.push(pathRule('Edit', gitDir));
   if (workdir !== undefined) deny.push(pathRule('Edit', join(workdir, '.claude')));
 
-  // The only grant: file edits inside the workdir. No workdir, no allow side at all.
+  // The only grant: file edits inside the workdir. No workdir, no allow side at all. The
+  // outside-write block is on either way (fail closed).
   const permissions: AgentSettings['permissions'] =
     workdir === undefined
-      ? { deny: unique(deny) }
-      : { deny: unique(deny), allow: [pathRule('Edit', workdir)] };
+      ? { deny: unique(deny), blockWritesOutsideWorkingDirectories: true }
+      : {
+          deny: unique(deny),
+          allow: [pathRule('Edit', workdir)],
+          blockWritesOutsideWorkingDirectories: true,
+        };
 
   const settings: AgentSettings = {
     permissions,
@@ -171,6 +195,7 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: false,
       filesystem: {
         denyRead: readDirs,
         denyWrite: writeTargets.map((target) => target.path),

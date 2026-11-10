@@ -47,11 +47,11 @@ import {
   type AgentSandbox,
   type AgentSettings,
   buildAgentSandboxSettings,
-  fileEditGrants,
   type ProtectedPaths,
   pathRule,
   type ReadTarget,
   resolveAbsolute,
+  rulePath,
   type WriteTargetId,
 } from '../core/security/sandbox-settings.ts';
 import { buildClaudeArgv } from './claude-argv.ts';
@@ -63,14 +63,21 @@ import type { AgentRun, AgentRunner } from './runner.ts';
  * `treatmentProfile`: buildAgentSandboxSettings' settings and `allowedTools`), never with a
  * probe-local tool list (T-01-19, T-01-65).
  *
- * The control session's tools: Bash, plus Grep scoped to the mirror. Read, Write and Edit reach
- * the mirror through the control's own `permissions.allow` rules. Grep needs the scoped entry
+ * The control session's tools: only Grep scoped to the mirror. Grep needs the scoped entry
  * because claude 2.1.319 removes Grep and Glob from a session whose `--allowedTools` does not
  * name Grep (verified live: "No such tool available: Grep"); a bare `Grep` would be a grant over
- * every path, so the entry names only the mirror.
+ * every path, so the entry names only the mirror. Bash, Read, Write and Edit stay available
+ * without being named (Read, Write and Edit did in 01-18; the live launch test checks Bash), and
+ * every control step is covered by an explicit allow rule in buildControlSettings.
+ *
+ * There is no bare `Bash` entry (01-21). The stream names only the reason type of a permission
+ * decision, never the matched rule, so with a bare `Bash` present a `rule` accept of a control
+ * Bash step could not be told apart from one by its exact-command rule. Without it only the
+ * control's narrow rules can accept a control step. Every entry names only probe-owned paths or
+ * the probe's own commands (T-01-18, T-01-61).
  */
 export function controlTools(plan: ProbePlan): string[] {
-  return ['Bash', pathRule('Grep', plan.mirrorRoot)];
+  return [pathRule('Grep', plan.mirrorRoot)];
 }
 
 export const PROBE_MAX_BUDGET_USD = 0.5;
@@ -507,24 +514,52 @@ export function probePrompt(steps: readonly ProbeStep[]): string {
 }
 
 /**
- * Settings for the control session. The deny side is copied from the treatment; the allow side
- * is written fresh and confined to the mirror. Nothing on the treatment's allow side (allow
- * rules, additionalDirectories, allowWrite, excludedCommands, ...) is ever read.
+ * Settings for the control session. The deny side, the sandbox flags, the outside-write block
+ * (`blockWritesOutsideWorkingDirectories`) and sandbox auto-allow off (`autoAllowBashIfSandboxed:
+ * false`, 01-24) are copied from the treatment; both are restrictions, not grants. The allow side
+ * is written fresh.
+ * Nothing on the treatment's allow side (allow rules, additionalDirectories, allowWrite,
+ * excludedCommands, ...) is ever read.
+ *
+ * Every control step is covered by an explicit allow rule (01-21), so in auto mode the
+ * classifier never has to decide one: Read and Edit on the mirror, a Read rule on exactly the
+ * control canary and on exactly the control symlink, and one `Bash(<command>)` rule per control
+ * Bash step with that step's exact command. The Bash rules live in settings rather than
+ * `--allowedTools`, so no CLI list parsing touches them. The stream names only the reason type of
+ * an accept, never the matched rule, which is why the control carries no bare `Bash` entry
+ * (controlTools): a `rule` accept of a control Bash step can then only come from its own
+ * exact-command rule. Every entry names only probe-owned paths or the probe's own commands
+ * (T-01-18, T-01-61).
  */
 export function buildControlSettings(treatment: AgentSettings, plan: ProbePlan): AgentSettings {
   if (treatment.sandbox.enabled !== true || treatment.sandbox.failIfUnavailable !== true) {
     throw new Error('The treatment sandbox must be enabled and required; refusing to probe.');
   }
   const mirror = plan.mirrorRoot;
+  const bashRules = plan.control.steps
+    .filter((step) => step.tool === 'Bash' && step.command !== undefined)
+    .map((step) => `Bash(${step.command})`);
   return {
     permissions: {
       deny: [...treatment.permissions.deny],
-      allow: [pathRule('Read', mirror), pathRule('Edit', mirror)],
+      allow: unique([
+        pathRule('Read', mirror),
+        pathRule('Edit', mirror),
+        `Read(${rulePath(plan.controlCanary.path)})`,
+        `Read(${rulePath(plan.symlinks.control.path)})`,
+        ...bashRules,
+      ]),
+      ...(treatment.permissions.blockWritesOutsideWorkingDirectories === true
+        ? { blockWritesOutsideWorkingDirectories: true }
+        : {}),
     },
     sandbox: {
       enabled: treatment.sandbox.enabled,
       failIfUnavailable: treatment.sandbox.failIfUnavailable,
       allowUnsandboxedCommands: false,
+      ...(treatment.sandbox.autoAllowBashIfSandboxed === false
+        ? { autoAllowBashIfSandboxed: false }
+        : {}),
       filesystem: {
         denyRead: [...treatment.sandbox.filesystem.denyRead],
         denyWrite: [...treatment.sandbox.filesystem.denyWrite],
@@ -845,8 +880,11 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       claudeVersion,
       leftovers,
       skippedTargets,
-      // What the launched treatment could edit, read off the exact profile it ran with.
-      treatmentEditGrants: fileEditGrants(launch.treatment),
+      // The outside-write block counts only when the exact settings the treatment launched with
+      // turned it on; its working folder is the probe directory (the treatment's cwd).
+      ...(launch.treatment.settings.permissions.blockWritesOutsideWorkingDirectories === true
+        ? { treatmentWriteBlock: { workdirs: [plan.probeDir] } }
+        : {}),
     });
 
     return {
@@ -896,6 +934,10 @@ function mergeRuns(first: AgentRun, second: AgentRun): AgentRun {
     timedOut: first.timedOut || second.timedOut,
     result: second.result ?? first.result,
   };
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 function writeCanary(canary: ProbeCanary): void {

@@ -8,7 +8,6 @@ import { type ProbePlan, planProbe } from '../../src/agent/probe.ts';
 import {
   classifyStep,
   evaluateProbe,
-  isUnlistedPathDenial,
   MATCHER_CLAUDE_VERSION,
   MATCHER_REVISION,
 } from '../../src/agent/probe-evaluator.ts';
@@ -19,7 +18,6 @@ import {
   ProbeTarget,
   type ProbeTargetId,
 } from '../../src/core/security/doctor-report.ts';
-import type { FileEditGrants } from '../../src/core/security/sandbox-settings.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURE_DIR = join(REPO_ROOT, 'tests', 'fixtures', 'stream-json');
@@ -502,10 +500,64 @@ describe('evaluateProbe', () => {
   });
 });
 
-// --- The outside-workdir row and its scoped mode rule (01-17) ---------------------------------
+// --- The outside-workdir row: deterministic refusals only (01-24, MATCHER_REVISION 3) --------
 
 const MODE_TEXT = (tool: string) =>
   `<tool_use_error>Permission to use ${tool} has been denied because Claude Code is running in don't ask mode.</tool_use_error>`;
+
+/** The working folder the fixture treatment ran in (its launched block's working directory). */
+const FIXTURE_WORKDIR = '/FIXTURE/probe';
+const WRITE_BLOCK = { workdirs: [FIXTURE_WORKDIR] };
+
+/**
+ * The outside-write block's refusal, in the shape recorded live on claude 2.1.321 (01-24
+ * step-records.json, steps 22 and 24): the first documented text form, not wrapped in
+ * tool_use_error, naming the step's own path and the working directory.
+ */
+const BLOCK_TEXT = (path: string, dirs = FIXTURE_WORKDIR) =>
+  `${path} is outside ${dirs}; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.`;
+const BLOCK_REASON =
+  'Writes outside the working directories are blocked (permissions.blockWritesOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.';
+
+/** The no-approval-surface refusal, in the shape recorded live on claude 2.1.321 (01-18). */
+const ASYNC_TEXT = (path: string) =>
+  `Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. The action was NOT performed; do not claim it succeeded, and do not retry it: this action, and anything else that requires approval, will be denied the same way for the rest of this session. Tell the user what was blocked and why you needed it, then continue with the parts of the task that do not require approval. What required approval: Claude requested permissions to write to ${path}, but you haven't granted it yet. Path is outside allowed working directories`;
+const ASYNC_REASON = 'no approval surface in this session; permission request denied automatically';
+
+/**
+ * A classifier refusal. No live run has recorded one (01-24 recorded classifier accepts only),
+ * so this text is invented: the evaluator must read it as an unrecognised reject.
+ */
+const CLASSIFIER_TEXT = (tool: string) => `Permission to use ${tool} was denied by the classifier.`;
+
+type Refusal = 'mode' | 'block' | 'asyncAgent' | 'classifier';
+
+const DEFAULT_REASON: Record<Refusal, string> = {
+  mode: 'mode',
+  block: 'other',
+  asyncAgent: 'asyncAgent',
+  classifier: 'classifier',
+};
+
+function refusalText(refusal: Refusal, tool: string, path: string): string {
+  switch (refusal) {
+    case 'mode':
+      return MODE_TEXT(tool);
+    case 'block':
+      return BLOCK_TEXT(path);
+    case 'asyncAgent':
+      return ASYNC_TEXT(path);
+    case 'classifier':
+      return CLASSIFIER_TEXT(tool);
+  }
+}
+
+/** The `system/permission_denied` event the live runs emitted with each refusal kind, if any. */
+function liveDeniedEvent(refusal: Refusal): { reasonType: string; reason?: string } | undefined {
+  if (refusal === 'block') return { reasonType: 'other', reason: BLOCK_REASON };
+  if (refusal === 'asyncAgent') return { reasonType: 'asyncAgent', reason: ASYNC_REASON };
+  return undefined;
+}
 
 function toolCall(id: string, name: string, input: Record<string, unknown>): StreamEvent {
   return {
@@ -532,22 +584,30 @@ function toolReply(
 }
 
 interface OutsideScenario {
-  /** How the treatment's Write step ends (default: an agreed mode denial). */
+  /** Which layer refuses the treatment's Write and Edit (default: the don't-ask mode). */
+  refusal?: Refusal;
+  /** How the treatment's Write step ends (default: refused as `refusal` says). */
   write?: 'mode' | 'created';
   /** Whether the treatment made its Read before Edit (default true). */
   readBeforeEdit?: boolean;
   /** Whether the Write and Edit ids are listed in result.permission_denials (default true). */
   listDenials?: boolean;
-  /** The permission_decision reason_type of the denials (default `mode`). */
+  /** The permission_decision reason_type of the denials (default: the refusal's own). */
   reasonType?: string;
-  /** A system/permission_denied event per denial with this reason type (default: none). */
+  /**
+   * A system/permission_denied event per denial with this reason type (default: the event the
+   * live runs emitted for the refusal kind; none for the mode).
+   */
   deniedEventReason?: string;
+  /** The path the refusal text names (default: the step's own path). */
+  textPath?: string;
 }
 
 /**
  * A copy of a session stream with the three outside-workdir calls appended before its result
- * event (synthetic, modelled on mode-only.jsonl's mode-denial record). The treatment's Write and
- * Edit are refused by the mode; the control's three calls succeed in the mirror.
+ * event (synthetic; the mode shape follows mode-only.jsonl, the block and asyncAgent shapes the
+ * live records of 01-24 and 01-18). The treatment's Write and Edit are refused as the scenario
+ * says; the control's three calls succeed in the mirror.
  */
 function withOutside(
   plan: ProbePlan,
@@ -564,16 +624,24 @@ function withOutside(
   };
   const added: StreamEvent[] = [];
   const denials: unknown[] = [];
-  const decision = { decision: 'reject', reason_type: scenario.reasonType ?? 'mode' };
+  const refusal = scenario.refusal ?? 'mode';
+  const decision = {
+    decision: 'reject',
+    reason_type: scenario.reasonType ?? DEFAULT_REASON[refusal],
+  };
   const deny = (id: string, tool: string, input: Record<string, unknown>) => {
-    added.push(toolReply(id, MODE_TEXT(tool), true, decision));
-    if (scenario.deniedEventReason !== undefined) {
+    const path = scenario.textPath ?? String(input.file_path);
+    added.push(toolReply(id, refusalText(refusal, tool, path), true, decision));
+    const live = liveDeniedEvent(refusal);
+    const eventReason = scenario.deniedEventReason ?? live?.reasonType;
+    if (eventReason !== undefined) {
       added.push({
         type: 'system',
         subtype: 'permission_denied',
         tool_name: tool,
         tool_use_id: id,
-        decision_reason_type: scenario.deniedEventReason,
+        decision_reason_type: eventReason,
+        ...(live?.reason === undefined ? {} : { decision_reason: live.reason }),
       });
     }
     if (scenario.listDenials ?? true) {
@@ -614,6 +682,18 @@ function withOutside(
 
 /** A copy of a stream whose Write call to `path` was refused by the mode with every record agreeing. */
 function modeDeniedWrite(events: readonly StreamEvent[], path: string): StreamEvent[] {
+  return deniedWrite(events, path, 'mode');
+}
+
+/**
+ * A copy of a stream whose Write call to `path` was refused by `refusal` with every record
+ * agreeing (text, permission_decision, permission_denied event and permission_denials).
+ */
+function deniedWrite(
+  events: readonly StreamEvent[],
+  path: string,
+  refusal: 'mode' | 'block',
+): StreamEvent[] {
   let id: string | undefined;
   for (const event of events) {
     if (event.type !== 'assistant') continue;
@@ -633,19 +713,25 @@ function modeDeniedWrite(events: readonly StreamEvent[], path: string): StreamEv
       const content = (copy.message as { content?: Array<Record<string, unknown>> }).content;
       for (const block of content ?? []) {
         if (block.type === 'tool_result' && block.tool_use_id === id) {
-          block.content = MODE_TEXT('Write');
+          block.content = refusalText(refusal, 'Write', path);
           block.is_error = true;
           copy.tool_result_meta = [
             {
               id,
-              permission_decision: { decision: 'reject', source: 'config', reason_type: 'mode' },
+              permission_decision: {
+                decision: 'reject',
+                source: 'config',
+                reason_type: DEFAULT_REASON[refusal],
+              },
             },
           ];
         }
       }
     }
     if (copy.type === 'system' && copy.subtype === 'permission_denied' && copy.tool_use_id === id) {
-      copy.decision_reason_type = 'mode';
+      copy.decision_reason_type = DEFAULT_REASON[refusal];
+      if (refusal === 'block') copy.decision_reason = BLOCK_REASON;
+      else delete copy.decision_reason;
     }
     if (copy.type === 'result') {
       const listed = ((copy.permission_denials as Array<{ tool_use_id?: string }>) ?? []).some(
@@ -663,114 +749,194 @@ function modeDeniedWrite(events: readonly StreamEvent[], path: string): StreamEv
 }
 
 describe('MATCHER_REVISION', () => {
-  it('is 2: Edit steps and the scoped outside-workdir rule', () => {
-    expect(MATCHER_REVISION).toBe(2);
+  it('is 3: auto mode, where only deterministic refusals count (rule, OS, outside-write block)', () => {
+    expect(MATCHER_REVISION).toBe(3);
   });
 });
 
-describe('the outside-workdir row (scoped mode-denial rule)', () => {
+describe('the outside-workdir row (deterministic refusals only)', () => {
   const plan = fixturePlan();
   const treatment = keychainDenied(plan, load('live-treatment.jsonl'));
   const control = withOutside(plan, load('live-control.jsonl'), 'control');
-  /** The production profile's grants: edits only inside the probe directory. */
-  const GRANTS: FileEditGrants = { everywhere: false, roots: ['/FIXTURE/probe'] };
   const base = { claudeVersion: VERSION, leftovers: [] as string[] };
   const outsideRow = (t: StreamEvent[], c: StreamEvent[], extra: object = {}) =>
-    evaluateProbe(plan, t, c, { ...base, treatmentEditGrants: GRANTS, ...extra }).find(
+    evaluateProbe(plan, t, c, { ...base, treatmentWriteBlock: WRITE_BLOCK, ...extra }).find(
       (row) => row.id === 'outside-workdir',
     ) as ProbeTarget;
+  const outsideSteps = () => ({
+    write: step(plan, 'treatment', 'outside-workdir', 'write'),
+    edit: step(plan, 'treatment', 'outside-workdir', 'edit'),
+  });
+  const blocked = () => withOutside(plan, treatment, 'treatment', { refusal: 'block' });
 
-  it('reads Blocked from agreed mode denials when no grant covers the path, and all eight rows pass', () => {
-    const targets = evaluateProbe(plan, withOutside(plan, treatment, 'treatment'), control, {
+  it('classifies the block refusal of the outside Write and Edit as denied-block', () => {
+    const events = blocked();
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+    expect(classifyStep(edit, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+  });
+
+  it('reads Blocked from the block refusal with the launched block on, and all eight rows pass', () => {
+    const targets = evaluateProbe(plan, blocked(), control, {
       ...base,
-      treatmentEditGrants: GRANTS,
+      treatmentWriteBlock: WRITE_BLOCK,
     });
     expect(targets).toHaveLength(8);
     expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['blocked']));
     const row = targets.find((t) => t.id === 'outside-workdir');
     expect(row?.evidence).toBe(
-      'Write: denied: no allow rule covers this path; Read before Edit: reached; Edit: denied: no allow rule covers this path; control reached 3 of 3',
+      'Write: refused: writes outside the working folder are blocked; Read before Edit: reached; Edit: refused: writes outside the working folder are blocked; control reached 3 of 3',
     );
   });
 
-  it('isUnlistedPathDenial holds for the outside Write and Edit steps only', () => {
-    const events = withOutside(plan, treatment, 'treatment');
-    const steps = plan.treatment.steps.filter((s) => s.target === 'outside-workdir');
-    expect(steps.map((s) => isUnlistedPathDenial(s, events, GRANTS))).toEqual([true, false, true]);
+  it('reads the block refusal as unknown, and the row Not checked, without treatmentWriteBlock', () => {
+    const events = blocked();
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events)).toBe('unknown');
+    expect(classifyStep(edit, events)).toBe('unknown');
+    const row = evaluateProbe(plan, events, control, base).find((r) => r.id === 'outside-workdir');
+    expect(row?.result).toBe('not-checked');
+  });
+
+  it('reads a block-shaped refusal of a path inside the working folder as unknown', () => {
+    const events = blocked();
+    const { write, edit } = outsideSteps();
+    // The outside paths lie under the fixture home; a block context naming that home as a working
+    // directory puts them inside it, where the block cannot be what refused them.
+    const inside = { workdirs: ['/FIXTURE/scratch/home'] };
+    expect(classifyStep(write, events, undefined, inside)).toBe('unknown');
+    expect(classifyStep(edit, events, undefined, inside)).toBe('unknown');
+    expect(outsideRow(events, control, { treatmentWriteBlock: inside }).result).toBe('not-checked');
   });
 
   it.each([
-    ['the grants are omitted', {}, { treatmentEditGrants: undefined }],
-    ['the grants say everywhere', {}, { treatmentEditGrants: { everywhere: true, roots: [] } }],
-    [
-      'the path lies inside a granted root',
-      {},
-      { treatmentEditGrants: { everywhere: false, roots: ['/FIXTURE/scratch/home'] } },
-    ],
-    ['permission_denials lacks the ids', { listDenials: false }, {}],
-    ['reason_type is not mode', { reasonType: 'rule' }, {}],
-    ['a permission_denied event gives another reason', { deniedEventReason: 'rule' }, {}],
-    ['the Read before Edit is missing', { readBeforeEdit: false }, {}],
-  ] as Array<[string, OutsideScenario, object]>)(
-    'reads Not checked when %s',
-    (_name, scenario, extra) => {
-      const row = outsideRow(withOutside(plan, treatment, 'treatment', scenario), control, extra);
-      expect(row.result).toBe('not-checked');
+    ['permission_denials lacks the ids', { listDenials: false }],
+    ['reason_type is rule, not other', { reasonType: 'rule' }],
+    ['reason_type is mode', { reasonType: 'mode' }],
+    ['a permission_denied event gives another reason', { deniedEventReason: 'rule' }],
+    ['the text names another path', { textPath: '/FIXTURE/scratch/home/elsewhere' }],
+  ] as Array<[string, OutsideScenario]>)(
+    'reads the block shape as not denied-block, and the row Not checked, when %s',
+    (_name, scenario) => {
+      const events = withOutside(plan, treatment, 'treatment', { refusal: 'block', ...scenario });
+      const { write } = outsideSteps();
+      expect(classifyStep(write, events, undefined, WRITE_BLOCK)).not.toBe('denied-block');
+      expect(outsideRow(events, control).result).toBe('not-checked');
     },
   );
 
+  it("reads the don't-ask mode denial as denied-mode, and the row Not checked (Blocked under r2)", () => {
+    const events = withOutside(plan, treatment, 'treatment');
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(classifyStep(edit, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(outsideRow(events, control).result).toBe('not-checked');
+  });
+
+  it('reads the no-approval-surface refusal (01-18 asyncAgent shape) as denied-mode, never Blocked', () => {
+    const events = withOutside(plan, treatment, 'treatment', { refusal: 'asyncAgent' });
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(classifyStep(edit, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(outsideRow(events, control).result).toBe('not-checked');
+  });
+
+  it('keeps the other rows Blocked on another claude version when the outside steps are asyncAgent (recognised, so no distrust)', () => {
+    const events = withOutside(plan, treatment, 'treatment', { refusal: 'asyncAgent' });
+    const targets = evaluateProbe(plan, events, control, {
+      ...base,
+      claudeVersion: '2.1.321 (Claude Code)',
+      treatmentWriteBlock: WRITE_BLOCK,
+    });
+    const r = results(targets);
+    expect(r['outside-workdir']).toBe('not-checked');
+    for (const id of PROBE_TARGET_IDS.filter((t) => t !== 'outside-workdir')) {
+      expect(r[id], id).toBe('blocked');
+    }
+  });
+
+  it('reads a classifier reject (no live shape recorded) as unknown, never Blocked', () => {
+    const events = withOutside(plan, treatment, 'treatment', { refusal: 'classifier' });
+    const { write } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('unknown');
+    expect(outsideRow(events, control).result).toBe('not-checked');
+  });
+
+  it('applies version distrust to a classifier reject on another claude version', () => {
+    const events = withOutside(plan, treatment, 'treatment', { refusal: 'classifier' });
+    const targets = evaluateProbe(plan, events, control, {
+      ...base,
+      claudeVersion: '2.1.321 (Claude Code)',
+      treatmentWriteBlock: WRITE_BLOCK,
+    });
+    expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['not-checked']));
+  });
+
   it('says why a missing Read before Edit proves nothing', () => {
     const row = outsideRow(
-      withOutside(plan, treatment, 'treatment', { readBeforeEdit: false }),
+      withOutside(plan, treatment, 'treatment', { refusal: 'block', readBeforeEdit: false }),
       control,
     );
+    expect(row.result).toBe('not-checked');
     expect(row.evidence).toMatch(
       /^the treatment could not read the file before editing it, so the Edit denial proves nothing; /,
     );
   });
 
   it('reads Not checked when the control could not reach its mirror twin', () => {
-    const row = outsideRow(withOutside(plan, treatment, 'treatment'), load('live-control.jsonl'));
+    const row = outsideRow(blocked(), load('live-control.jsonl'));
     expect(row.result).toBe('not-checked');
   });
 
   it('reads Reachable when the Write tool created the outside file', () => {
     const row = outsideRow(
-      withOutside(plan, treatment, 'treatment', { write: 'created' }),
+      withOutside(plan, treatment, 'treatment', { refusal: 'block', write: 'created' }),
       control,
     );
     expect(row.result).toBe('reachable');
   });
 
   it('reads Reachable when the post-state shows a leftover, whatever the stream says', () => {
-    const row = outsideRow(withOutside(plan, treatment, 'treatment'), control, {
-      leftovers: [plan.outside.editFile],
-    });
+    const row = outsideRow(blocked(), control, { leftovers: [plan.outside.editFile] });
     expect(row.result).toBe('reachable');
     expect(row.evidence).toMatch(/outside the working folder/);
   });
 
-  it('keeps a mode-only denial Not checked for git-hooks and git-info even with grants (scope pin)', () => {
-    const none: FileEditGrants = { everywhere: false, roots: [] };
+  it('reads git-hooks and git-info Write refused by the block as denied-block, and the rows Blocked', () => {
+    const hooksWrite = step(plan, 'treatment', 'git-hooks', 'write');
+    const infoWrite = step(plan, 'treatment', 'git-info', 'write');
+    const events = deniedWrite(
+      deniedWrite(blocked(), hooksWrite.path as string, 'block'),
+      infoWrite.path as string,
+      'block',
+    );
+    expect(classifyStep(hooksWrite, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+    expect(classifyStep(infoWrite, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+    const r = results(
+      evaluateProbe(plan, events, control, { ...base, treatmentWriteBlock: WRITE_BLOCK }),
+    );
+    expect(r['git-hooks']).toBe('blocked');
+    expect(r['git-info']).toBe('blocked');
+  });
+
+  it('keeps a mode-only denial Not checked for git-hooks and git-info, with the block on (scope pin)', () => {
     const modeOnly = load('mode-only.jsonl');
     const hooksWrite = step(plan, 'treatment', 'git-hooks', 'write');
     const infoWrite = step(plan, 'treatment', 'git-info', 'write');
     // mode-only.jsonl refuses the git-hooks Write by the mode; a copy refuses git-info's too.
     const bothMode = modeDeniedWrite(modeOnly, infoWrite.path as string);
-    expect(classifyStep(hooksWrite, bothMode)).toBe('denied-mode');
-    expect(classifyStep(infoWrite, bothMode)).toBe('denied-mode');
-    expect(isUnlistedPathDenial(hooksWrite, bothMode, none)).toBe(false);
-    expect(isUnlistedPathDenial(infoWrite, bothMode, none)).toBe(false);
+    expect(classifyStep(hooksWrite, bothMode, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(classifyStep(infoWrite, bothMode, undefined, WRITE_BLOCK)).toBe('denied-mode');
 
     const targets = evaluateProbe(plan, bothMode, load('live-control.jsonl'), {
       ...base,
-      treatmentEditGrants: none,
+      treatmentWriteBlock: WRITE_BLOCK,
     });
     expect(results(targets)['git-hooks']).toBe('not-checked');
     expect(results(targets)['git-info']).toBe('not-checked');
     const plain = evaluateProbe(plan, modeOnly, load('live-control.jsonl'), {
       ...base,
-      treatmentEditGrants: none,
+      treatmentWriteBlock: WRITE_BLOCK,
     });
     expect(results(plain)['git-hooks']).toBe('not-checked');
   });
