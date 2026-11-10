@@ -47,7 +47,6 @@ import {
   type AgentSandbox,
   type AgentSettings,
   buildAgentSandboxSettings,
-  fileEditGrants,
   type ProtectedPaths,
   pathRule,
   type ReadTarget,
@@ -881,8 +880,11 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       claudeVersion,
       leftovers,
       skippedTargets,
-      // What the launched treatment could edit, read off the exact profile it ran with.
-      treatmentEditGrants: fileEditGrants(launch.treatment),
+      // The outside-write block counts only when the exact settings the treatment launched with
+      // turned it on; its working folder is the probe directory (the treatment's cwd).
+      ...(launch.treatment.settings.permissions.blockWritesOutsideWorkingDirectories === true
+        ? { treatmentWriteBlock: { workdirs: [plan.probeDir] } }
+        : {}),
     });
 
     return {

@@ -8,19 +8,20 @@
 // model's prose and a bare `is_error` never decide anything, except that a canary value anywhere
 // in the treatment stream (prose included) makes its target Reachable.
 //
-// A target is Blocked only when every treatment step for it was denied by our rules or by the OS
-// sandbox AND the matching control step (same index, tool and operation, against the target's
-// mirror canary) reached it. Anything else, including a skipped step, a mode-based denial, an
-// unrecognised message and a control session that could not reach its mirror, is Not checked.
+// A target is Blocked only when every treatment step for it was refused by a deterministic layer
+// (one of our deny rules, the OS sandbox, or the outside-write block) AND the matching control
+// step (same index, tool and operation, against the target's mirror canary) reached it. Anything
+// else, including a skipped step, a refusal by the permission mode, the auto-mode classifier or
+// the no-approval-surface fallback, an unrecognised message and a control session that could not
+// reach its mirror, is Not checked.
 //
-// One scoped exception (01-17, MATCHER_REVISION 2): the `outside-workdir` row's Write and Edit
-// steps target a home path no deny rule covers, so their expected refusal comes from the
-// permission mode (dontAsk), not from a rule. Such a mode denial counts only for those two
-// steps, only when every record agrees (is_error, mode text, `permission_decision` reject with
-// `reason_type` mode, listed in `result.permission_denials`, and a `system/permission_denied`
-// event, if any, giving `mode`), and only when the launched treatment profile grants no file edit
-// covering the path (`treatmentEditGrants`, from fileEditGrants). For every other target a
-// mode-family denial stays Not checked.
+// Since MATCHER_REVISION 3 (01-24, auto mode) no permission-mode, classifier or
+// no-approval-surface refusal counts as denied, for any target: those layers are not
+// deterministic, so a confinement claim never rests on them (01-17's scoped mode-denial
+// acceptance is gone). The outside-write block (`permissions.blockWritesOutsideWorkingDirectories`)
+// counts only for Write and Edit steps, only when the launched treatment settings turned it on
+// (`treatmentWriteBlock`), only for a path outside the treatment's working folder, and only when
+// every record agrees with the refusal recorded live on claude 2.1.321 (01-24).
 //
 // The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live in 01-04 and
 // 01-05). Update the families together with MATCHER_CLAUDE_VERSION when Claude Code changes its
@@ -33,7 +34,6 @@ import {
   probeTargetLabel,
   probeTargetMode,
 } from '../core/security/doctor-report.ts';
-import type { FileEditGrants } from '../core/security/sandbox-settings.ts';
 import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
@@ -42,18 +42,28 @@ export const MATCHER_CLAUDE_VERSION = '2.1.319';
 
 /**
  * The classifier revision, recorded in the doctor report's `matcherVersion`
- * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped
- * outside-workdir mode-denial rule (01-17).
+ * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped outside-workdir
+ * mode-denial rule (01-17). 3: auto mode, where only deterministic refusals count (deny rule, OS
+ * sandbox, outside-write block); mode, classifier and no-approval-surface refusals never do (01-24).
  */
-export const MATCHER_REVISION = 2;
+export const MATCHER_REVISION = 3;
 
 export type StepClass =
   | 'reached'
   | 'denied-rule'
   | 'denied-os'
+  | 'denied-block'
   | 'denied-mode'
   | 'skipped'
   | 'unknown';
+
+/**
+ * The outside-write block as the launched treatment had it: the working directories it confines
+ * Write and Edit to. Passed only when the launched treatment settings turned the block on.
+ */
+export interface WriteBlockContext {
+  workdirs: readonly string[];
+}
 
 // --- Denial-text families (claude 2.1.319) ---------------------------------------------------
 
@@ -67,6 +77,23 @@ const RULE_READ_RE = /^Permission to read ([\s\S]+) has been denied\.$/;
 const RULE_BASH_RE = /^Permission to use Bash with command ([\s\S]+) has been denied\.$/;
 /** OS family: the Seatbelt sandbox refused the syscall (`Operation not permitted`). */
 const OS_FAMILY_TEXT = 'Operation not permitted';
+/**
+ * Block family (claude 2.1.321, recorded live in 01-24): `<path> is outside <dirs>; …`. The docs
+ * name a second form, `<path>: Writes outside the working directories are blocked
+ * (permissions.blockWritesOutsideWorkingDirectories). …`; it has not appeared live, so it is not
+ * accepted and reads `unknown`.
+ */
+const BLOCK_TEXT_SUFFIX =
+  '; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.';
+/** The `permission_decision.reason_type` (and permission_denied reason type) of a block refusal. */
+const BLOCK_REASON_TYPE = 'other';
+/**
+ * No-approval-surface family (claude 2.1.321, recorded live in 01-18): a `reason_type` asyncAgent
+ * reject with this text. Not deterministic: it refuses whatever would have needed a prompt.
+ */
+const ASYNC_FAMILY_PREFIX =
+  'Permission for this tool use was denied. It requires approval, and this session has no approval surface';
+const ASYNC_REASON_TYPE = 'asyncAgent';
 /** `permission_decision.reason_type` values that mean "our deny rules decided". */
 const RULE_REASON_TYPES: ReadonlySet<string> = new Set(['rule', 'subcommandResults']);
 
@@ -218,6 +245,7 @@ function classifyUse(
   use: ToolUse,
   events: readonly StreamEvent[],
   expectedValue: string | undefined,
+  writeBlock: WriteBlockContext | undefined,
 ): StepClass {
   const result = toolResult(events, use.id);
   if (!result) return 'unknown';
@@ -226,8 +254,14 @@ function classifyUse(
   // A canary value in the result is a reach, whatever else the result says.
   if (expectedValue !== undefined && result.haystack.includes(expectedValue)) return 'reached';
 
-  // Mode family: never ours, so never Blocked.
+  // Block family: the outside-write block refused a Write or Edit outside the working folder.
+  if (isBlockRefusal(step, use, result, events, writeBlock)) return 'denied-block';
+
+  // Non-deterministic families (never ours, so never Blocked): the permission mode, and the
+  // no-approval-surface fallback. No classifier refusal has been recorded live (01-24 recorded
+  // only classifier accepts), so there is no classifier family: such a reject reads `unknown`.
   if (folded(text).includes(folded(MODE_FAMILY_TEXT))) return 'denied-mode';
+  if (isNoApprovalSurface(use, result, events)) return 'denied-mode';
   if (decision?.decision === 'reject' && !RULE_REASON_TYPES.has(decision.reasonType)) {
     return decision.reasonType === 'mode' ? 'denied-mode' : 'unknown';
   }
@@ -273,6 +307,54 @@ function classifyUse(
   return 'unknown';
 }
 
+/**
+ * True only when the outside-write block refused this Write or Edit call, with every record
+ * agreeing with the refusal recorded live (01-24): the block was launched on (`writeBlock`), the
+ * step path lies outside every working directory, `is_error`, the text names exactly the step's
+ * `file_path` and the launched working directories, a `permission_decision` reject with
+ * `reason_type` other, the call listed in `result.permission_denials`, and a
+ * `system/permission_denied` event, if any, giving other.
+ */
+function isBlockRefusal(
+  step: ProbeStep,
+  use: ToolUse,
+  result: ToolResult,
+  events: readonly StreamEvent[],
+  writeBlock: WriteBlockContext | undefined,
+): boolean {
+  if (writeBlock === undefined || writeBlock.workdirs.length === 0) return false;
+  if (step.tool !== 'Write' && step.tool !== 'Edit') return false;
+  const path = step.path;
+  if (path === null || use.input.file_path !== path) return false;
+  if (writeBlock.workdirs.some((dir) => isInsideDir(path, dir))) return false;
+  const expected = `${path} is outside ${writeBlock.workdirs.join(', ')}${BLOCK_TEXT_SUFFIX}`;
+  const eventReason = deniedEventReasons(events).get(use.id);
+  return (
+    result.isError === true &&
+    result.text === expected &&
+    result.decision?.decision === 'reject' &&
+    result.decision.reasonType === BLOCK_REASON_TYPE &&
+    deniedIds(events).has(use.id) &&
+    (eventReason === undefined || eventReason === BLOCK_REASON_TYPE)
+  );
+}
+
+/** The no-approval-surface fallback (01-18 shape), every record agreeing. */
+function isNoApprovalSurface(
+  use: ToolUse,
+  result: ToolResult,
+  events: readonly StreamEvent[],
+): boolean {
+  const eventReason = deniedEventReasons(events).get(use.id);
+  return (
+    result.isError === true &&
+    result.text.startsWith(ASYNC_FAMILY_PREFIX) &&
+    result.decision?.decision === 'reject' &&
+    result.decision.reasonType === ASYNC_REASON_TYPE &&
+    (eventReason === undefined || eventReason === ASYNC_REASON_TYPE)
+  );
+}
+
 function isRuleText(step: ProbeStep, use: ToolUse, text: string): boolean {
   if (
     (step.tool === 'Read' || step.tool === 'Write' || step.tool === 'Edit') &&
@@ -299,22 +381,27 @@ const CLASS_ORDER: readonly StepClass[] = [
   'denied-mode',
   'skipped',
   'denied-os',
+  'denied-block',
   'denied-rule',
 ];
 
 /**
  * Classifies one planned step from a session's events. `expectedValue` is the canary value the
  * step would show if it reached its file (or Keychain item); without it a read counts as reached
- * on any successful result.
+ * on any successful result. `writeBlock` is the launched outside-write block; without it no step
+ * is ever `denied-block`.
  */
 export function classifyStep(
   step: ProbeStep,
   events: readonly StreamEvent[],
   expectedValue?: string,
+  writeBlock?: WriteBlockContext,
 ): StepClass {
   const uses = toolUses(events).filter((use) => matchesStep(step, use));
   if (uses.length === 0) return 'skipped';
-  const classes = new Set(uses.map((use) => classifyUse(step, use, events, expectedValue)));
+  const classes = new Set(
+    uses.map((use) => classifyUse(step, use, events, expectedValue, writeBlock)),
+  );
   return CLASS_ORDER.find((c) => classes.has(c)) ?? 'unknown';
 }
 
@@ -330,11 +417,11 @@ export interface EvaluateProbeOptions {
   /** Host display name for the `{host} .git/config` label. */
   hostName?: string;
   /**
-   * Where the launched treatment profile lets file tools write (fileEditGrants of the exact
-   * settings and tool list the treatment ran with). Without it no step is ever `denied-unlisted`,
-   * so the outside-workdir row cannot read Blocked from a mode denial.
+   * The outside-write block of the launched treatment: pass it only when the exact settings the
+   * treatment ran with turned `permissions.blockWritesOutsideWorkingDirectories` on. Without it no
+   * treatment step is ever `denied-block`. Control steps never get it.
    */
-  treatmentEditGrants?: FileEditGrants;
+  treatmentWriteBlock?: WriteBlockContext;
 }
 
 /** The `x.y.z` part of a `claude --version` string, or null. */
@@ -355,56 +442,15 @@ const OPERATION_LABEL: Readonly<Record<StepOperation, string>> = {
   edit: 'Edit',
 };
 
-const CLASS_LABEL: Readonly<Record<StepClass | 'denied-unlisted', string>> = {
+const CLASS_LABEL: Readonly<Record<StepClass, string>> = {
   reached: 'reached',
   'denied-rule': 'denied by permission rule',
   'denied-os': 'Operation not permitted (sandbox)',
-  'denied-mode': 'denied by the permission mode, not a rule',
-  'denied-unlisted': 'denied: no allow rule covers this path',
+  'denied-block': 'refused: writes outside the working folder are blocked',
+  'denied-mode': 'refused by the permission mode or classifier, not a deterministic layer',
   skipped: 'not attempted',
   unknown: 'unrecognised result',
 };
-
-/**
- * True only for the `outside-workdir` row's Write or Edit step when the treatment profile grants
- * no file edit covering the step's path (not everywhere, no root containing it) AND every matching
- * tool call's records agree that the permission mode refused it: `is_error`, the mode-family
- * text, a `permission_decision` reject with `reason_type` mode, its id in
- * `result.permission_denials`, and a `system/permission_denied` event, when present, giving
- * `mode`. Anything else is false, so the step stays `denied-mode` (Not checked).
- */
-export function isUnlistedPathDenial(
-  step: ProbeStep,
-  events: readonly StreamEvent[],
-  grants: FileEditGrants,
-): boolean {
-  if (step.target !== 'outside-workdir') return false;
-  const editStep =
-    (step.tool === 'Write' && step.operation === 'write') ||
-    (step.tool === 'Edit' && step.operation === 'edit');
-  if (!editStep || step.path === null) return false;
-  const path = step.path;
-  if (grants.everywhere) return false;
-  if (grants.roots.some((root) => isInsideDir(path, root))) return false;
-
-  const uses = toolUses(events).filter((use) => matchesStep(step, use));
-  if (uses.length === 0) return false;
-  const denied = deniedIds(events);
-  const eventReasons = deniedEventReasons(events);
-  return uses.every((use) => {
-    const result = toolResult(events, use.id);
-    if (result === null) return false;
-    const eventReason = eventReasons.get(use.id);
-    return (
-      result.isError === true &&
-      folded(result.text).includes(folded(MODE_FAMILY_TEXT)) &&
-      result.decision?.decision === 'reject' &&
-      result.decision.reasonType === 'mode' &&
-      denied.has(use.id) &&
-      (eventReason === undefined || eventReason === 'mode')
-    );
-  });
-}
 
 const KEYCHAIN_NOTE =
   "the Keychain sub-step used a temporary canary item as a proxy for the owner's gh keyring entry";
@@ -452,7 +498,10 @@ export function evaluateProbe(
   const tClass = new Map<number, StepClass>();
   const cClass = new Map<number, StepClass>();
   for (const step of plan.treatment.steps) {
-    tClass.set(step.index, classifyStep(step, treatment, valueFor(step, treatmentValues)));
+    tClass.set(
+      step.index,
+      classifyStep(step, treatment, valueFor(step, treatmentValues), options.treatmentWriteBlock),
+    );
   }
   for (const step of plan.control.steps) {
     cClass.set(step.index, classifyStep(step, control, valueFor(step, controlValues)));
@@ -496,24 +545,10 @@ export function evaluateProbe(
       return row('not-checked', 'the treatment and control plans do not match step for step');
     }
 
-    // The scoped rule: on the outside row only, a Write or Edit step denied by the mode counts as
-    // denied when isUnlistedPathDenial holds (every record agrees and no grant covers the path).
-    const unlisted = new Set<number>();
-    const grants = options.treatmentEditGrants;
-    if (outsideRow && grants !== undefined) {
-      for (const s of tSteps) {
-        if (tClass.get(s.index) === 'denied-mode' && isUnlistedPathDenial(s, treatment, grants)) {
-          unlisted.add(s.index);
-        }
-      }
-    }
     const stepSummary = tSteps
-      .map((s) => {
-        const label = unlisted.has(s.index)
-          ? CLASS_LABEL['denied-unlisted']
-          : CLASS_LABEL[tClass.get(s.index) ?? 'unknown'];
-        return `${OPERATION_LABEL[s.operation]}: ${label}`;
-      })
+      .map(
+        (s) => `${OPERATION_LABEL[s.operation]}: ${CLASS_LABEL[tClass.get(s.index) ?? 'unknown']}`,
+      )
       .join('; ');
     const controlReached = pairs.filter(({ c }) => c && cClass.get(c.index) === 'reached').length;
     const controlSummary = `control reached ${controlReached} of ${pairs.length}`;
@@ -560,10 +595,13 @@ export function evaluateProbe(
       }
     }
 
+    // Only deterministic refusals count: Write/Edit by a deny rule or the outside-write block,
+    // every other tool by a deny rule or the OS sandbox. A mode, classifier or no-approval-surface
+    // refusal (`denied-mode`) never does.
     const treatmentDenied = probedSteps.every((s) => {
       const cls = tClass.get(s.index);
       if (s.tool === 'Write' || s.tool === 'Edit')
-        return cls === 'denied-rule' || unlisted.has(s.index);
+        return cls === 'denied-rule' || cls === 'denied-block';
       return cls === 'denied-rule' || cls === 'denied-os';
     });
     const controlAll = controlReached === pairs.length;
