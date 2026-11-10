@@ -4,14 +4,14 @@ current_phase: 01
 current_phase_name: Trusted Shell & Signed Runway
 status: executing
 stopped_at: Phase 1 UI-SPEC approved
-last_updated: "2026-11-10T07:53:15.642Z"
+last_updated: "2026-11-10T09:25:43.463Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 01 execution started
-state_head: 4a63eced7302800c2a5e4e52122e4ba229ff622c
+state_head: 529221d0f7e4ff08c6db535dc4127550ebd247dd
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 20
+  total_plans: 22
   completed_plans: 16
   percent: 0
 ---
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 
 ## Current Position
 
-Phase: 01 (Trusted Shell & Signed Runway) — EXECUTING
-Plan: 17 of 20
+Phase: 01 (Trusted Shell & Signed Runway) — READY TO EXECUTE
+Plan: 17 of 22 (next: 01-21, wave 11; 01-18 superseded)
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 01 execution started
 
@@ -80,7 +80,7 @@ None yet.
 - [Phase 2]: Unverified context-window denominator on 1M models and `rate_limit_event` shape and reset unit. Spike before the budget and limit handling.
 - [Phase 3]: Branch-protection recipe for Cena's `master` not yet verified.
 - [Phase 4]: Fixture-mode rendering of Cena screens and `data-cp-id` stability across redraws are unproven. Spike before the visual gate.
-- [Phase 1] 01-18 halted at its live tracer: on claude 2.1.321 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (src/core/security/agent-env.ts) forces --permission-mode dontAsk down to default; outside-workdir Write/Edit were refused (no leftovers) but via an asyncAgent denial the evaluator does not recognise. Replan 01-18 (and the 01-17 profile) for auto mode + permissions.blockWritesOutsideWorkingDirectories + effective-mode check in doctor; verify whether the scrub also forces auto to default. Halted worktree preserved unmerged: .claude/worktrees/agent-a333676a91bb722f1 (branch worktree-agent-a333676a91bb722f1, c3f8034 eight-row live test); evidence: /Volumes/Dock/Dev/Caches/cp-test-0118/evidence-01-18-live/. 01-19, 01-20 and 01-16 wait on it.
+- [Phase 1] 01-18 halted on claude 2.1.321 (CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forced dontAsk to default) and is superseded by gap plans 01-21..01-23 (auto mode + permissions.blockWritesOutsideWorkingDirectories + deterministic-only evaluator + doctor effective-mode check). Likely owner-decision gate: 01-21's live tracer stops if the scrub also forces auto to default; 01-22, 01-23, 01-19, 01-20 and 01-16 then wait for the owner's choice (layer-preserving launch variant / opt out of the scrub / default mode). Halted worktree .claude/worktrees/agent-a333676a91bb722f1 (branch worktree-agent-a333676a91bb722f1) stays until 01-23 merges (it reads c3f8034), then is removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0118/evidence-01-18-live/.
 
 ## Deferred Items
 

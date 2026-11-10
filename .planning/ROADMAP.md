@@ -89,10 +89,6 @@ Plans:
 **Wave 16** *(blocked on Wave 15 completion)*
 - [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena *(wave 16)*
 
-**Cross-cutting constraints:** <!-- gsd:generated -->
-- E8 populated: Verdict Banner, then Tools, Signing key and Sandbox probe tables; tool/key rows read `Pass`/`Fail`, probe rows read `Blocked`/`Reachable`, each with icon plus word
-- E8 partial: Checks that did not run read `Not checked` and the verdict never claims all-pass; a report older than 24 h shows the stale warning Banner
-
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
 **Retired plans**: 01-18-PLAN.md is superseded and never runs. Its frontmatter `status: superseded` (GSD #2349) drops it from `phase-plan-index` and `roadmap analyze`, so it is never scheduled; 01-21's verify checks that. It halted at its live tracer on claude 2.1.321, where the scrub forced dontAsk to default. The owner then chose auto mode, and its work moved to 01-21…01-23. It is listed here rather than in the Plans checklist because a non-checkbox row splits that list for `roadmap annotate-dependencies`.
