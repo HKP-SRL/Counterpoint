@@ -8,15 +8,20 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
+import { execa } from 'execa';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseEnvListing } from '../../src/agent/env-listing.ts';
 import {
   buildControlSettings,
   buildProbeLaunch,
   controlTools,
+  ENV_SHAPE_AWK,
+  envShapeStep,
   type KeychainPort,
   type ProbeLaunch,
   type ProbePlan,
@@ -266,6 +271,11 @@ describe('planProbe', () => {
     };
     for (const step of p.treatment.steps) {
       if (step.target === 'control' || step.reaches === null) continue;
+      if (step.target === 'credential-env') {
+        // The env listing runs the probe's own script in the probe directory (01-26).
+        expect(step.reaches).toBe(p.envScript.path);
+        continue;
+      }
       expect(inside(step.reaches, targetDir(step.target)), `${step.index} ${step.reaches}`).toBe(
         true,
       );
@@ -284,7 +294,7 @@ describe('planProbe', () => {
         twin?.operation,
         twin?.target,
       ]);
-      if (step.target === 'control') {
+      if (step.target === 'control' || step.target === 'credential-env') {
         expect(step).toEqual(twin);
       } else if (step.reaches !== null) {
         expect(inside(step.reaches, mirrorRoot), `${step.index} ${step.reaches}`).toBe(true);
@@ -314,7 +324,7 @@ describe('planProbe', () => {
     expect(ops.filter((op) => op.includes(':Edit:'))).toEqual(['outside-workdir:Edit:edit']);
   });
 
-  it('appends the three outside-workdir steps last, with continuing indices', () => {
+  it('appends the three outside-workdir steps after git-info, right before the env step, with continuing indices', () => {
     const p = plan();
     const outside = p.outside;
     expect(p.outsideRoot).toBe(join(paths.homeDir, `.cp-outside-${NONCE}`));
@@ -329,11 +339,17 @@ describe('planProbe', () => {
     });
 
     const steps = p.treatment.steps;
-    const last = steps.slice(-3);
+    // The env-shape step (01-26) is the last step; the outside three come right before it.
+    const last = steps.slice(-4, -1);
+    expect(steps.at(-1)).toMatchObject({ target: 'credential-env', operation: 'env-shape' });
     expect(steps.filter((s) => s.target === 'outside-workdir')).toEqual(last);
-    expect(last.map((s) => s.index)).toEqual([steps.length - 2, steps.length - 1, steps.length]);
+    expect(last.map((s) => s.index)).toEqual([
+      steps.length - 3,
+      steps.length - 2,
+      steps.length - 1,
+    ]);
     // Every earlier step keeps its 01-04 index: git-info's Write is the step right before.
-    expect(steps[steps.length - 4]).toMatchObject({ target: 'git-info', operation: 'write' });
+    expect(steps[steps.length - 5]).toMatchObject({ target: 'git-info', operation: 'write' });
     expect(last.map((s) => [s.tool, s.operation, s.path])).toEqual([
       ['Write', 'write', outside.writeFile],
       ['Read', 'read-before-edit', outside.editFile],
@@ -354,7 +370,8 @@ describe('planProbe', () => {
       writeFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-w`),
       editFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-e`),
     });
-    const last = p.control.steps.slice(-3);
+    const last = p.control.steps.filter((s) => s.target === 'outside-workdir');
+    expect(last).toEqual(p.control.steps.slice(-4, -1));
     expect(last.map((s) => s.path)).toEqual([
       p.outsideMirror.writeFile,
       p.outsideMirror.editFile,
@@ -785,6 +802,15 @@ describe('runSandboxProbe (fake runner)', () => {
         this.seen['treatment:outside-edit-file'] = existsSync(outsideWrite.replace(/-w$/, '-e'));
         writeFileSync(outsideWrite, 'cp-probe');
       }
+      // The env listing script (01-26) must exist, owner-only and exactly ENV_SHAPE_AWK, while
+      // each session runs.
+      const envScript = /Bash tool, command: awk -f '([^']+)'/.exec(prompt)?.[1];
+      if (envScript !== undefined) {
+        this.seen[`${session}:env-script-0600`] =
+          existsSync(envScript) && (statSync(envScript).mode & 0o777) === 0o600;
+        this.seen[`${session}:env-script-content`] =
+          existsSync(envScript) && readFileSync(envScript, 'utf8') === ENV_SHAPE_AWK;
+      }
       this.seen[`${session}:cwd-exists`] = existsSync(request.cwd);
       this.seen[`${session}:control-canary`] =
         nonce !== undefined && existsSync(join(request.cwd, `.cp-canary-${nonce}`));
@@ -865,6 +891,15 @@ describe('runSandboxProbe (fake runner)', () => {
     expect(p.outsideRoot).toBe(join(paths.homeDir, `.cp-outside-${p.nonce}`));
     expect(runner.seen['treatment:outside-dir']).toBe(true);
     expect(runner.seen['treatment:outside-edit-file']).toBe(true);
+    // The env listing script was written 0600 with exactly ENV_SHAPE_AWK before both sessions,
+    // was still intact after them, and is gone afterwards (01-26).
+    expect(p.envScript.path).toBe(join(p.probeDir, `cp-env-${p.nonce}.awk`));
+    for (const session of ['treatment', 'control']) {
+      expect(runner.seen[`${session}:env-script-0600`], session).toBe(true);
+      expect(runner.seen[`${session}:env-script-content`], session).toBe(true);
+    }
+    expect(outcome.envScriptIntact).toBe(true);
+    expect(existsSync(p.envScript.path)).toBe(false);
 
     expect(outcome.claudeVersion).toBe('2.1.319 (Claude Code)');
     expect(outcome.staleLeftovers).toEqual([staleCanary]);
@@ -900,5 +935,155 @@ describe('runSandboxProbe (fake runner)', () => {
     );
     expect(lstatSync(t?.rawLogPath as string).isFile()).toBe(true);
     expect(inside(t?.rawLogPath as string, logDir)).toBe(true);
+  });
+});
+
+describe('the env-shape step (01-26)', () => {
+  it('is planned last in both sessions, with an identical command running the probe-owned script', () => {
+    const p = plan();
+    const scriptPath = join(probeDir, `cp-env-${NONCE}.awk`);
+    expect(p.envScript).toEqual({ path: scriptPath, content: ENV_SHAPE_AWK });
+    const command = `awk -f '${scriptPath}'`;
+    const t = p.treatment.steps.at(-1);
+    const c = p.control.steps.at(-1);
+    expect(t).toEqual({
+      index: p.treatment.steps.length,
+      target: 'credential-env',
+      tool: 'Bash',
+      operation: 'env-shape',
+      path: scriptPath,
+      reaches: scriptPath,
+      command,
+      instruction: `Bash tool, command: ${command}`,
+    });
+    expect(t).toEqual({ index: p.treatment.steps.length, ...envShapeStep(scriptPath) });
+    expect(c).toEqual(t);
+    for (const session of [p.treatment, p.control]) {
+      expect(session.steps.filter((s) => s.operation === 'env-shape')).toHaveLength(1);
+      expect(session.prompt).toContain(`${session.steps.length}. Bash tool, command: ${command}`);
+    }
+  });
+
+  it("gives the control exactly the step's own Bash(awk -f '…') rule", () => {
+    const p = plan();
+    const allow = buildControlSettings(buildAgentSandboxSettings(paths).settings, p).permissions
+      .allow as string[];
+    expect(allow.filter((entry) => entry.includes('cp-env-'))).toEqual([
+      `Bash(awk -f '${p.envScript.path}')`,
+    ]);
+    expect(allow).not.toContain('Bash');
+  });
+
+  it('rejects a script path with a single quote', () => {
+    expect(() => envShapeStep("/tmp/it's.awk")).toThrow(/single quote/);
+  });
+
+  it('is one BEGIN block plus functions: no rule outside BEGIN, no END, no getline', () => {
+    expect(ENV_SHAPE_AWK).not.toMatch(/getline/);
+    expect(ENV_SHAPE_AWK).not.toMatch(/\bEND\b/);
+    expect(ENV_SHAPE_AWK.match(/^BEGIN \{$/gm)).toHaveLength(1);
+    // Every line at column 0 opens a comment, a function or the BEGIN block, or closes a block.
+    for (const line of ENV_SHAPE_AWK.split('\n')) {
+      if (line === '' || /^\s/.test(line)) continue;
+      expect(line, 'top-level awk line').toMatch(/^(#|function [a-z_]+\(v\) \{$|BEGIN \{$|\}$)/);
+    }
+    // No print statement names a value: only the name, the length and the shape word.
+    const prints = ENV_SHAPE_AWK.split('\n').filter((line) => /\bprint\b/.test(line));
+    expect(prints).toEqual([
+      '  for (name in ENVIRON) print name " " length(ENVIRON[name]) " " shape(ENVIRON[name])',
+    ]);
+  });
+});
+
+describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (01-26)', () => {
+  let script: string;
+  let home: string;
+  beforeAll(() => {
+    const dir = makeScratchDir('awk');
+    home = join(dir, 'home');
+    mkdirSync(home);
+    script = join(dir, 'cp-env.awk');
+    writeFileSync(script, ENV_SHAPE_AWK, { mode: 0o600, flag: 'wx' });
+  });
+
+  /** Planted test values only (no real credential); each must never appear in the output. */
+  const planted = (): Record<string, string> => ({
+    PATH: '/usr/bin:/bin',
+    HOME: home,
+    // 40 characters with a GitHub-token prefix.
+    CP_FAKE_TOKEN: `ghp_${'a1B2c3D4e5'.repeat(3)}a1B2c3`,
+    CP_JWT: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjcC10ZXN0In0.Y3AtcHJvYmUtc2lnbmF0dXJl',
+    CP_URL: 'https://cp-user:cp-pass-0126@example.invalid/repo.git',
+    CP_PEM: '-----BEGIN OPENSSH PRIVATE KEY-----\nY3AtcHJvYmU=\n-----END OPENSSH PRIVATE KEY-----',
+    CP_UUID: '123e4567-e89b-12d3-a456-426614174000',
+    // 40 characters, letters and digits only.
+    CP_OPAQUE: 'Q7w3E9r1T5y8U2i6O4p0Q7w3E9r1T5y8U2i6O4p0',
+    CP_PLAIN: 'hello',
+  });
+
+  it('prints every variable as NAME LENGTH SHAPE with the expected shape, and no value', async () => {
+    const env = planted();
+    expect(env.CP_FAKE_TOKEN).toHaveLength(40);
+    expect(env.CP_OPAQUE).toHaveLength(40);
+    const result = await execa('/usr/bin/awk', ['-f', script], {
+      env,
+      extendEnv: false,
+      stdin: 'ignore',
+      reject: false,
+      timeout: 5_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    const listing = parseEnvListing(result.stdout);
+    expect(listing.malformed).toBe(0);
+    const byName = Object.fromEntries(listing.entries.map((e) => [e.name, e]));
+    expect(Object.keys(byName).sort()).toEqual(Object.keys(env).sort());
+    expect(Object.fromEntries(listing.entries.map((e) => [e.name, e.shape]))).toEqual({
+      PATH: 'plain',
+      HOME: 'plain',
+      CP_FAKE_TOKEN: 'prefix',
+      CP_JWT: 'jwt',
+      CP_URL: 'url-userinfo',
+      CP_PEM: 'pem',
+      CP_UUID: 'plain',
+      CP_OPAQUE: 'opaque',
+      CP_PLAIN: 'plain',
+    });
+    for (const [name, value] of Object.entries(env)) {
+      expect(byName[name]?.length, `${name} length`).toBe(value.length);
+      // Neither the value nor any 6-character piece of a planted test value reaches the output.
+      expect(result.stdout.includes(value), `${name} value`).toBe(false);
+      if (name.startsWith('CP_')) {
+        for (let i = 0; i + 6 <= value.length; i += 3) {
+          const piece = value.slice(i, i + 6);
+          expect(result.stdout.includes(piece), `${name} piece ${i}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('exits 0 without reading stdin, whether stdin is closed or an open pipe never written', async () => {
+    const env = planted();
+    const closed = await execa('/usr/bin/awk', ['-f', script], {
+      env,
+      extendEnv: false,
+      stdin: 'ignore',
+      reject: false,
+      timeout: 5_000,
+    });
+    expect(closed.timedOut).toBe(false);
+    expect(closed.exitCode).toBe(0);
+    // stdin is an open pipe that is never written to or ended: a program that read stdin would
+    // block here until the timeout.
+    const open = await execa('/usr/bin/awk', ['-f', script], {
+      env,
+      extendEnv: false,
+      stdin: 'pipe',
+      reject: false,
+      timeout: 5_000,
+    });
+    expect(open.timedOut).toBe(false);
+    expect(open.exitCode).toBe(0);
+    expect(parseEnvListing(open.stdout).malformed).toBe(0);
   });
 });

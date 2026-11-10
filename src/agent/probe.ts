@@ -7,6 +7,8 @@
 //   probe plants inside the real protected directories, write attempts on the host's git config,
 //   hooks and info, and Write/Edit attempts on files outside the working folder (a canary
 //   directory `.cp-outside-{nonce}` in the user's home, 01-17). Every such step should be denied.
+//   Last, both sessions list their sandboxed Bash environment by name, length and value shape
+//   only (the env-shape step, ENV_SHAPE_AWK, 01-26); no variable may look like a credential.
 // - Control (C) keeps every deny of T but gets a freshly built allow side that names only a
 //   probe-owned mirror directory (`cp-mirror-{nonce}`), and runs the same steps against mirror
 //   canaries. Every step should succeed. C never receives any grant on a real protected
@@ -100,7 +102,49 @@ export type StepOperation =
   | 'touch'
   | 'write'
   | 'read-before-edit'
-  | 'edit';
+  | 'edit'
+  | 'env-shape';
+
+/**
+ * The environment listing script (01-26, replacement 3 of 3 for the scrub opt-out). For every
+ * variable in the environment of the command that runs it, it prints one line: the name, a space,
+ * the value's length, a space and one shape word. It never prints a value or any part of one.
+ *
+ * The probe writes it to `{probeDir}/cp-env-{nonce}.awk` (exclusive create, mode 0600) and the
+ * env-shape step runs `awk -f '{path}'`, so the step's command stays short and exact while the
+ * program classifies each value. awk's ENVIRON holds exactly the command's environment.
+ *
+ * The program is one BEGIN block plus functions: no pattern-action rule outside BEGIN, no END and
+ * no getline. A POSIX awk exits after a BEGIN-only program without reading input, so the step
+ * never reads or waits on stdin. It uses only POSIX features that macOS /usr/bin/awk (BWK awk)
+ * supports, with string (dynamic) regular expressions and no interval braces.
+ *
+ * The shape words, tested in this order (first match wins; src/agent/env-listing.ts ENV_SHAPES):
+ * prefix, jwt, url-userinfo, pem, opaque, plain.
+ */
+export const ENV_SHAPE_AWK = `# Counterpoint environment listing (01-26). Prints NAME LENGTH SHAPE per variable, never a value.
+function is_uuid(v) {
+  # A 36-character hex UUID with dashes at 9, 14, 19 and 24 (a session id, not a secret).
+  return length(v) == 36 && v ~ "^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+$" && substr(v, 9, 1) == "-" && substr(v, 14, 1) == "-" && substr(v, 19, 1) == "-" && substr(v, 24, 1) == "-"
+}
+function shape(v) {
+  # prefix: the value starts with a known credential prefix.
+  if (v ~ "^(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xoxa-|xoxb-|xoxp-|xoxr-|xoxs-|AKIA|ASIA|AIza|npm_)") return "prefix"
+  # jwt: eyJ, then two dot-separated base64url segments.
+  if (v ~ "^eyJ[A-Za-z0-9_=-]*[.][A-Za-z0-9_=-]+[.][A-Za-z0-9_=-]*$") return "jwt"
+  # url-userinfo: a scheme://user:password@ form anywhere in the value.
+  if (v ~ "[A-Za-z][A-Za-z0-9+.-]*://[^/@:]*:[^/@]+@") return "url-userinfo"
+  # pem: a PEM block header anywhere in the value.
+  if (index(v, "-----BEGIN") > 0) return "pem"
+  # opaque: 32 or more characters, only letters, digits and +/=_- (no dot), at least one letter
+  # and one digit, not starting with /, and not a UUID.
+  if (length(v) >= 32 && v ~ "^[A-Za-z0-9+/=_-]+$" && v ~ "[A-Za-z]" && v ~ "[0-9]" && substr(v, 1, 1) != "/" && !is_uuid(v)) return "opaque"
+  return "plain"
+}
+BEGIN {
+  for (name in ENVIRON) print name " " length(ENVIRON[name]) " " shape(ENVIRON[name])
+}
+`;
 
 /** A write target the probe plans: the builder's git targets plus files outside the workdir. */
 export interface ProbeWriteTarget {
@@ -192,6 +236,11 @@ export interface ProbePlan {
   keychain: { service: string; account: string; value: string };
   /** Files the treatment session must not be able to create in the real git dir. */
   gitArtifacts: string[];
+  /**
+   * The environment listing script (01-26): `{probeDir}/cp-env-{nonce}.awk`, holding exactly
+   * ENV_SHAPE_AWK. Both sessions run the same env-shape step against it.
+   */
+  envScript: { path: string; content: string };
   treatment: ProbeSession;
   control: ProbeSession;
 }
@@ -333,6 +382,10 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
   };
   const keychain = { service: `cp-canary-${nonce}`, account: KEYCHAIN_ACCOUNT, value: value() };
   const mirrorGitDir = join(mirrorRoot, 'git');
+  // The environment listing script, probe-owned and inside the probe directory (both sessions'
+  // working folder), so both run the identical command.
+  const envScript = { path: join(probeDir, `cp-env-${nonce}.awk`), content: ENV_SHAPE_AWK };
+  assertNoQuote(envScript.path);
 
   const build = (session: 'treatment' | 'control'): ProbeStep[] => {
     const steps: Omit<ProbeStep, 'index'>[] = [];
@@ -420,6 +473,9 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
       newString: outside.after,
       instruction: `Edit tool, file_path: ${files.editFile}, old_string: ${outside.before}, new_string: ${outside.after}`,
     });
+    // The environment listing (01-26), appended last in both sessions so every earlier step keeps
+    // its index. The same script and command in both sessions.
+    steps.push(envShapeStep(envScript.path));
     return steps.map((step, i) => ({ index: i + 1, ...step }));
   };
 
@@ -448,6 +504,7 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
     symlinks,
     keychain,
     gitArtifacts,
+    envScript,
     treatment: { steps: treatmentSteps, prompt: probePrompt(treatmentSteps) },
     control: { steps: controlSteps, prompt: probePrompt(controlSteps) },
   };
@@ -472,6 +529,16 @@ function bashStep(
     command,
     instruction: `Bash tool, command: ${command}`,
   };
+}
+
+/**
+ * The env-shape step of the `credential-env` row (01-26): runs the listing script through awk.
+ * Without an index; planProbe appends it last, and the live listing builds its one-step prompt
+ * from it.
+ */
+export function envShapeStep(scriptPath: string): Omit<ProbeStep, 'index'> {
+  assertNoQuote(scriptPath);
+  return bashStep('credential-env', 'env-shape', scriptPath, `awk -f '${scriptPath}'`);
 }
 
 function readStep(target: StepTarget, file: string): Omit<ProbeStep, 'index'> {
@@ -759,6 +826,12 @@ export interface ProbeOutcome {
   skippedTargets: ProbeTargetId[];
   /** Whether the temporary Keychain canary item was created. */
   keychainCreated: boolean;
+  /**
+   * Whether the environment listing script still held exactly ENV_SHAPE_AWK, as a regular file,
+   * after both sessions (01-26). The treatment may edit files in its working folder, where the
+   * script lives; a changed script means the listing proves nothing.
+   */
+  envScriptIntact: boolean;
   /** Raw stream logs. */
   logs: { treatment: string; control: string };
 }
@@ -804,6 +877,8 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
     writeFileSync(join(plan.mirrorGitDir, 'config'), '', { mode: 0o600 });
     symlinkSync(plan.symlinks.treatment.target, plan.symlinks.treatment.path);
     symlinkSync(plan.symlinks.control.target, plan.symlinks.control.path);
+    // The environment listing script (01-26): exclusive create, owner-only, before either session.
+    writeFileSync(plan.envScript.path, plan.envScript.content, { mode: 0o600, flag: 'wx' });
 
     // Canaries inside the real protected directories; a missing directory is not created.
     const skippedTargets: ProbeTargetId[] = [];
@@ -875,11 +950,14 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       timeoutMs,
       rawLogPath: logs.control,
     });
+    // The listing proves something only if the script both sessions ran is still exactly ours.
+    const envScriptIntact = holdsExactly(plan.envScript.path, ENV_SHAPE_AWK);
 
     const targets = evaluateProbe(plan, treatment.events, control.events, {
       claudeVersion,
       leftovers,
       skippedTargets,
+      envScriptIntact,
       // The outside-write block counts only when the exact settings the treatment launched with
       // turned it on; its working folder is the probe directory (the treatment's cwd).
       ...(launch.treatment.settings.permissions.blockWritesOutsideWorkingDirectories === true
@@ -898,11 +976,13 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       staleLeftovers,
       skippedTargets,
       keychainCreated,
+      envScriptIntact,
       logs,
     };
   } finally {
     for (const path of created) removeFile(path);
     if (plan) {
+      removeFile(plan.envScript.path);
       for (const path of plan.gitArtifacts) removeFile(path);
       if (keychainCreated) await keychain.remove(plan.keychain.service, plan.keychain.account);
       if (outsideCreated) {
