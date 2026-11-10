@@ -4,14 +4,14 @@ current_phase: 01
 current_phase_name: Trusted Shell & Signed Runway
 status: executing
 stopped_at: Phase 1 UI-SPEC approved
-last_updated: "2026-11-10T09:35:29.814Z"
+last_updated: "2026-11-10T11:53:46.877Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 01 execution started
-state_head: 1587a1d6ead8cd7396348ea75b63529559e6c787
+state_head: 5f823afa121429a023bd693b310622478cd526d5
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 22
+  total_plans: 24
   completed_plans: 16
   percent: 0
 ---
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 
 ## Current Position
 
-Phase: 01 (Trusted Shell & Signed Runway) — EXECUTING
-Plan: 16 of 22
-Status: Paused — 01-21 halted at owner-decision gate; owner chose scrub opt-out; re-plan gap next
+Phase: 01 (Trusted Shell & Signed Runway) — READY TO EXECUTE
+Plan: 16 of 24
+Status: Ready to execute — scrub gap re-planned (01-24..01-26 new; 01-21 superseded; 01-22, 01-23, 01-19, 01-20, 01-16 revised); next wave 11 = 01-24
 Last activity: 2026-11-10 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -82,7 +82,7 @@ None yet.
 - [Phase 3]: Branch-protection recipe for Cena's `master` not yet verified.
 - [Phase 4]: Fixture-mode rendering of Cena screens and `data-cp-id` stability across redraws are unproven. Spike before the visual gate.
 - [Phase 1] 01-18 halted on claude 2.1.321 (CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forced dontAsk to default) and is superseded by gap plans 01-21..01-23 (auto mode + permissions.blockWritesOutsideWorkingDirectories + deterministic-only evaluator + doctor effective-mode check). Likely owner-decision gate: 01-21's live tracer stops if the scrub also forces auto to default; 01-22, 01-23, 01-19, 01-20 and 01-16 then wait for the owner's choice (layer-preserving launch variant / opt out of the scrub / default mode). Halted worktree .claude/worktrees/agent-a333676a91bb722f1 (branch worktree-agent-a333676a91bb722f1) stays until 01-23 merges (it reads c3f8034), then is removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0118/evidence-01-18-live/.
-- [Phase 1] 01-21 halted at Task 1 step 4(a) (2026-11-10): on claude 2.1.321 the scrub forced --permission-mode auto to default in every session and every layer-preserving variant (WINDOWS.md ledger #3). Outside Write/Edit were refused by permissions.blockWritesOutsideWorkingDirectories (reason_type `other`, not `rule`); git-hooks/git-info by the deny rule; control met the attribution rule. Owner chose option 2 (opt out of the scrub with replacement checks); next: re-plan this gap with /gsd-plan-phase 1 --gaps. 01-21's launch-profile work (e5e59f3) and halted SUMMARY (f41c4a4) sit unmerged on worktree-agent-a1ce4d71c120d2428 (.claude/worktrees/agent-a1ce4d71c120d2428), kept for the re-plan. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0121/evidence-01-21-live/.
+- [Phase 1] 01-21 halted at Task 1 step 4(a) (2026-11-10): on claude 2.1.321 the scrub forced --permission-mode auto to default in every session and every layer-preserving variant (WINDOWS.md ledger #3). Outside Write/Edit were refused by permissions.blockWritesOutsideWorkingDirectories (reason_type `other`, not `rule`); git-hooks/git-info by the deny rule; control met the attribution rule. Owner chose option 2 (opt out of the scrub with replacement checks). Re-planned 2026-11-10 (8e79f41, ca8326d, 206d681, 5f823af): 01-21 superseded by 01-24 (SCRUB=0 + autoAllowBashIfSandboxed false, live auto proof first, then the deterministic-only evaluator), 01-25 (doctor sandbox-isolation settings check, by-effect reading confirmed by owner), 01-26 (ninth probe row credential-env); WINDOWS #3 closes in 01-23, scoped (replacement 2 proven on the launch source there, on the owner's real settings in 01-16); owner accepted the plan-size warnings. 01-24 cherry-picks e5e59f3. 01-21's launch-profile work (e5e59f3) and halted SUMMARY (f41c4a4) sit unmerged on worktree-agent-a1ce4d71c120d2428 (.claude/worktrees/agent-a1ce4d71c120d2428), kept for the re-plan. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0121/evidence-01-21-live/.
 
 ## Deferred Items
 
