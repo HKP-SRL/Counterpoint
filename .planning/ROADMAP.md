@@ -12,7 +12,7 @@ Counterpoint is built in six vertical slices, and the owner can use each one on 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Trusted Shell & Signed Runway** - Loopback Astryx console, `doctor` with a live sandbox probe, Cena's GSD phases read through the adapter, signed runway approvals that drop off when content changes
+- [x] **Phase 1: Trusted Shell & Signed Runway** - Loopback Astryx console, `doctor` with a live sandbox probe, Cena's GSD phases read through the adapter, signed runway approvals that drop off when content changes (completed 2026-11-10)
 - [ ] **Phase 2: First Unattended Run** - An approved Cena phase built overnight in its own worktree, judged only by gate exit codes, ending in a green PR with a preview link or a parked item, plus a run report (CLI first)
 - [ ] **Phase 3: Morning Review & Signed Merge** - Console mission control (statuses, gate rows, live log), parallel builds, rebase on conflict, merge only by the owner's signed merge commit, cleanup, honest counters
 - [ ] **Phase 4: Design Drafts & Visual Gate** - Standalone drafts in the host's design system with pins, redraws, variants and "More like B"; signed-off full render joins the runway approval and drives a structural visual gate
@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 24/24 plans executed
+**Plans**: 24/24 plans complete
 
 Plans:
 **Wave 1**
@@ -180,7 +180,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 24/24 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 24/24 | Complete    | 2026-11-10 |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |

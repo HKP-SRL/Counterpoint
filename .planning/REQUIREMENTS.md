@@ -9,10 +9,10 @@ Requirements for the first milestone. Each maps to roadmap phases.
 
 ### Foundations & Safety
 
-- [ ] **FOUND-01**: Owner can start Counterpoint for a host project with one command (`counterpoint`, installed from the local tarball; `npx @hkp/counterpoint` arrives with the public release, PLAT-V2-02) and open its console at a loopback-only URL
+- [x] **FOUND-01**: Owner can start Counterpoint for a host project with one command (`counterpoint`, installed from the local tarball; `npx @hkp/counterpoint` arrives with the public release, PLAT-V2-02) and open its console at a loopback-only URL
 - [x] **FOUND-02**: Console rejects requests from unexpected hosts/origins (Host + Origin allowlist, CSRF protection, SSE origin check), and privileged actions (start/stop a run, approvals) require an owner credential agents cannot read
-- [ ] **FOUND-03**: Owner can run `counterpoint doctor` to see pass/fail for: `claude`, `git`, `gh` present; signing key passphrase-protected and not loaded in ssh-agent/Keychain; sandbox actually confining headless `claude -p` sessions
-- [ ] **FOUND-04**: Agent sessions run sandboxed so they cannot read the signing key, `~/.ssh`, `gh` credentials or Counterpoint's state, and cannot write the host's shared `.git/config`, `.git/hooks` or `.git/info`
+- [x] **FOUND-03**: Owner can run `counterpoint doctor` to see pass/fail for: `claude`, `git`, `gh` present; signing key passphrase-protected and not loaded in ssh-agent/Keychain; sandbox actually confining headless `claude -p` sessions
+- [x] **FOUND-04**: Agent sessions run sandboxed so they cannot read the signing key, `~/.ssh`, `gh` credentials or Counterpoint's state, and cannot write the host's shared `.git/config`, `.git/hooks` or `.git/info`
 - [ ] **FOUND-05**: After a crash or reboot, Counterpoint restores its state, reconciles runs that were in progress, and resumes them from their last handoff
 - [x] **FOUND-06**: Console is built on Astryx and works in light and dark themes
 
@@ -26,7 +26,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 
 ### Approvals
 
-- [ ] **APPR-01**: Owner can approve a phase into the runway: the console prepares the approval and shows a one-line command; running it asks for the passphrase and creates a signed commit on the base branch adding `.counterpoint/approvals/<item>.json`, touching nothing else in the owner's checkout
+- [x] **APPR-01**: Owner can approve a phase into the runway: the console prepares the approval and shows a one-line command; running it asks for the passphrase and creates a signed commit on the base branch adding `.counterpoint/approvals/<item>.json`, touching nothing else in the owner's checkout
 - [x] **APPR-02**: A runway approval binds hashes of the phase spec, its signed-off draft and the gate config; if any changes afterwards, the item leaves the runway and shows in Needs You as "approved version changed"
 - [ ] **APPR-03**: Owner can approve a finished feature for merge by signing a `--no-ff` merge commit of the exact PR head; before signing they see the summary including every assumption the builder proceeded on; Counterpoint then pushes and the PR shows as merged
 - [x] **APPR-04**: Signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment, against the owner's public key stored outside the repo; signing is refused if the host's `.git/config` or hooks changed unexpectedly
@@ -98,7 +98,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 ### Mission View
 
 - [x] **MISN-01**: Runway — approved, ready-to-build work ahead of the builder — is the headline metric on the console
-- [ ] **MISN-02**: One Needs You inbox collects council cards, parked items, seat conflicts, PRs awaiting signed merge, approved items whose content changed, and council backlog-filing summaries
+- [x] **MISN-02**: One Needs You inbox collects council cards, parked items, seat conflicts, PRs awaiting signed merge, approved items whose content changed, and council backlog-filing summaries
 - [ ] **MISN-03**: Each work item shows its status (queued, running, waiting on owner, parked, gates failing, ready for approval, merged)
 - [ ] **MISN-04**: Beside runway, a few honest counters (e.g. first-attempt gate pass rate, items merged without intervention), each paired with a counter-metric so it can't reward a failure mode
 
@@ -166,10 +166,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
 | FOUND-02 | Phase 1 | Complete |
-| FOUND-03 | Phase 1 | Pending |
-| FOUND-04 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Complete |
+| FOUND-04 | Phase 1 | Complete |
 | FOUND-05 | Phase 2 | Pending |
 | FOUND-06 | Phase 1 | Complete |
 | ADPT-01 | Phase 1 | Complete |
@@ -177,7 +177,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ADPT-03 | Phase 5 | Pending |
 | ADPT-04 | Phase 5 | Pending |
 | ADPT-05 | Phase 2 | Pending |
-| APPR-01 | Phase 1 | Pending |
+| APPR-01 | Phase 1 | Complete |
 | APPR-02 | Phase 1 | Complete |
 | APPR-03 | Phase 3 | Pending |
 | APPR-04 | Phase 1 | Complete |
@@ -228,7 +228,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CARD-06 | Phase 5 | Pending |
 | CARD-07 | Phase 5 | Pending |
 | MISN-01 | Phase 1 | Complete |
-| MISN-02 | Phase 1 (partial: the inbox and "approved items whose content changed"); parked items Phase 2 (BUILD-08); PRs awaiting signed merge Phase 3 (APPR-03); council cards Phase 5; backlog-filing summaries Phase 6 (CNCL-09); seat conflicts unassigned (open roadmap gap) | Pending |
+| MISN-02 | Phase 1 (partial: the inbox and "approved items whose content changed"); parked items Phase 2 (BUILD-08); PRs awaiting signed merge Phase 3 (APPR-03); council cards Phase 5; backlog-filing summaries Phase 6 (CNCL-09); seat conflicts unassigned (open roadmap gap) | Complete |
 | MISN-03 | Phase 3 | Pending |
 | MISN-04 | Phase 3 | Pending |
 
