@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 21/24 plans executed
+**Plans**: 22/24 plans executed
 
 Plans:
 **Wave 1**
@@ -87,7 +87,7 @@ Plans:
 - [x] 01-23-PLAN.md — One live nine-row proof in auto mode with the scrub opted out and all three replacements; refrozen fixtures; matcher version; WINDOWS.md #2 and #3 fixed *(wave 15)*
 
 **Wave 16** *(blocked on Wave 15 completion)*
-- [ ] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 16)*
+- [x] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 16)*
 
 **Wave 17** *(blocked on Wave 16 completion)*
 - [ ] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 17)*
@@ -180,7 +180,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 21/24 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 22/24 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
