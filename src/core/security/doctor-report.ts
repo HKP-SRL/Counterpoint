@@ -1,11 +1,15 @@
 // The doctor report: schema `counterpoint/doctor/v1`, written by `counterpoint doctor` and
-// rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check
-// passes and every one of the eight probe targets is `blocked`; anything missing, failed,
-// reachable or not checked is a fail (never a silent pass).
+// rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check (the
+// Sandbox isolation settings check included) passes and every one of the eight probe targets is
+// `blocked`; anything missing, failed, reachable or not checked is a fail (never a silent pass).
 //
 // `outside-workdir` (01-17) was added to schema v1 as an additive row: a report written before it
 // still parses, and its verdict is `fail` because that row is missing. The classifier revision
 // that produced a report is recorded in `matcherVersion`, not in the schema id.
+//
+// `sandboxIsolation` (01-25) is an additive v1 field: the Sandbox isolation settings check
+// (replacement 2 for the scrub opt-out, src/core/security/sandbox-isolation.ts). A report written
+// before it still parses, and its verdict is `fail`, because the check is required to pass.
 import { z } from 'zod';
 
 export const PROBE_TARGET_IDS = [
@@ -74,6 +78,30 @@ export const ProbeTarget = z.object({
 });
 export type ProbeTarget = z.infer<typeof ProbeTarget>;
 
+export const SandboxIsolationSource = z.object({
+  kind: z.enum([
+    'launch',
+    'user',
+    'server-managed-cache',
+    'managed-file',
+    'managed-drop-in',
+    'managed-preferences',
+  ]),
+  label: z.string(),
+  path: z.string().nullable(),
+  state: z.enum(['absent', 'read', 'unreadable']),
+  /** The failing key names only, never a value. */
+  findings: z.array(z.string()),
+});
+export type SandboxIsolationSource = z.infer<typeof SandboxIsolationSource>;
+
+/** The Sandbox isolation settings check, with every settings source it read. */
+export const SandboxIsolationCheck = Check.extend({
+  id: z.literal('sandbox-isolation'),
+  sources: z.array(SandboxIsolationSource),
+});
+export type SandboxIsolationCheck = z.infer<typeof SandboxIsolationCheck>;
+
 export const DOCTOR_SCHEMA = 'counterpoint/doctor/v1';
 
 export const DoctorReport = z.object({
@@ -86,6 +114,8 @@ export const DoctorReport = z.object({
   signingKey: z.array(Check),
   integrity: Check,
   probe: z.array(ProbeTarget),
+  /** Additive (01-25). Missing reads as not passing. */
+  sandboxIsolation: SandboxIsolationCheck.optional(),
 });
 export type DoctorReport = z.infer<typeof DoctorReport>;
 
@@ -97,6 +127,9 @@ export function reportVerdict(report: DoctorReport): Verdict {
   const checks = [...report.tools, ...report.signingKey, report.integrity];
   if (report.tools.length === 0 || report.signingKey.length === 0) return 'fail';
   if (checks.some((check) => check.result !== 'pass')) return 'fail';
+  if (report.sandboxIsolation === undefined || report.sandboxIsolation.result !== 'pass') {
+    return 'fail';
+  }
   for (const id of PROBE_TARGET_IDS) {
     const rows = report.probe.filter((row) => row.id === id);
     if (rows.length === 0 || rows.some((row) => row.result !== 'blocked')) return 'fail';

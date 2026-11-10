@@ -1,6 +1,7 @@
 // `counterpoint doctor [host]`: picks the host, runs every check (src/doctor/run.ts), prints the
 // grouped report, writes hosts/{id}/doctor.json and nudges a running daemon so the console's
-// Trust page refreshes. Exit 0 only when every check passes.
+// Trust page refreshes. Exit 0 only when every check passes, the Sandbox isolation settings
+// check (01-25) included.
 import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { TrustResult } from '../core/approvals/trust-store.ts';
@@ -8,6 +9,7 @@ import type { Check } from '../core/security/doctor-report.ts';
 import { reportVerdict } from '../core/security/doctor-report.ts';
 import { listHosts, openStoreReadOnly, stateDbPath } from '../core/store/db.ts';
 import { type DoctorProbe, formatDoctorReport, runDoctor } from '../doctor/run.ts';
+import type { SettingsSourceLocations } from '../doctor/settings-sources.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { type HostLookup, lookupHost } from './trust.ts';
 
@@ -79,6 +81,8 @@ export interface DoctorCommandOptions {
   now?: () => Date;
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
+  /** Where the settings sources live; tests always pass scratch locations. */
+  settingsLocations?: SettingsSourceLocations;
 }
 
 /** Runs doctor for one host. Returns the exit code: 0 only when every check passes. */
@@ -107,6 +111,9 @@ export async function doctorCommand(
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
     ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.settingsLocations === undefined
+      ? {}
+      : { settingsLocations: options.settingsLocations }),
   });
   out('');
   for (const line of formatDoctorReport(report)) out(line);

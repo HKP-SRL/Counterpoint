@@ -493,6 +493,21 @@ describe('DoctorReport', () => {
         result: 'blocked' as const,
         evidence: 'denied by your permission settings',
       })),
+      sandboxIsolation: {
+        id: 'sandbox-isolation' as const,
+        label: 'Sandbox isolation settings',
+        result: 'pass' as const,
+        detail: 'No settings source turns sandbox isolation off.',
+        sources: [
+          {
+            kind: 'launch' as const,
+            label: 'launch settings',
+            path: null,
+            state: 'read' as const,
+            findings: [],
+          },
+        ],
+      },
     };
   }
 
@@ -532,6 +547,23 @@ describe('DoctorReport', () => {
     report.probe = report.probe.map((row, i) => (i === 3 ? { ...row, result } : row)) as never;
     expect(reportVerdict(DoctorReport.parse(report))).toBe('fail');
   });
+
+  it('parses an older report without sandboxIsolation, and fails it (01-25)', () => {
+    const { sandboxIsolation: _dropped, ...older } = validReport();
+    const parsed = DoctorReport.parse(older);
+    expect(parsed.schema).toBe('counterpoint/doctor/v1');
+    expect(parsed.sandboxIsolation).toBeUndefined();
+    expect(reportVerdict(parsed)).toBe('fail');
+  });
+
+  it.each(['fail', 'not-checked'] as const)(
+    'fails when the sandbox isolation check is %s',
+    (result) => {
+      const report = validReport();
+      const sandboxIsolation = { ...report.sandboxIsolation, result } as never;
+      expect(reportVerdict(DoctorReport.parse({ ...report, sandboxIsolation }))).toBe('fail');
+    },
+  );
 
   it('fails when a probe target is missing', () => {
     const report = validReport();

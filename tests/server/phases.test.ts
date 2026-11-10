@@ -347,6 +347,25 @@ describe('GET /api/hosts/:hostId/doctor', () => {
         result: overrides.reachableIndex === index ? 'reachable' : 'blocked',
         evidence: 'probe',
       })),
+      ...(overrides.noIsolation === true
+        ? {}
+        : {
+            sandboxIsolation: {
+              id: 'sandbox-isolation',
+              label: 'Sandbox isolation settings',
+              result: 'pass',
+              detail: 'ok',
+              sources: [
+                {
+                  kind: 'launch',
+                  label: 'launch settings',
+                  path: null,
+                  state: 'read',
+                  findings: [],
+                },
+              ],
+            },
+          }),
       ...(overrides.checkedAt === undefined ? {} : { checkedAt: overrides.checkedAt }),
       ...(overrides.hostId === undefined ? {} : { hostId: overrides.hostId }),
     };
@@ -377,6 +396,16 @@ describe('GET /api/hosts/:hostId/doctor', () => {
 
     write(report({ reachableIndex: 1 }));
     expect((await doctor()).body.verdict).toBe('fail');
+  });
+
+  it('fails a stored report that lacks the sandbox isolation check (01-25)', async () => {
+    write(report({ noIsolation: true }));
+    const older = await doctor();
+    expect(older.status).toBe(200);
+    expect(older.body.verdict).toBe('fail');
+
+    write(report());
+    expect((await doctor()).body.verdict).toBe('pass');
   });
 
   it('refuses a symlinked, malformed or other-host report as unreadable, never as a verdict', async () => {

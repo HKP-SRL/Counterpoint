@@ -1,7 +1,7 @@
 // `counterpoint doctor` with an injected probe (no live claude), fake tool and key checks, a
 // throwaway trusted key and scratch hosts. The live probe path is proven in 01-04/01-05 and
 // exercised by the owner in 01-16.
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
@@ -155,6 +155,13 @@ async function runDoctorCommand(
     },
     homeDir: userHome,
     env: {},
+    // Scratch settings sources only: no test reads the real user or managed settings.
+    settingsLocations: {
+      userConfigDir: join(userHome, '.claude'),
+      managedDir: null,
+      managedPreferencesDir: null,
+      userName: null,
+    },
     ...overrides,
   });
   return { code, out, err, notices };
@@ -197,7 +204,9 @@ describe('counterpoint doctor', () => {
     expect(group(run.out, 'Signing key').at(-1)).toMatch(
       /^ {2}PASS {9}drepo-\S+ \.git\/config and hooks match your baseline: /,
     );
-    const probeRows = group(run.out, 'Sandbox probe');
+    const probeGroup = group(run.out, 'Sandbox probe');
+    expect(probeGroup[0]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
+    const probeRows = probeGroup.slice(1);
     expect(probeRows).toHaveLength(8);
     for (const row of probeRows) expect(row).toMatch(/^ {2}BLOCKED {5}/);
     expect(probeRows.at(-1)).toBe(
@@ -299,7 +308,8 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     const run = await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
     expect(run.code).toBe(1);
-    const rows = group(run.out, 'Sandbox probe');
+    // The first line is the Sandbox isolation settings check; the probe rows follow it.
+    const rows = group(run.out, 'Sandbox probe').slice(1);
     expect(rows.filter((row) => /^ {2}REACHABLE {4}gh credentials: /.test(row))).toHaveLength(1);
     for (const row of rows) expect(row).not.toMatch(/^ {2}(PASS|FAIL) /);
     expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
@@ -333,7 +343,7 @@ describe('counterpoint doctor', () => {
       },
     });
     expect(run.code).toBe(1);
-    const rows = group(run.out, 'Sandbox probe');
+    const rows = group(run.out, 'Sandbox probe').slice(1);
     expect(rows).toHaveLength(8);
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
@@ -512,6 +522,120 @@ describe('counterpoint doctor', () => {
     expect(run.code).toBe(1);
   });
 
+  describe('the Sandbox isolation settings check (01-25)', () => {
+    /** A scratch user home whose `.claude/settings.json` holds `settings`, or nothing. */
+    function settingsHome(settings?: unknown) {
+      const home = makeScratchDir('dset');
+      const userConfigDir = join(home, '.claude');
+      mkdirSync(userConfigDir);
+      if (settings !== undefined) {
+        writeFileSync(join(userConfigDir, 'settings.json'), JSON.stringify(settings));
+      }
+      return {
+        homeDir: home,
+        settingsLocations: {
+          userConfigDir,
+          managedDir: null,
+          managedPreferencesDir: null,
+          userName: null,
+        },
+      };
+    }
+
+    const DISABLED = { sandbox: { filesystem: { disabled: true } } };
+    const NOT_COUNTED =
+      'Not counted as Blocked while the Sandbox isolation settings check does not pass. Measured: ';
+
+    it('fails on a user settings file that turns filesystem isolation off, and counts no row Blocked', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, settingsHome(DISABLED));
+      expect(run.code).toBe(1);
+      const rows = group(run.out, 'Sandbox probe');
+      expect(rows[0]).toBe(
+        '  FAIL         Sandbox isolation settings: user settings sets sandbox.filesystem.disabled to true, which turns filesystem isolation off.',
+      );
+      expect(rows[1]).toBe(
+        '               Fix: Remove sandbox.filesystem.disabled from ~/.claude/settings.json, then run "counterpoint doctor" again.',
+      );
+      const probeRows = rows.slice(2);
+      expect(probeRows).toHaveLength(8);
+      for (const row of probeRows) {
+        expect(row).toMatch(/^ {2}NOT CHECKED {2}/);
+        expect(row).toContain(`: ${NOT_COUNTED}evidence for `);
+      }
+      expect(run.out).toContain('9 checks did not pass.');
+
+      const report = readReport(host.home);
+      expect(report.sandboxIsolation?.result).toBe('fail');
+      expect(report.sandboxIsolation?.sources).toContainEqual({
+        kind: 'user',
+        label: 'user settings',
+        path: '~/.claude/settings.json',
+        state: 'read',
+        findings: ['sandbox.filesystem.disabled'],
+      });
+      for (const row of report.probe) {
+        expect(row.result).toBe('not-checked');
+        expect(row.evidence).toBe(`${NOT_COUNTED}evidence for ${row.id}`);
+      }
+      // The probe path fails on its own: a passing check swapped in does not make it pass.
+      const swapped = {
+        ...report,
+        sandboxIsolation: { ...report.sandboxIsolation, result: 'pass' as const, detail: 'ok' },
+      } as DoctorReport;
+      expect(reportVerdict(DoctorReport.parse(swapped))).toBe('fail');
+    });
+
+    it('keeps a Reachable row as measured while the check fails', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, {
+        ...settingsHome(DISABLED),
+        probe: fakeProbe({ ssh: 'reachable' }),
+      });
+      expect(run.code).toBe(1);
+      const rows = group(run.out, 'Sandbox probe').slice(2);
+      expect(rows).toContain('  REACHABLE    ~/.ssh: evidence for ssh');
+      expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(7);
+      expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
+      const ssh = readReport(host.home).probe.find((row) => row.id === 'ssh');
+      expect(ssh).toMatchObject({ result: 'reachable', evidence: 'evidence for ssh' });
+    });
+
+    it('passes with no settings file, and the rows stay Blocked', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, settingsHome());
+      expect(run.code).toBe(0);
+      const rows = group(run.out, 'Sandbox probe');
+      expect(rows[0]).toBe(
+        '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
+      );
+      expect(rows.slice(1)).toHaveLength(8);
+      for (const row of rows.slice(1)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
+      const report = readReport(host.home);
+      expect(report.sandboxIsolation?.result).toBe('pass');
+      expect(report.sandboxIsolation?.sources.map((source) => [source.kind, source.state])).toEqual(
+        [
+          ['launch', 'read'],
+          ['user', 'absent'],
+        ],
+      );
+      expect(run.out).toContain('Agents are boxed in');
+    });
+
+    it('prints an older report without the check as not recorded, and fails it', async () => {
+      const host = await scratchHost();
+      await runDoctorCommand(host);
+      const { sandboxIsolation: _dropped, ...older } = readReport(host.home);
+      const report = DoctorReport.parse(older);
+      expect(reportVerdict(report)).toBe('fail');
+      const lines = formatDoctorReport(report);
+      expect(lines[lines.indexOf('Sandbox probe') + 1]).toBe(
+        '  NOT CHECKED  Sandbox isolation settings: not recorded in this report',
+      );
+      expect(lines).toContain('1 check did not pass.');
+    });
+  });
+
   it('formats a stored report the same way', async () => {
     const host = await scratchHost();
     const run = await runDoctorCommand(host);
@@ -597,6 +721,12 @@ describe('resolveHostForCommand', () => {
       cwd: '/',
       out: () => {},
       err: (line) => err.push(line),
+      settingsLocations: {
+        userConfigDir: join(makeScratchDir('duser'), '.claude'),
+        managedDir: null,
+        managedPreferencesDir: null,
+        userName: null,
+      },
     });
     expect(code).toBe(2);
     expect(err).toEqual(['No project registered yet. Run counterpoint inside it first.']);
