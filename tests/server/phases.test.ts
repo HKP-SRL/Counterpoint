@@ -3,11 +3,12 @@
 // pushes a `phase` event within seconds of a commit to the base branch. Also the read-only doctor
 // report route behind the Trust page (T-01-40).
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
+import { revokeAcceptedRisk, writeAcceptedRisk } from '../../src/core/security/accepted-risks.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus, type StoredEvent } from '../../src/core/store/events.ts';
@@ -347,7 +348,46 @@ describe('GET /api/hosts/:hostId/doctor', () => {
         mode: WRITE_IDS.has(id) ? 'write' : 'read',
         result: overrides.reachableIndex === index ? 'reachable' : 'blocked',
         evidence: 'probe',
+        // 01-19: gh reached only through the Keychain lookup, as the live probe records it.
+        ...(overrides.keychainOnlyGh === true && id === 'gh'
+          ? {
+              result: 'reachable',
+              steps: [
+                {
+                  index: 10,
+                  tool: 'Bash',
+                  operation: 'cat',
+                  treatment: 'denied-rule',
+                  control: 'reached',
+                },
+                {
+                  index: 11,
+                  tool: 'Read',
+                  operation: 'read',
+                  treatment: 'denied-rule',
+                  control: 'reached',
+                },
+                {
+                  index: 12,
+                  tool: 'Grep',
+                  operation: 'grep',
+                  treatment: 'denied-rule',
+                  control: 'reached',
+                },
+                {
+                  index: 13,
+                  tool: 'Bash',
+                  operation: 'keychain',
+                  treatment: 'reached',
+                  control: 'reached',
+                },
+              ],
+              leaks: ['keychain-canary'],
+              trusted: true,
+            }
+          : {}),
       })),
+      ...(overrides.acceptedRisks === undefined ? {} : { acceptedRisks: overrides.acceptedRisks }),
       ...(overrides.noIsolation === true
         ? {}
         : {
@@ -455,5 +495,78 @@ describe('GET /api/hosts/:hostId/doctor', () => {
   it('answers 400 for a malformed host id and 404 for an unknown host', async () => {
     expect((await get('/api/hosts/Bad_Host/doctor')).status).toBe(400);
     expect((await get('/api/hosts/no-such-host/doctor')).status).toBe(404);
+  });
+
+  describe('the accepted risk gh-keychain (01-19)', () => {
+    const REASON = 'the gh keyring entry; accepted macOS residual';
+    const recordFile = () => join(home, 'trust', 'accepted-risks.json');
+
+    afterAll(() => {
+      revokeAcceptedRisk(home, 'gh-keychain');
+    });
+
+    it('answers accepted-risk with the applied record, then fail after a revoke, for the same stored report', async () => {
+      const entry = writeAcceptedRisk(home, {
+        reason: REASON,
+        now: () => new Date('2026-11-10T10:00:00.000Z'),
+      });
+      write(report({ keychainOnlyGh: true, acceptedRisks: [entry] }));
+
+      const accepted = await doctor();
+      expect(accepted.status).toBe(200);
+      expect(accepted.body.verdict).toBe('accepted-risk');
+      expect(accepted.body.acceptedRisks).toEqual([
+        {
+          id: 'gh-keychain',
+          target: 'gh',
+          subStep: 'keychain',
+          reason: REASON,
+          recordedAt: '2026-11-10T10:00:00.000Z',
+        },
+      ]);
+      const acceptedRisks = accepted.body.acceptedRisks as Array<{ reason: string }>;
+      expect(acceptedRisks[0]?.reason).toBe(REASON);
+      // The gh row keeps its measured result.
+      const probe = (accepted.body.report as { probe: Array<{ id: string; result: string }> })
+        .probe;
+      expect(probe.find((row) => row.id === 'gh')?.result).toBe('reachable');
+
+      expect(revokeAcceptedRisk(home, 'gh-keychain')).toBe(true);
+      const revoked = await doctor();
+      expect(revoked.body.verdict).toBe('fail');
+      expect(revoked.body.acceptedRisks).toEqual([]);
+    });
+
+    it('fails a Keychain-only gh reach when no record exists', async () => {
+      write(report({ keychainOnlyGh: true }));
+      const answer = await doctor();
+      expect(answer.body.verdict).toBe('fail');
+      expect(answer.body.acceptedRisks).toEqual([]);
+    });
+
+    it('fails a report checked before the risk was recorded', async () => {
+      writeAcceptedRisk(home, { reason: REASON });
+      write(report({ keychainOnlyGh: true }));
+      const answer = await doctor();
+      expect(answer.body.verdict).toBe('fail');
+      expect(answer.body.acceptedRisks).toEqual([]);
+      revokeAcceptedRisk(home, 'gh-keychain');
+    });
+
+    it('serves no POST on the doctor route and writes no record', async () => {
+      rmSync(recordFile(), { force: true });
+      const res = await app().request(`http://${HOST}/api/hosts/${hostId}/doctor`, {
+        method: 'POST',
+        headers: {
+          host: HOST,
+          cookie,
+          origin: `http://${HOST}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ risk: 'gh-keychain', reason: 'from the console' }),
+      });
+      expect([404, 405]).toContain(res.status);
+      expect(existsSync(recordFile())).toBe(false);
+    });
   });
 });
