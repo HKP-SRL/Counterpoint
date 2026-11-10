@@ -18,8 +18,14 @@
 // listing ran before any evaluator edit (the owner's ordering rule).
 //
 // Evidence first: stream.jsonl, stderr.txt, session.json and env-listing.json are written to
-// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-26-live/ before any
-// assertion, so a failing run keeps its evidence. Only names, lengths and shapes are recorded.
+// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-26-rerun/ before any
+// assertion, so a failing run keeps its evidence. Only names, lengths, shapes and host classes are
+// recorded.
+//
+// Rerun (01-26 revision, after the owner scoped the row on 2026-11-10): the profile now carries the
+// two credential env deny entries (CREDENTIAL_ENV_DENY), recorded as `launchedCredentials`, and the
+// listing records `findings`, `excepted` (the owner's sandbox-proxy-login exception), `unexcepted`
+// and `deniedPresent`. They are recorded, not asserted: the plan's stop rule decides.
 import { randomBytes } from 'node:crypto';
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -27,11 +33,17 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AGENT_PERMISSION_MODE, buildClaudeArgv } from '../../src/agent/claude-argv.ts';
-import { credentialFindings, parseEnvListing } from '../../src/agent/env-listing.ts';
+import {
+  credentialFindings,
+  exceptedEntries,
+  parseEnvListing,
+  unexceptedFindings,
+} from '../../src/agent/env-listing.ts';
 import { ENV_SHAPE_AWK, envShapeStep, probePrompt } from '../../src/agent/probe.ts';
 import { ClaudeCliRunner, type StreamEvent } from '../../src/agent/runner.ts';
 import {
   buildAgentSandboxSettings,
+  CREDENTIAL_ENV_DENY,
   type ProtectedPaths,
 } from '../../src/core/security/sandbox-settings.ts';
 import { initScratchRepo, makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
@@ -40,7 +52,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEBUG_DIR = join(REPO_ROOT, '.tmp', 'live-env');
 const EVIDENCE_DIR = join(
   process.env.CP_TEST_SCRATCH ?? join(REPO_ROOT, '.tmp'),
-  'evidence-01-26-live',
+  // The rerun (01-26 revision): the first listing's folder, evidence-01-26-live, stays as it is.
+  'evidence-01-26-rerun',
 );
 const EVALUATOR = 'src/agent/probe-evaluator.ts';
 const NOTICE_RE = /permission mode|auto mode/i;
@@ -218,6 +231,15 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
             .trim();
     const listing = parseEnvListing(text);
     const findings = credentialFindings(listing.entries);
+    const excepted = exceptedEntries(listing.entries).map((e) => e.name);
+    const unexcepted = unexceptedFindings(listing.entries);
+    const listed = new Set(listing.entries.map((e) => e.name));
+    const deniedPresent = CREDENTIAL_ENV_DENY.filter((name) => listed.has(name));
+    // The deny entries of the exact settings passed to buildClaudeArgv (names and modes only).
+    const launchedCredentials = (profile.settings.sandbox.credentials?.envVars ?? []).map((e) => ({
+      name: e.name,
+      mode: e.mode,
+    }));
     const session = {
       claudeVersion,
       permissionMode: modes.length === 1 ? modes[0] : modes,
@@ -246,6 +268,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
       inPermissionDenials:
         stepUse !== undefined && denials.some((d) => d.tool_use_id === stepUse.id),
       isError: typeof block?.is_error === 'boolean' ? block.is_error : null,
+      launchedCredentials,
       evaluator,
     };
     mkdirSync(DEBUG_DIR, { recursive: true });
@@ -254,7 +277,18 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
     writeFileSync(join(DEBUG_DIR, 'session.json'), `${JSON.stringify(session, null, 2)}\n`);
     writeFileSync(
       join(DEBUG_DIR, 'env-listing.json'),
-      `${JSON.stringify({ malformed: listing.malformed, entries: listing.entries, findings }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          malformed: listing.malformed,
+          entries: listing.entries,
+          findings,
+          excepted,
+          unexcepted,
+          deniedPresent,
+        },
+        null,
+        2,
+      )}\n`,
     );
     mkdirSync(EVIDENCE_DIR, { recursive: true });
     cpSync(DEBUG_DIR, EVIDENCE_DIR, { recursive: true });
@@ -273,6 +307,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
     const names = listing.entries.map((e) => e.name);
     expect.soft(names, 'PATH').toContain('PATH');
     expect.soft(names, 'HOME').toContain('HOME');
-    // `findings` is recorded, not asserted: the plan's stop rule (e) decides.
+    // `findings`, `excepted`, `unexcepted` and `deniedPresent` are recorded, not asserted: the
+    // plan's stop rule decides.
   }, 600_000);
 });

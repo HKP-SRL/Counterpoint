@@ -15,6 +15,7 @@ import {
 import {
   AGENT_TOOLS,
   buildAgentSandboxSettings,
+  CREDENTIAL_ENV_DENY,
   FILE_EDIT_TOOLS,
   fileEditGrants,
   type ProtectedPaths,
@@ -127,6 +128,19 @@ describe('buildAgentSandboxSettings', () => {
     expect(buildAgentSandboxSettings(rest).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
   });
 
+  it('denies the credential env vars, with and without a workdir (scrub replacement 3, 01-26)', () => {
+    const { workdir: _omit, ...rest } = paths;
+    const expected = {
+      envVars: [
+        { name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' },
+        { name: 'CLOUDSDK_PROXY_PASSWORD', mode: 'deny' },
+      ],
+    };
+    expect(CREDENTIAL_ENV_DENY).toEqual(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLOUDSDK_PROXY_PASSWORD']);
+    expect(buildAgentSandboxSettings(paths).settings.sandbox.credentials).toEqual(expected);
+    expect(buildAgentSandboxSettings(rest).settings.sandbox.credentials).toEqual(expected);
+  });
+
   it('lists the read-protected directories as plain absolute denyRead paths', () => {
     const { settings } = buildAgentSandboxSettings(paths);
     expect([...settings.sandbox.filesystem.denyRead].sort()).toEqual(
@@ -167,6 +181,7 @@ describe('buildAgentSandboxSettings', () => {
     expect(Object.keys(settings.sandbox).sort()).toEqual([
       'allowUnsandboxedCommands',
       'autoAllowBashIfSandboxed',
+      'credentials',
       'enabled',
       'failIfUnavailable',
       'filesystem',
@@ -197,6 +212,7 @@ describe('buildAgentSandboxSettings', () => {
     expect(Object.keys(profile.settings.sandbox).sort()).toEqual([
       'allowUnsandboxedCommands',
       'autoAllowBashIfSandboxed',
+      'credentials',
       'enabled',
       'failIfUnavailable',
       'filesystem',

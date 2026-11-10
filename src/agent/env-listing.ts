@@ -13,45 +13,70 @@
 //
 // agentEnv passes only its allow-list (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR, SHELL), so
 // a credential-shaped variable in a sandboxed Bash environment came from Claude Code itself. The
-// rule is not narrowed and has no per-name exception: a flagged variable is a finding.
+// rule is not narrowed: a flagged variable is a finding. Its only exception is the owner's
+// SANDBOX_PROXY_EXCEPTION (`sandbox-proxy-login`, STATE.md [Owner] 2026-11-10, "Credential-env row
+// scoped to the real requirement"): one of twelve exact proxy names, shaped `url-userinfo`, whose
+// host class is `loopback`. Anything else credential-shaped stays a finding.
+//
+// A `url-userinfo` line carries a fourth field, the host class (`loopback` or `other`) the script
+// computed from the value; the host, user and password never leave the command.
 
 /** The shape words the listing script prints, in the order it tests them (first match wins). */
 export const ENV_SHAPES = ['prefix', 'jwt', 'url-userinfo', 'pem', 'opaque', 'plain'] as const;
 export type EnvShape = (typeof ENV_SHAPES)[number];
+
+/** The host class of a `url-userinfo` value: `loopback` only for one URL to this machine. */
+export const HOST_CLASSES = ['loopback', 'other'] as const;
+export type HostClass = (typeof HOST_CLASSES)[number];
 
 export interface EnvEntry {
   name: string;
   /** The value's length as the script measured it. The value itself is never seen. */
   length: number;
   shape: EnvShape;
+  /** Present exactly when `shape` is `url-userinfo`. */
+  hostClass?: HostClass;
 }
 
 export interface EnvListing {
   /** Every well-formed line, in listing order. */
   entries: EnvEntry[];
-  /** Non-empty lines that are not `NAME LENGTH SHAPE`. */
+  /** Non-empty lines that are not `NAME LENGTH SHAPE` (or `NAME LENGTH url-userinfo CLASS`). */
   malformed: number;
 }
 
-const LINE_RE = /^(\S+) ([0-9]+) (prefix|jwt|url-userinfo|pem|opaque|plain)$/;
+const LINE_RE = /^(\S+) ([0-9]+) (prefix|jwt|pem|opaque|plain)$/;
+const URL_LINE_RE = /^(\S+) ([0-9]+) url-userinfo (loopback|other)$/;
 
 /**
- * Parses the listing. Each non-empty line must be a name without whitespace, one space, a
- * decimal length, one space and one of the six shape words; any other non-empty line (a
- * whitespace-only line included) counts as malformed.
+ * Parses the listing. A `url-userinfo` line must be `NAME LENGTH url-userinfo CLASS` with a class
+ * from HOST_CLASSES; every other non-empty line must be `NAME LENGTH SHAPE` with one of the other
+ * five shape words. A name has no whitespace and fields are separated by one space. Any other
+ * non-empty line counts as malformed: a `url-userinfo` line without a class, a class after any
+ * other shape, an unknown class, and a whitespace-only line included.
  */
 export function parseEnvListing(text: string): EnvListing {
   const entries: EnvEntry[] = [];
   let malformed = 0;
   for (const line of text.split('\n')) {
     if (line === '') continue;
-    const match = LINE_RE.exec(line);
+    const url = URL_LINE_RE.exec(line);
+    const match = url ?? LINE_RE.exec(line);
     const length = match ? Number(match[2]) : Number.NaN;
     if (!match || !Number.isSafeInteger(length)) {
       malformed += 1;
       continue;
     }
-    entries.push({ name: match[1] as string, length, shape: match[3] as EnvShape });
+    if (url) {
+      entries.push({
+        name: url[1] as string,
+        length,
+        shape: 'url-userinfo',
+        hostClass: url[3] as HostClass,
+      });
+    } else {
+      entries.push({ name: match[1] as string, length, shape: match[3] as EnvShape });
+    }
   }
   return { entries, malformed };
 }
@@ -107,16 +132,77 @@ export function isCredentialName(name: string): boolean {
 
 /**
  * One finding per credential-shaped entry: `NAME (name)` when the name is flagged, else
- * `NAME (value: {shape}, {length} chars)` when the value's shape is anything but `plain`. Names
- * and shapes only, never a value.
+ * `NAME (value: {shape}, {length} chars)` when the value's shape is anything but `plain`, and
+ * `NAME (value: url-userinfo, {length} chars, host {class})` for a `url-userinfo` value. Names,
+ * shapes and host classes only, never a value.
  */
 export function credentialFindings(entries: readonly EnvEntry[]): string[] {
   const findings: string[] = [];
   for (const entry of entries) {
     if (isCredentialName(entry.name)) findings.push(`${entry.name} (name)`);
-    else if (entry.shape !== 'plain') {
+    else if (entry.shape === 'url-userinfo') {
+      findings.push(
+        `${entry.name} (value: url-userinfo, ${entry.length} chars, host ${entry.hostClass ?? 'other'})`,
+      );
+    } else if (entry.shape !== 'plain') {
       findings.push(`${entry.name} (value: ${entry.shape}, ${entry.length} chars)`);
     }
   }
   return findings;
+}
+
+/**
+ * The owner's one named exception to the credential-env rule (STATE.md [Owner] 2026-11-10,
+ * "Credential-env row scoped to the real requirement"), recorded like the Keychain one: named,
+ * reasoned, dated, and shown wherever the row is (its evidence, the stored row's `exceptions`
+ * field, and a waived WINDOWS.md entry). It covers the sandbox network proxy's own per-session
+ * login: Claude Code runs that proxy on this machine, outside the sandbox, and points sandboxed
+ * commands at it through these variables. It describes Claude Code's own sandbox runtime, the
+ * same on every machine, so it is not a per-machine terminal record like gh-keychain (01-19).
+ */
+export const SANDBOX_PROXY_EXCEPTION = {
+  id: 'sandbox-proxy-login',
+  reason: "the sandbox's own proxy login, local only",
+  recordedAt: '2026-11-10',
+  decision:
+    "STATE.md [Owner] 2026-11-10: Credential-env row scoped to the real requirement (after 01-26's halt)",
+  names: [
+    'HTTP_PROXY',
+    'http_proxy',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+    'GRPC_PROXY',
+    'grpc_proxy',
+    'FTP_PROXY',
+    'ftp_proxy',
+    'DOCKER_HTTP_PROXY',
+    'DOCKER_HTTPS_PROXY',
+  ],
+} as const;
+
+const EXCEPTED_NAMES: ReadonlySet<string> = new Set(SANDBOX_PROXY_EXCEPTION.names);
+
+/**
+ * The entries the owner's exception covers: the name is exactly one of the twelve (no case
+ * folding, no prefix match), the shape is `url-userinfo` and the host class is `loopback`.
+ * Nothing else qualifies.
+ */
+export function exceptedEntries(entries: readonly EnvEntry[]): EnvEntry[] {
+  return entries.filter(
+    (entry) =>
+      EXCEPTED_NAMES.has(entry.name) &&
+      entry.shape === 'url-userinfo' &&
+      entry.hostClass === 'loopback',
+  );
+}
+
+/**
+ * credentialFindings over every entry the exception does not cover. The two denied names
+ * (CREDENTIAL_ENV_DENY) are not in the exception, so either one, if present, is a finding.
+ */
+export function unexceptedFindings(entries: readonly EnvEntry[]): string[] {
+  const excepted = new Set(exceptedEntries(entries));
+  return credentialFindings(entries.filter((entry) => !excepted.has(entry)));
 }

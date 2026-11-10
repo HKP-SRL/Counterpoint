@@ -120,9 +120,11 @@ export type StepOperation =
  * supports, with string (dynamic) regular expressions and no interval braces.
  *
  * The shape words, tested in this order (first match wins; src/agent/env-listing.ts ENV_SHAPES):
- * prefix, jwt, url-userinfo, pem, opaque, plain.
+ * prefix, jwt, url-userinfo, pem, opaque, plain. A `url-userinfo` line carries a fourth field,
+ * the host class `loopback` or `other` (host_class, 01-26 revision): the host, user and password
+ * never leave the command. The program has exactly one print statement.
  */
-export const ENV_SHAPE_AWK = `# Counterpoint environment listing (01-26). Prints NAME LENGTH SHAPE per variable, never a value.
+export const ENV_SHAPE_AWK = `# Counterpoint environment listing (01-26). Prints NAME LENGTH SHAPE [HOSTCLASS] per variable, never a value.
 function is_uuid(v) {
   # A 36-character hex UUID with dashes at 9, 14, 19 and 24 (a session id, not a secret).
   return length(v) == 36 && v ~ "^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+$" && substr(v, 9, 1) == "-" && substr(v, 14, 1) == "-" && substr(v, 19, 1) == "-" && substr(v, 24, 1) == "-"
@@ -141,8 +143,55 @@ function shape(v) {
   if (length(v) >= 32 && v ~ "^[A-Za-z0-9+/=_-]+$" && v ~ "[A-Za-z]" && v ~ "[0-9]" && substr(v, 1, 1) != "/" && !is_uuid(v)) return "opaque"
   return "plain"
 }
+function host_class(v,    i, rest, at, user, hp, host, port, n, o, k) {
+  # The host class of a url-userinfo value (01-26): "loopback" only when the whole value is one
+  # URL: a scheme and ://, a user:password userinfo with exactly one @, a host that (lower-cased)
+  # is localhost, [::1] or a dotted 127.0.0.0/8 address (four octets of 1 to 3 digits, each at
+  # most 255, the first 127), optionally : and 1 to 5 digits, optionally one /, then nothing.
+  # Every other form is "other" (fail closed). Only the class word is ever printed.
+  if (v ~ "[ \\t\\n\\r\\f\\v]") return "other"
+  i = index(v, "://")
+  if (i < 2) return "other"
+  if (substr(v, 1, i - 1) !~ "^[A-Za-z][A-Za-z0-9+.-]*$") return "other"
+  rest = substr(v, i + 3)
+  at = index(rest, "@")
+  if (at == 0) return "other"
+  if (index(substr(rest, at + 1), "@") > 0) return "other"
+  user = substr(rest, 1, at - 1)
+  if (user !~ "^[^/?#:]*:[^/?#]+$") return "other"
+  hp = substr(rest, at + 1)
+  if (substr(hp, length(hp), 1) == "/") hp = substr(hp, 1, length(hp) - 1)
+  if (hp == "" || hp ~ "[/?#]") return "other"
+  if (substr(hp, 1, 1) == "[") {
+    k = index(hp, "]")
+    if (k == 0) return "other"
+    host = substr(hp, 1, k)
+    port = substr(hp, k + 1)
+  } else {
+    k = index(hp, ":")
+    if (k == 0) { host = hp; port = "" } else { host = substr(hp, 1, k - 1); port = substr(hp, k) }
+  }
+  if (port != "") {
+    if (substr(port, 1, 1) != ":") return "other"
+    port = substr(port, 2)
+    if (port !~ "^[0-9]+$" || length(port) > 5) return "other"
+  }
+  host = tolower(host)
+  if (host == "localhost" || host == "[::1]") return "loopback"
+  n = split(host, o, ".")
+  if (n != 4 || o[1] != "127") return "other"
+  for (k = 1; k <= 4; k++) {
+    if (o[k] !~ "^[0-9]+$" || length(o[k]) > 3 || o[k] + 0 > 255) return "other"
+  }
+  return "loopback"
+}
 BEGIN {
-  for (name in ENVIRON) print name " " length(ENVIRON[name]) " " shape(ENVIRON[name])
+  for (name in ENVIRON) {
+    s = shape(ENVIRON[name])
+    extra = ""
+    if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])
+    print name " " length(ENVIRON[name]) " " s extra
+  }
 }
 `;
 
@@ -582,8 +631,9 @@ export function probePrompt(steps: readonly ProbeStep[]): string {
 
 /**
  * Settings for the control session. The deny side, the sandbox flags, the outside-write block
- * (`blockWritesOutsideWorkingDirectories`) and sandbox auto-allow off (`autoAllowBashIfSandboxed:
- * false`, 01-24) are copied from the treatment; both are restrictions, not grants. The allow side
+ * (`blockWritesOutsideWorkingDirectories`), sandbox auto-allow off (`autoAllowBashIfSandboxed:
+ * false`, 01-24) and the credential env deny entries (`sandbox.credentials`, 01-26) are copied
+ * from the treatment; all are restrictions, not grants. The allow side
  * is written fresh.
  * Nothing on the treatment's allow side (allow rules, additionalDirectories, allowWrite,
  * excludedCommands, ...) is ever read.
@@ -632,6 +682,18 @@ export function buildControlSettings(treatment: AgentSettings, plan: ProbePlan):
         denyWrite: [...treatment.sandbox.filesystem.denyWrite],
         allowWrite: [mirror],
       },
+      // The credential env deny entries (01-26) are a restriction, copied fresh so both sessions
+      // list the same environment.
+      ...(treatment.sandbox.credentials !== undefined
+        ? {
+            credentials: {
+              envVars: treatment.sandbox.credentials.envVars.map((entry) => ({
+                name: entry.name,
+                mode: entry.mode,
+              })),
+            },
+          }
+        : {}),
     },
   };
 }

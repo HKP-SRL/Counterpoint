@@ -36,6 +36,25 @@
 // without a workdir. With it off, an unlisted sandboxed command goes through the permission rules
 // and, in auto mode, the classifier. The `--settings` flag outranks user, project and local
 // settings but not managed settings; doctor checks managed sources for it (01-25).
+//
+// Credential env vars (replacement 3 for the scrub, 01-26). With the scrub off, a sandboxed Bash
+// command sees what Claude Code itself exports to it. 01-26's first live listing on claude
+// 2.1.321 found two credential-named variables there: `CLAUDE_CODE_MESSAGING_TOKEN` (the
+// per-session messaging token the env-vars docs name) and `CLOUDSDK_PROXY_PASSWORD`. The profile
+// denies exactly these two through `sandbox.credentials.envVars` entries with `mode: "deny"`, with
+// or without a workdir (STATE.md [Owner] 2026-11-10, "Credential-env row scoped to the real
+// requirement"). The sandboxing docs (https://code.claude.com/docs/en/sandboxing, section
+// `sandbox.credentials`, read 2026-11-10): for deny entries "environment variables are unset
+// before each sandboxed command runs"; the variable protection holds even when filesystem
+// isolation is off; "There is no built-in credential deny list, so only the files and variables
+// you list are restricted"; and Claude Code ignores `credentials` entries from project and local
+// settings only, so this `--settings` profile's entries apply. Only these two names are denied:
+// the sandbox proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and related) are how
+// sandboxed commands reach the network ("Claude Code runs the sandbox proxy on your machine,
+// outside the sandbox, and directs commands to it with ..."), so denying them would cut that
+// access; the probe's credential-env row accepts them only as the owner's loopback exception
+// (src/agent/env-listing.ts SANDBOX_PROXY_EXCEPTION). 01-26's rerun listing proves the entries
+// take effect on the owner's claude, and the row fails if either name reappears.
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -81,8 +100,19 @@ export interface AgentSettings {
       denyWrite: string[];
       allowWrite: string[];
     };
+    /** Credential env vars unset before each sandboxed command runs (01-26). */
+    credentials?: { envVars: Array<{ name: string; mode: 'deny' }> };
   };
 }
+
+/**
+ * The credential env vars the launch profile denies to sandboxed commands (01-26): the two
+ * variables 01-26's first live listing flagged by name. Order is the emitted order.
+ */
+export const CREDENTIAL_ENV_DENY = [
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLOUDSDK_PROXY_PASSWORD',
+] as const;
 
 export type ReadTargetId = 'signing-key' | 'ssh' | 'gh' | 'state';
 export type WriteTargetId = 'git-config' | 'git-hooks' | 'git-info';
@@ -200,6 +230,9 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
         denyRead: readDirs,
         denyWrite: writeTargets.map((target) => target.path),
         allowWrite: [],
+      },
+      credentials: {
+        envVars: CREDENTIAL_ENV_DENY.map((name) => ({ name, mode: 'deny' as const })),
       },
     },
   };

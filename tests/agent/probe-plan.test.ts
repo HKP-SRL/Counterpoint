@@ -15,7 +15,14 @@ import {
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { execa } from 'execa';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parseEnvListing } from '../../src/agent/env-listing.ts';
+import {
+  credentialFindings,
+  type EnvEntry,
+  exceptedEntries,
+  parseEnvListing,
+  SANDBOX_PROXY_EXCEPTION,
+  unexceptedFindings,
+} from '../../src/agent/env-listing.ts';
 import {
   buildControlSettings,
   buildProbeLaunch,
@@ -202,6 +209,7 @@ function assertConfined(
   expect(Object.keys(settings.sandbox).sort()).toEqual([
     'allowUnsandboxedCommands',
     'autoAllowBashIfSandboxed',
+    'credentials',
     'enabled',
     'failIfUnavailable',
     'filesystem',
@@ -974,6 +982,24 @@ describe('the env-shape step (01-26)', () => {
     expect(allow).not.toContain('Bash');
   });
 
+  it("copies the treatment's credential env deny entries into the control as fresh entries", () => {
+    const p = plan();
+    const treatment = buildAgentSandboxSettings(paths).settings;
+    const control = buildControlSettings(treatment, p);
+    expect(control.sandbox.credentials).toEqual(treatment.sandbox.credentials);
+    expect(control.sandbox.credentials).toEqual({
+      envVars: [
+        { name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' },
+        { name: 'CLOUDSDK_PROXY_PASSWORD', mode: 'deny' },
+      ],
+    });
+    expect(control.sandbox.credentials).not.toBe(treatment.sandbox.credentials);
+    expect(control.sandbox.credentials?.envVars).not.toBe(treatment.sandbox.credentials?.envVars);
+    expect(control.sandbox.credentials?.envVars[0]).not.toBe(
+      treatment.sandbox.credentials?.envVars[0],
+    );
+  });
+
   it('rejects a script path with a single quote', () => {
     expect(() => envShapeStep("/tmp/it's.awk")).toThrow(/single quote/);
   });
@@ -985,13 +1011,18 @@ describe('the env-shape step (01-26)', () => {
     // Every line at column 0 opens a comment, a function or the BEGIN block, or closes a block.
     for (const line of ENV_SHAPE_AWK.split('\n')) {
       if (line === '' || /^\s/.test(line)) continue;
-      expect(line, 'top-level awk line').toMatch(/^(#|function [a-z_]+\(v\) \{$|BEGIN \{$|\}$)/);
+      // A function takes the value `v`, optionally followed by awk's extra-parameter locals.
+      expect(line, 'top-level awk line').toMatch(
+        /^(#|function [a-z_]+\(v(, +[a-z_]+(, [a-z_]+)*)?\) \{$|BEGIN \{$|\}$)/,
+      );
     }
-    // No print statement names a value: only the name, the length and the shape word.
+    // Exactly one print statement, and it names no value: the name, the length, the shape word
+    // and, for url-userinfo only, the host class word.
     const prints = ENV_SHAPE_AWK.split('\n').filter((line) => /\bprint\b/.test(line));
-    expect(prints).toEqual([
-      '  for (name in ENVIRON) print name " " length(ENVIRON[name]) " " shape(ENVIRON[name])',
-    ]);
+    expect(prints).toEqual(['    print name " " length(ENVIRON[name]) " " s extra']);
+    expect(ENV_SHAPE_AWK).toContain(
+      '    if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])',
+    );
   });
 });
 
@@ -1019,6 +1050,20 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
     // 40 characters, letters and digits only.
     CP_OPAQUE: 'Q7w3E9r1T5y8U2i6O4p0Q7w3E9r1T5y8U2i6O4p0',
     CP_PLAIN: 'hello',
+    // Proxy URLs with a planted login (user cp-user, password cp-pw-0126). Loopback hosts:
+    CP_PX_V4: 'http://cp-user:cp-pw-0126@127.0.0.1:3128',
+    CP_PX_LOCAL: 'http://cp-user:cp-pw-0126@localhost:8080/',
+    CP_PX_V6: 'socks5h://cp-user:cp-pw-0126@[::1]:1080',
+    CP_PX_UPPER: 'http://cp-user:cp-pw-0126@LOCALHOST:1',
+    // Every other form reads other (fail closed):
+    CP_PX_NAMED: 'http://cp-user:cp-pw-0126@proxy.example.invalid:3128',
+    CP_PX_TEN: 'http://cp-user:cp-pw-0126@10.0.0.1:3128',
+    CP_PX_SUFFIX: 'http://cp-user:cp-pw-0126@127.0.0.1.example.invalid:80',
+    CP_PX_SUBNAME: 'http://cp-user:cp-pw-0126@localhost.example.invalid',
+    CP_PX_PATH: 'http://cp-user:cp-pw-0126@127.0.0.1:3128/path',
+    CP_PX_OCTET: 'http://cp-user:cp-pw-0126@127.0.0.256:80',
+    CP_PX_TWO_AT: 'http://cp-user:cp-pw-0126@extra.invalid@127.0.0.1:80',
+    CP_PX_INSIDE: 'see http://cp-user:cp-pw-0126@127.0.0.1:80',
   });
 
   it('prints every variable as NAME LENGTH SHAPE with the expected shape, and no value', async () => {
@@ -1048,7 +1093,43 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
       CP_UUID: 'plain',
       CP_OPAQUE: 'opaque',
       CP_PLAIN: 'plain',
+      CP_PX_V4: 'url-userinfo',
+      CP_PX_LOCAL: 'url-userinfo',
+      CP_PX_V6: 'url-userinfo',
+      CP_PX_UPPER: 'url-userinfo',
+      CP_PX_NAMED: 'url-userinfo',
+      CP_PX_TEN: 'url-userinfo',
+      CP_PX_SUFFIX: 'url-userinfo',
+      CP_PX_SUBNAME: 'url-userinfo',
+      CP_PX_PATH: 'url-userinfo',
+      CP_PX_OCTET: 'url-userinfo',
+      CP_PX_TWO_AT: 'url-userinfo',
+      CP_PX_INSIDE: 'url-userinfo',
     });
+    // The host class is present exactly on url-userinfo entries.
+    expect(
+      Object.fromEntries(
+        listing.entries.filter((e) => e.hostClass !== undefined).map((e) => [e.name, e.hostClass]),
+      ),
+    ).toEqual({
+      CP_URL: 'other',
+      CP_PX_V4: 'loopback',
+      CP_PX_LOCAL: 'loopback',
+      CP_PX_V6: 'loopback',
+      CP_PX_UPPER: 'loopback',
+      CP_PX_NAMED: 'other',
+      CP_PX_TEN: 'other',
+      CP_PX_SUFFIX: 'other',
+      CP_PX_SUBNAME: 'other',
+      CP_PX_PATH: 'other',
+      CP_PX_OCTET: 'other',
+      CP_PX_TWO_AT: 'other',
+      CP_PX_INSIDE: 'other',
+    });
+    // No host, user or password reaches the output.
+    for (const piece of ['cp-user', 'cp-pw-0126', 'cp-pass', '127.0.0', 'localhost', 'example']) {
+      expect(result.stdout.toLowerCase().includes(piece.toLowerCase()), piece).toBe(false);
+    }
     for (const [name, value] of Object.entries(env)) {
       expect(byName[name]?.length, `${name} length`).toBe(value.length);
       // Neither the value nor any 6-character piece of a planted test value reaches the output.
@@ -1085,5 +1166,93 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
     expect(open.timedOut).toBe(false);
     expect(open.exitCode).toBe(0);
     expect(parseEnvListing(open.stdout).malformed).toBe(0);
+  });
+});
+
+describe('the sandbox proxy exception (01-26)', () => {
+  const PROXY_NAMES = [
+    'HTTP_PROXY',
+    'http_proxy',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+    'GRPC_PROXY',
+    'grpc_proxy',
+    'FTP_PROXY',
+    'ftp_proxy',
+    'DOCKER_HTTP_PROXY',
+    'DOCKER_HTTPS_PROXY',
+  ];
+  const url = (name: string, hostClass: 'loopback' | 'other', length = 100): EnvEntry => ({
+    name,
+    length,
+    shape: 'url-userinfo',
+    hostClass,
+  });
+
+  it("records the owner's exception: id, reason, date, decision and exactly the twelve names", () => {
+    expect(SANDBOX_PROXY_EXCEPTION.id).toBe('sandbox-proxy-login');
+    expect(SANDBOX_PROXY_EXCEPTION.reason).toBe("the sandbox's own proxy login, local only");
+    expect(SANDBOX_PROXY_EXCEPTION.recordedAt).toBe('2026-11-10');
+    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain('STATE.md [Owner]');
+    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain(
+      'Credential-env row scoped to the real requirement',
+    );
+    expect([...SANDBOX_PROXY_EXCEPTION.names]).toEqual(PROXY_NAMES);
+  });
+
+  it('reads a url-userinfo line with its host class, and rejects the three malformed forms', () => {
+    expect(parseEnvListing('HTTP_PROXY 100 url-userinfo loopback\nPATH 5 plain\n')).toEqual({
+      entries: [
+        { name: 'HTTP_PROXY', length: 100, shape: 'url-userinfo', hostClass: 'loopback' },
+        { name: 'PATH', length: 5, shape: 'plain' },
+      ],
+      malformed: 0,
+    });
+    expect(parseEnvListing('A 100 url-userinfo other').entries[0]?.hostClass).toBe('other');
+    // A url-userinfo line without a class, a class after another shape, an unknown class.
+    for (const line of [
+      'HTTP_PROXY 100 url-userinfo',
+      'GH 40 opaque loopback',
+      'P 5 plain other',
+      'HTTP_PROXY 100 url-userinfo remote',
+      'HTTP_PROXY 100 url-userinfo Loopback',
+    ]) {
+      expect(parseEnvListing(line), line).toEqual({ entries: [], malformed: 1 });
+    }
+  });
+
+  it('excepts the twelve names as url-userinfo loopback, and nothing else', () => {
+    const loop = PROXY_NAMES.map((name) => url(name, 'loopback'));
+    expect(exceptedEntries(loop)).toEqual(loop);
+    expect(unexceptedFindings(loop)).toEqual([]);
+    const near: EnvEntry[] = [
+      ...PROXY_NAMES.map((name) => url(name, 'other')),
+      { name: 'HTTP_PROXY', length: 40, shape: 'opaque' },
+      url('Http_Proxy', 'loopback'),
+      url('MY_PROXY', 'loopback'),
+      url('HTTP_PROXY_X', 'loopback'),
+      { name: 'HTTP_PROXY', length: 100, shape: 'url-userinfo' },
+    ];
+    expect(exceptedEntries(near)).toEqual([]);
+    expect(unexceptedFindings(near)).toEqual(credentialFindings(near));
+    expect(unexceptedFindings(near)).toHaveLength(near.length);
+  });
+
+  it('keeps the denied names and a non-loopback proxy as findings beside excepted entries', () => {
+    const entries: EnvEntry[] = [
+      ...PROXY_NAMES.filter((n) => n !== 'HTTP_PROXY').map((n) => url(n, 'loopback')),
+      { name: 'CLAUDE_CODE_MESSAGING_TOKEN', length: 32, shape: 'opaque' },
+      { name: 'CLOUDSDK_PROXY_PASSWORD', length: 32, shape: 'opaque' },
+      url('HTTP_PROXY', 'other'),
+      { name: 'PATH', length: 20, shape: 'plain' },
+    ];
+    expect(exceptedEntries(entries)).toHaveLength(11);
+    expect(unexceptedFindings(entries)).toEqual([
+      'CLAUDE_CODE_MESSAGING_TOKEN (name)',
+      'CLOUDSDK_PROXY_PASSWORD (name)',
+      'HTTP_PROXY (value: url-userinfo, 100 chars, host other)',
+    ]);
   });
 });
