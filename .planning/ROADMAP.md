@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 16/22 plans executed
+**Plans**: 16/24 plans executed
 
 Plans:
 **Wave 1**
@@ -72,26 +72,32 @@ Plans:
 - [x] 01-17-PLAN.md — Gap (WINDOWS.md #2) 1/2: confine agent Write/Edit to the session folder in the one launch profile; probe row `Files outside the working folder` through evaluator and doctor *(wave 10)*
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- [ ] 01-21-PLAN.md — Gap (auto mode, WINDOWS.md #2) 1/3: launch profile in `--permission-mode auto` with `blockWritesOutsideWorkingDirectories`; control covered by explicit allow rules; live launch tracer; evaluator counts only deterministic refusals (MATCHER_REVISION 3). **Likely owner-decision gate:** on claude 2.1.321 the scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`) forced the mode down, and the notice names the scrub, not dontAsk. If the live run shows auto forced down too, 01-21 stops, and Waves 12–16 wait until the owner picks one of: a layer-preserving launch variant that reached auto; opting out of the scrub (drops a security layer); or default mode with allow lists (contradicts the auto decision). The gap is then re-planned *(wave 11)*
+- [ ] 01-24-PLAN.md — Gap (scrub opt-out, WINDOWS.md #3) 1/3: cherry-pick 01-21's launch work (e5e59f3: auto mode, outside-write block, control rules); `agentEnv` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` (owner decision 2026-11-10); replacement 1 `sandbox.autoAllowBashIfSandboxed: false`; live tracer proves auto mode first; deterministic-only evaluator (MATCHER_REVISION 3) *(wave 11)*
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 01-22-PLAN.md — Gap 2/3: doctor checks the agent session's effective permission mode (`agentMode`, additive v1 field); the Trust page shows it, the eighth probe row and the new all-pass wording; UI-SPEC E8 *(wave 12)*
+- [ ] 01-25-PLAN.md — Gap (scrub opt-out) 2/3: replacement 2, doctor's `Sandbox isolation settings` check (`sandboxIsolation`, additive v1 field): fails if any settings source turns filesystem isolation off; read-only, fail-closed reader of every source an agent session loads *(wave 12)*
 
 **Wave 13** *(blocked on Wave 12 completion)*
-- [ ] 01-23-PLAN.md — Gap 3/3: one live eight-row proof in auto mode; refrozen fixtures; matcher version; WINDOWS.md #2 fixed *(wave 13)*
+- [ ] 01-26-PLAN.md — Gap (scrub opt-out) 3/3: replacement 3, ninth probe row `Credentials in the shell environment` (names and value shapes, never values); one live listing first; MATCHER_REVISION 4 *(wave 13)*
 
 **Wave 14** *(blocked on Wave 13 completion)*
-- [ ] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 14)*
+- [ ] 01-22-PLAN.md — doctor checks the agent session's effective permission mode (`agentMode`, additive v1 field); the Trust page shows both session checks, the eighth and ninth probe rows and the new all-pass wording; UI-SPEC E8 *(wave 14)*
 
 **Wave 15** *(blocked on Wave 14 completion)*
-- [ ] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 15)*
+- [ ] 01-23-PLAN.md — One live nine-row proof in auto mode with the scrub opted out and all three replacements; refrozen fixtures; matcher version; WINDOWS.md #2 and #3 fixed *(wave 15)*
 
 **Wave 16** *(blocked on Wave 15 completion)*
-- [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena *(wave 16)*
+- [ ] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 16)*
+
+**Wave 17** *(blocked on Wave 16 completion)*
+- [ ] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 17)*
+
+**Wave 18** *(blocked on Wave 17 completion)*
+- [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena (the first doctor run over the owner's real settings sources) *(wave 18)*
 
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
-**Retired plans**: 01-18-PLAN.md is superseded and never runs. Its frontmatter `status: superseded` (GSD #2349) drops it from `phase-plan-index` and `roadmap analyze`, so it is never scheduled; 01-21's verify checks that. It halted at its live tracer on claude 2.1.321, where the scrub forced dontAsk to default. The owner then chose auto mode, and its work moved to 01-21…01-23. It is listed here rather than in the Plans checklist because a non-checkbox row splits that list for `roadmap annotate-dependencies`.
+**Retired plans**: 01-18-PLAN.md and 01-21-PLAN.md are superseded and never run. Their frontmatter `status: superseded` (GSD #2349) drops them from `phase-plan-index` and `roadmap analyze`, so they are never scheduled; 01-24's precondition and verify check that. 01-18 halted at its live tracer on claude 2.1.321, where the scrub forced dontAsk to default; the owner then chose auto mode, and its work moved to 01-21…01-23. 01-21 halted at its live tracer too, where the scrub forced auto to default (WINDOWS.md #3); the owner then chose to opt out of the scrub with three replacements, and its work moved to 01-24 (its committed launch work e5e59f3 is cherry-picked there), 01-25 and 01-26. They are listed here rather than in the Plans checklist because a non-checkbox row splits that list for `roadmap annotate-dependencies`.
 
 ### Phase 2: First Unattended Run
 **Goal**: The owner can start a run on an approved Cena QR-menu phase and walk away. Counterpoint builds it overnight in its own worktree, judges it only by gate exit codes, and leaves either a green PR with a preview link or a parked item with the reason.
@@ -174,7 +180,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 16/22 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 16/24 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
