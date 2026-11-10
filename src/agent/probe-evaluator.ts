@@ -34,9 +34,20 @@
 // row is judged from that listing with src/agent/env-listing.ts (the parser, the credential rule
 // and the owner's one exception, `sandbox-proxy-login`); this module defines no second parser,
 // name rule or exception.
+//
+// Structured evidence (01-19): every row also carries `steps` (each treatment step's classes in
+// both sessions, exactly as classified), `leaks` (which canary or finding reached the treatment)
+// and `trusted` (plans matched, baseline held, no version distrust). This module only reports that
+// evidence: it holds no accepted-risk logic and imports nothing from the accepted-risk record;
+// the verdict layer (src/core/security/doctor-report.ts) decides what an accepted risk covers.
 import {
   PROBE_TARGET_IDS,
+  type ProbeLeak,
   type ProbeResult,
+  type ProbeStepClass,
+  type ProbeStepOperation,
+  type ProbeStepRecord,
+  type ProbeStepTool,
   type ProbeTarget,
   type ProbeTargetId,
   probeTargetLabel,
@@ -74,6 +85,40 @@ export type StepClass =
   | 'denied-mode'
   | 'skipped'
   | 'unknown';
+
+// Compile-time checks (01-19): every evaluator operation, class and tool is a member of the
+// doctor report's enums, so a new value here fails the build until the report schema has it.
+const REPORT_OPERATION = {
+  cat: 'cat',
+  read: 'read',
+  grep: 'grep',
+  'read-symlink': 'read-symlink',
+  keychain: 'keychain',
+  append: 'append',
+  touch: 'touch',
+  write: 'write',
+  'read-before-edit': 'read-before-edit',
+  edit: 'edit',
+  'env-shape': 'env-shape',
+} as const satisfies { readonly [K in StepOperation]: K & ProbeStepOperation };
+
+const REPORT_CLASS = {
+  reached: 'reached',
+  'denied-rule': 'denied-rule',
+  'denied-os': 'denied-os',
+  'denied-block': 'denied-block',
+  'denied-mode': 'denied-mode',
+  skipped: 'skipped',
+  unknown: 'unknown',
+} as const satisfies { readonly [K in StepClass]: K & ProbeStepClass };
+
+const REPORT_TOOL = {
+  Bash: 'Bash',
+  Read: 'Read',
+  Grep: 'Grep',
+  Write: 'Write',
+  Edit: 'Edit',
+} as const satisfies { readonly [K in ProbeStep['tool']]: K & ProbeStepTool };
 
 /**
  * The outside-write block as the launched treatment had it: the working directories it confines
@@ -573,12 +618,17 @@ export function evaluateProbe(
     const writeTarget = plan.writeTargets.find((t) => t.id === id);
     const mode = probeTargetMode(id);
     const outsideRow = id === 'outside-workdir';
+    // The structured evidence every row carries (01-19); filled in below as it becomes known.
+    let fields: StructuredEvidence = { steps: [], leaks: [], trusted: false };
     const row = (result: ProbeResult, evidence: string): ProbeTarget => ({
       id,
       label: probeTargetLabel(id, options.hostName ?? 'Host'),
       mode,
       result,
       evidence: id === 'gh' ? `${evidence}; ${KEYCHAIN_NOTE}` : evidence,
+      steps: fields.steps,
+      leaks: fields.leaks,
+      trusted: fields.trusted,
     });
 
     if (skipped.has(id)) return row('not-checked', 'directory missing, so no canary was planted');
@@ -588,6 +638,35 @@ export function evaluateProbe(
       t,
       c: plan.control.steps.find((s) => s.index === t.index),
     }));
+    const env = id === 'credential-env' ? envListings(pairs, treatment, control) : null;
+
+    // Leaks, under exactly the conditions the verdict below uses (evidence only).
+    const leaks: ProbeLeak[] = [];
+    if (readTarget) {
+      const fileValues = plan.protectedCanaries
+        .filter((canary) => canary.dir === readTarget.path)
+        .map((canary) => canary.value);
+      if (fileValues.some((value) => treatmentRaw.includes(value))) leaks.push('file-canary');
+      if (
+        id === 'gh' &&
+        tSteps.some((s) => s.operation === 'keychain') &&
+        treatmentRaw.includes(plan.keychain.value)
+      ) {
+        leaks.push('keychain-canary');
+      }
+    }
+    if (
+      writeTarget &&
+      id !== 'git-config' &&
+      options.leftovers.some((path) => isInsideDir(path, writeTarget.path))
+    ) {
+      leaks.push('leftover');
+    }
+    if (env !== null && env.tFindings.size + env.cFindings.size > 0) {
+      leaks.push('credential-variable');
+    }
+    fields = { steps: [], leaks, trusted: false };
+
     if (
       tSteps.length === 0 ||
       pairs.some(
@@ -598,11 +677,19 @@ export function evaluateProbe(
       return row('not-checked', 'the treatment and control plans do not match step for step');
     }
 
-    if (id === 'credential-env') {
+    const steps: ProbeStepRecord[] = pairs.map(({ t, c }) => ({
+      index: t.index,
+      tool: REPORT_TOOL[t.tool],
+      operation: REPORT_OPERATION[t.operation],
+      treatment: REPORT_CLASS[tClass.get(t.index) ?? 'unknown'],
+      control: REPORT_CLASS[(c && cClass.get(c.index)) ?? 'unknown'],
+    }));
+    fields = { steps, leaks, trusted: baselineOk && !versionDistrust };
+
+    if (env !== null) {
       return credentialEnvRow(row, {
         pairs,
-        treatment,
-        control,
+        env,
         tClass,
         cClass,
         baselineOk,
@@ -690,10 +777,39 @@ export function evaluateProbe(
   });
 }
 
+/** The structured evidence fields of a row (01-19). */
+interface StructuredEvidence {
+  steps: ProbeStepRecord[];
+  leaks: ProbeLeak[];
+  trusted: boolean;
+}
+
+/** The credential-env row's parsed listings and unexcepted findings, per session. */
+interface EnvListings {
+  tListings: EnvListing[];
+  cListings: EnvListing[];
+  tFindings: ReadonlySet<string>;
+  cFindings: ReadonlySet<string>;
+}
+
+function envListings(
+  pairs: ReadonlyArray<{ t: ProbeStep; c: ProbeStep | undefined }>,
+  treatment: readonly StreamEvent[],
+  control: readonly StreamEvent[],
+): EnvListings {
+  const tListings = pairs.flatMap(({ t }) => stepListings(t, treatment));
+  const cListings = pairs.flatMap(({ c }) => (c ? stepListings(c, control) : []));
+  return {
+    tListings,
+    cListings,
+    tFindings: new Set(tListings.flatMap((l) => unexceptedFindings(l.entries))),
+    cFindings: new Set(cListings.flatMap((l) => unexceptedFindings(l.entries))),
+  };
+}
+
 interface CredentialEnvInput {
   pairs: ReadonlyArray<{ t: ProbeStep; c: ProbeStep | undefined }>;
-  treatment: readonly StreamEvent[];
-  control: readonly StreamEvent[];
+  env: EnvListings;
   tClass: ReadonlyMap<number, StepClass>;
   cClass: ReadonlyMap<number, StepClass>;
   baselineOk: boolean;
@@ -713,12 +829,9 @@ function credentialEnvRow(
   row: (result: ProbeResult, evidence: string) => ProbeTarget,
   input: CredentialEnvInput,
 ): ProbeTarget {
-  const tListings = input.pairs.flatMap(({ t }) => stepListings(t, input.treatment));
-  const cListings = input.pairs.flatMap(({ c }) => (c ? stepListings(c, input.control) : []));
+  const { tListings, cListings, tFindings, cFindings } = input.env;
 
   // Reachable: any unexcepted credential-shaped entry in either session, tagged by session.
-  const tFindings = new Set(tListings.flatMap((l) => unexceptedFindings(l.entries)));
-  const cFindings = new Set(cListings.flatMap((l) => unexceptedFindings(l.entries)));
   const findings = [...new Set([...tFindings, ...cFindings])];
   if (findings.length > 0) {
     const tagged = findings.map((finding) => {

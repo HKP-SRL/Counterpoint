@@ -6,12 +6,19 @@
 // O_NOFOLLOW (a symlink planted in its place is refused), must be a regular file of bounded size,
 // and must parse as the `counterpoint/doctor/v1` schema for this host; anything else is reported
 // as `unreadable`, never as a verdict.
+//
+// The verdict is three-way (01-19): `pass`, `accepted-risk` or `fail`. The owner's accepted-risk
+// record is read on every request (an unreadable record counts as none), so a
+// `counterpoint revoke-risk` applies at once without a doctor rerun; `acceptedRisks` lists the
+// entries that applied to this report. The route only reads: nothing here writes the record.
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { hostDir } from '../../core/host/home.ts';
 import { HOST_ID_RE } from '../../core/ids.ts';
+import { readAcceptedRisks } from '../../core/security/accepted-risks.ts';
 import {
+  appliedAcceptedRisks,
   type DoctorReport,
   DoctorReport as DoctorReportSchema,
   isReportStale,
@@ -84,10 +91,21 @@ export function mountTrustRoutes(app: Hono, options: TrustRoutesOptions): void {
     const result = readDoctorReport(options.home, hostId);
     if (result.kind === 'absent') return c.json({ report: null });
     if (result.kind === 'unreadable') return c.json({ report: null, error: 'unreadable' });
+    const accepted = readAcceptedRisks(options.home);
+    const recorded = accepted.ok ? accepted.risks : [];
     return c.json({
       report: result.report,
       stale: isReportStale(result.report, now()),
-      verdict: reportVerdict(result.report),
+      verdict: reportVerdict(result.report, recorded),
+      acceptedRisks: appliedAcceptedRisks(result.report, recorded).map(
+        ({ id, target, subStep, reason, recordedAt }) => ({
+          id,
+          target,
+          subStep,
+          reason,
+          recordedAt,
+        }),
+      ),
     });
   });
 }

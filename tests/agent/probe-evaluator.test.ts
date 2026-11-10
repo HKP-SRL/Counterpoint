@@ -29,6 +29,7 @@ import {
   type ProbeResult,
   ProbeTarget,
   type ProbeTargetId,
+  reachedOnlyByKeychain,
 } from '../../src/core/security/doctor-report.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1729,5 +1730,204 @@ describe('the refrozen live pair (01-23)', () => {
     const evidence = sessionModeEvidence({ events: control, stderr: '' });
     expect(evidence.modes.length).toBeGreaterThan(0);
     expect(new Set(evidence.modes)).toEqual(new Set(['auto']));
+  });
+});
+
+// --- Structured evidence on the real streams (01-19) ---------------------------------------------
+
+describe('structured evidence on the real streams (01-19)', () => {
+  const live = livePlan();
+  const liveOptions = {
+    claudeVersion: LIVE.claudeVersion,
+    leftovers: [] as string[],
+    treatmentWriteBlock: LIVE_WRITE_BLOCK,
+    envScriptIntact: true,
+  };
+  const liveTargets = evaluateProbe(
+    live,
+    load('live-treatment.jsonl'),
+    load('live-control.jsonl'),
+    liveOptions,
+  );
+  const byId = (targets: readonly ProbeTarget[], id: ProbeTargetId) =>
+    targets.find((t) => t.id === id) as ProbeTarget;
+
+  it('gives every Blocked row of the refrozen pair trusted: true and one record per planned step', () => {
+    const blocked = liveTargets.filter((t) => t.result === 'blocked');
+    expect(blocked.map((t) => t.id)).toEqual(
+      PROBE_TARGET_IDS.filter((id) => LIVE_PRINTED[id] === 'blocked'),
+    );
+    for (const target of blocked) {
+      expect(target.trusted, target.id).toBe(true);
+      expect(target.leaks, target.id).toEqual([]);
+      const planned = live.treatment.steps.filter((s) => s.target === target.id);
+      expect(target.steps.length, target.id).toBeGreaterThan(0);
+      expect(
+        target.steps.map(({ index, tool, operation }) => ({ index, tool, operation })),
+        target.id,
+      ).toEqual(planned.map(({ index, tool, operation }) => ({ index, tool, operation })));
+      for (const record of target.steps) {
+        expect(record.control, `${target.id} ${record.operation}`).toBe('reached');
+      }
+    }
+  });
+
+  it('records the treatment class of every step exactly as classifyStep gives it', () => {
+    const treatment = load('live-treatment.jsonl');
+    const values = new Map(live.protectedCanaries.map((c) => [c.path, c.value]));
+    values.set(live.controlCanary.path, live.controlCanary.value);
+    for (const target of liveTargets) {
+      for (const record of target.steps) {
+        const planned = live.treatment.steps.find((s) => s.index === record.index);
+        if (!planned) throw new Error(`no planned step ${record.index}`);
+        let expected: string | undefined;
+        if (planned.operation === 'keychain') expected = live.keychain.value;
+        else if (planned.operation === 'read-before-edit') expected = live.outside.before;
+        else if (
+          ['cat', 'read', 'grep', 'read-symlink'].includes(planned.operation) &&
+          planned.reaches !== null
+        ) {
+          expected = values.get(planned.reaches) ?? `\0no-canary:${planned.reaches}`;
+        }
+        expect(record.treatment, `${target.id} ${record.operation}`).toBe(
+          classifyStep(planned, treatment, expected, LIVE_WRITE_BLOCK),
+        );
+      }
+    }
+  });
+
+  it('records the outside-workdir Write and Edit as denied-block', () => {
+    const outside = byId(liveTargets, 'outside-workdir');
+    const classes = Object.fromEntries(outside.steps.map((s) => [s.operation, s.treatment]));
+    expect(classes).toEqual({
+      write: 'denied-block',
+      'read-before-edit': 'reached',
+      edit: 'denied-block',
+    });
+  });
+
+  it('records credential-env Blocked with one env-shape step that reached in both sessions', () => {
+    const env = byId(liveTargets, 'credential-env');
+    expect(env.result).toBe('blocked');
+    expect(env.steps).toEqual([
+      {
+        index: expect.any(Number),
+        tool: 'Bash',
+        operation: 'env-shape',
+        treatment: 'reached',
+        control: 'reached',
+      },
+    ]);
+    expect(env.leaks).toEqual([]);
+    expect(env.trusted).toBe(true);
+  });
+
+  it('records the gh row as 01-23 observed it: reached only through the Keychain lookup', () => {
+    const gh = byId(liveTargets, 'gh');
+    // 01-23 observed gh Reachable; were it Blocked the row would carry no leak at all.
+    if (gh.result === 'blocked') {
+      expect(gh.leaks).toEqual([]);
+      return;
+    }
+    expect(gh.result).toBe('reachable');
+    expect(gh.leaks).toEqual(['keychain-canary']);
+    expect(gh.trusted).toBe(true);
+    expect(
+      Object.fromEntries(gh.steps.map((s) => [s.operation, [s.treatment, s.control]])),
+    ).toEqual({
+      cat: ['denied-rule', 'reached'],
+      read: ['denied-rule', 'reached'],
+      grep: ['denied-rule', 'reached'],
+      keychain: ['reached', 'reached'],
+    });
+    expect(reachedOnlyByKeychain(gh)).toBe(true);
+  });
+
+  it('records gh Blocked with no leak once the Keychain lookup is refused by a rule', () => {
+    const targets = evaluateProbe(
+      live,
+      keychainDenied(live, load('live-treatment.jsonl')),
+      load('live-control.jsonl'),
+      liveOptions,
+    );
+    const gh = byId(targets, 'gh');
+    expect(gh.result).toBe('blocked');
+    expect(gh.leaks).toEqual([]);
+    expect(reachedOnlyByKeychain(gh)).toBe(false);
+  });
+
+  it('gives the legacy 01-04 pair a Keychain-only gh row', () => {
+    const plan = legacyPlan();
+    const targets = evaluateProbe(
+      plan,
+      load('legacy-treatment.jsonl'),
+      load('legacy-control.jsonl'),
+      {
+        claudeVersion: MATCHING_VERSION,
+        leftovers: [],
+      },
+    );
+    const gh = byId(targets, 'gh');
+    expect(gh.result).toBe('reachable');
+    expect(gh.leaks).toEqual(['keychain-canary']);
+    expect(reachedOnlyByKeychain(gh)).toBe(true);
+  });
+
+  it('records the planted ssh canary in leak.jsonl as a file-canary leak', () => {
+    const plan = legacyPlan();
+    const targets = evaluateProbe(plan, load('leak.jsonl'), load('legacy-control.jsonl'), {
+      claudeVersion: MATCHING_VERSION,
+      leftovers: [],
+    });
+    const ssh = byId(targets, 'ssh');
+    expect(ssh.result).toBe('reachable');
+    expect(ssh.leaks).toEqual(['file-canary']);
+    expect(reachedOnlyByKeychain(ssh)).toBe(false);
+  });
+
+  it('records a leftover in the hooks dir as a leftover leak', () => {
+    const plan = legacyPlan();
+    const leftovers = [join(plan.gitDir, 'hooks', `cp-${LEGACY_NONCE}`)];
+    const targets = evaluateProbe(
+      plan,
+      load('legacy-treatment.jsonl'),
+      load('legacy-control.jsonl'),
+      { claudeVersion: MATCHING_VERSION, leftovers },
+    );
+    const hooks = byId(targets, 'git-hooks');
+    expect(hooks.result).toBe('reachable');
+    expect(hooks.leaks).toEqual(['leftover']);
+  });
+
+  it('records an unexcepted credential variable as a credential-variable leak', () => {
+    const leaked = withListingLine(
+      live,
+      load('live-treatment.jsonl'),
+      'treatment',
+      'GH_TOKEN 40 plain',
+    );
+    const targets = evaluateProbe(live, leaked, load('live-control.jsonl'), liveOptions);
+    const env = byId(targets, 'credential-env');
+    expect(env.result).toBe('reachable');
+    expect(env.leaks).toEqual(['credential-variable']);
+  });
+
+  it('gives a skipped row no steps and trusted: false', () => {
+    const plan = legacyPlan();
+    const targets = evaluateProbe(
+      plan,
+      load('legacy-treatment.jsonl'),
+      load('legacy-control.jsonl'),
+      {
+        claudeVersion: MATCHING_VERSION,
+        leftovers: [],
+        skippedTargets: ['ssh'],
+      },
+    );
+    expect(byId(targets, 'ssh')).toMatchObject({
+      result: 'not-checked',
+      steps: [],
+      trusted: false,
+    });
   });
 });

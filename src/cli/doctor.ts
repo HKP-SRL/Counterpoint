@@ -1,7 +1,8 @@
 // `counterpoint doctor [host]`: picks the host, runs every check (src/doctor/run.ts), prints the
 // grouped report, writes hosts/{id}/doctor.json and nudges a running daemon so the console's
 // Trust page refreshes. Exit 0 only when every check passes, the Sandbox isolation settings
-// check (01-25) included.
+// check (01-25) included, or when the only exception is the owner's accepted risk gh-keychain
+// (01-19), which covers a gh row reached through the Keychain lookup alone.
 import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { TrustResult } from '../core/approvals/trust-store.ts';
@@ -11,7 +12,7 @@ import { listHosts, openStoreReadOnly, stateDbPath } from '../core/store/db.ts';
 import { type DoctorProbe, formatDoctorReport, runDoctor } from '../doctor/run.ts';
 import type { SettingsSourceLocations } from '../doctor/settings-sources.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
-import { type HostLookup, lookupHost } from './trust.ts';
+import { type HostLookup, lookupHost, printable } from './trust.ts';
 
 const NO_PROJECT = 'No project registered yet. Run counterpoint inside it first.';
 
@@ -102,7 +103,7 @@ export async function doctorCommand(
   out(
     `Checking ${host.id}. The sandbox probe runs two short claude sessions (haiku); this takes about a minute.`,
   );
-  const { report, reportPath } = await runDoctor({
+  const { report, reportPath, recordedRisks, acceptedRisksProblem } = await runDoctor({
     home,
     host,
     ...(options.probe === undefined ? {} : { probe: options.probe }),
@@ -116,7 +117,13 @@ export async function doctorCommand(
       : { settingsLocations: options.settingsLocations }),
   });
   out('');
-  for (const line of formatDoctorReport(report)) out(line);
+  if (acceptedRisksProblem !== null) {
+    out(
+      `Couldn't read your accepted-risk record (${printable(acceptedRisksProblem)}); it was ignored.`,
+    );
+    out('');
+  }
+  for (const line of formatDoctorReport(report, recordedRisks)) out(line);
   out('');
   out(`Report: ${reportPath}`);
 
@@ -126,5 +133,7 @@ export async function doctorCommand(
   } catch {
     // The console picks the report up on its next load; a missed nudge changes nothing.
   }
-  return reportVerdict(report) === 'pass' ? 0 : 1;
+  // `accepted-risk` passes: every check passed and gh was reached only through the Keychain
+  // lookup the owner's record, still in force, accepts.
+  return reportVerdict(report, recordedRisks) === 'fail' ? 1 : 0;
 }
