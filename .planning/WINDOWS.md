@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 1
-waived_count: 1
+open_count: 0
+waived_count: 2
 fixed_count: 2
 total_count: 4
-last_updated: 2026-11-10T15:06:05.465Z
+last_updated: 2026-11-10T15:46:36.014Z
 ---
 
 # Broken Windows Ledger
@@ -15,7 +15,7 @@ last_updated: 2026-11-10T15:06:05.465Z
 
 | id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |
 |----|-------|------|------|------|-------------|--------|--------|-------------|-------------|
-| 1 | 01 | unmet-truth | src/agent/probe.ts |  | Live probe on claude 2.1.319/macOS: a temporary Keychain canary item was readable from sandboxed agent Bash (RESEARCH A5 false); gh keyring credentials are reachable by agents until the owner chooses a remediation | open |  | 2026-11-09T16:49:49.183Z |  |
+| 1 | 01 | unmet-truth | src/agent/probe.ts |  | Live probe on claude 2.1.319/macOS: a temporary Keychain canary item was readable from sandboxed agent Bash (RESEARCH A5 false); gh keyring credentials are reachable by agents until the owner chooses a remediation | waived | Owner accepted it, per the STATE.md [Owner] decision 'Keychain reachability (WINDOWS.md #1) accepted and documented; doctor gets an explicit recorded exception for the gh credentials row': sandboxed agent Bash can read macOS Keychain items, so gh keyring credentials are reachable by agents. Recorded per machine with counterpoint accept-risk gh-keychain (terminal only, revocable); doctor shows it on every run and applies it only when the Keychain lookup is the only reached gh step (01-19, 01-20). | 2026-11-09T16:49:49.183Z | 2026-11-10T15:46:36.014Z |
 | 2 | 01 | unmet-truth | src/core/security/sandbox-settings.ts |  | Live check on claude 2.1.319 (01-05): agent Write and Edit tools succeeded on an unprotected path outside the session cwd (allowWrite: [] confines only Bash). Any user-writable file not under a deny rule (for example ~/.claude/settings.json, shell rc files) is writable by agents; owner decision needed (Edit deny or allow-only-workdir rules) | fixed |  | 2026-11-09T17:06:48.604Z | 2026-11-10T15:06:05.214Z |
 | 3 | 01 | unmet-truth | src/core/security/agent-env.ts |  | claude 2.1.321: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forces --permission-mode auto down to default; agent sessions do not run in the owner's chosen auto mode (01-21 evidence) | fixed |  | 2026-11-10T09:56:10.770Z | 2026-11-10T15:06:05.465Z |
 | 4 | 01 | unmet-truth | src/agent/env-listing.ts |  | claude 2.1.321: sandboxed Bash commands see 12 sandbox proxy variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and others) whose values hold a user:password login for a loopback host, likely the sandbox network proxy's own per-session login, and the gcloud proxy password CLOUDSDK_PROXY_PASSWORD beside a loopback CLOUDSDK_PROXY_ADDRESS, which Claude Code sets after the launch profile's deny entries apply (01-26 listings; names and shapes only) | waived | Owner accepted it, per the STATE.md [Owner] decisions 'Credential-env row scoped to the real requirement' and 'CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception' (both 2026-11-10): the proxy URLs' host and CLOUDSDK_PROXY_ADDRESS are loopback addresses, so they are recorded as the named exception sandbox-proxy-login ('the sandbox's own proxy login, local only', like the Keychain one). The credential-env row applies it only to the twelve proxy URL names with url-userinfo shape and a loopback host, and to CLOUDSDK_PROXY_PASSWORD only beside a loopback CLOUDSDK_PROXY_ADDRESS; it names the exception in its evidence and the report's exceptions field on every run, and fails on a non-loopback proxy host or address (01-26). | 2026-11-10T14:26:25.539Z | 2026-11-10T14:26:33.990Z |
@@ -29,10 +29,10 @@ last_updated: 2026-11-10T15:06:05.465Z
     "file": "src/agent/probe.ts",
     "line": null,
     "description": "Live probe on claude 2.1.319/macOS: a temporary Keychain canary item was readable from sandboxed agent Bash (RESEARCH A5 false); gh keyring credentials are reachable by agents until the owner chooses a remediation",
-    "status": "open",
-    "reason": "",
+    "status": "waived",
+    "reason": "Owner accepted it, per the STATE.md [Owner] decision 'Keychain reachability (WINDOWS.md #1) accepted and documented; doctor gets an explicit recorded exception for the gh credentials row': sandboxed agent Bash can read macOS Keychain items, so gh keyring credentials are reachable by agents. Recorded per machine with counterpoint accept-risk gh-keychain (terminal only, revocable); doctor shows it on every run and applies it only when the Keychain lookup is the only reached gh step (01-19, 01-20).",
     "recorded_at": "2026-11-09T16:49:49.183Z",
-    "resolved_at": null,
+    "resolved_at": "2026-11-10T15:46:36.014Z",
     "milestone": null
   },
   {
