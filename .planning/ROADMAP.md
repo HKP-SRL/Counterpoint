@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 23/24 plans executed
+**Plans**: 24/24 plans executed
 
 Plans:
 **Wave 1**
@@ -93,7 +93,7 @@ Plans:
 - [x] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 17)*
 
 **Wave 18** *(blocked on Wave 17 completion)*
-- [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena (the first doctor run over the owner's real settings sources) *(wave 18)*
+- [x] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena (the first doctor run over the owner's real settings sources) *(wave 18)*
 
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
@@ -180,7 +180,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 23/24 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 24/24 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
