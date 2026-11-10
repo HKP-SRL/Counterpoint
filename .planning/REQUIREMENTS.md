@@ -9,7 +9,7 @@ Requirements for the first milestone. Each maps to roadmap phases.
 
 ### Foundations & Safety
 
-- [ ] **FOUND-01**: Owner can start Counterpoint for a host project with one command (`npx @hkp/counterpoint`) and open its console at a loopback-only URL
+- [ ] **FOUND-01**: Owner can start Counterpoint for a host project with one command (`counterpoint`, installed from the local tarball; `npx @hkp/counterpoint` arrives with the public release, PLAT-V2-02) and open its console at a loopback-only URL
 - [x] **FOUND-02**: Console rejects requests from unexpected hosts/origins (Host + Origin allowlist, CSRF protection, SSE origin check), and privileged actions (start/stop a run, approvals) require an owner credential agents cannot read
 - [ ] **FOUND-03**: Owner can run `counterpoint doctor` to see pass/fail for: `claude`, `git`, `gh` present; signing key passphrase-protected and not loaded in ssh-agent/Keychain; sandbox actually confining headless `claude -p` sessions
 - [ ] **FOUND-04**: Agent sessions run sandboxed so they cannot read the signing key, `~/.ssh`, `gh` credentials or Counterpoint's state, and cannot write the host's shared `.git/config`, `.git/hooks` or `.git/info`

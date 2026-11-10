@@ -15,7 +15,7 @@ requires:
 provides:
   - "tsdown.config.ts: src/cli/main.ts bundled to dist/cli.mjs (ESM, node24, shebang, clean:false, nothing from node_modules bundled)"
   - "package.json scripts clean, build:node, build (lint, typecheck, clean, bundle, UI) and pack:local"
-  - "@hkp/counterpoint 0.1.0 installed globally from the local tarball under the Dock npm prefix; npx --no @hkp/counterpoint resolves it"
+  - "@hkp/counterpoint 0.1.0 installed globally from the local tarball under the Dock npm prefix; the installed `counterpoint` bin starts it (corrected 2026-11-10: `npx @hkp/counterpoint` does not resolve it outside the Counterpoint repo, see Correction)"
   - "COUNTERPOINT_HOME exported in ~/.zshrc, home created on /Volumes/Dock (mode 700)"
   - "scripts/host-phases.ts: read-only `{id} {status}` listing of a host's phases at its base tip"
   - "the owner's end-of-phase demo checklist, adjusted for Cena's real Phase 2"
@@ -42,7 +42,7 @@ key-files:
     - package.json
 
 key-decisions:
-  - "Global install from the tarball (`npm install -g --ignore-scripts`) was enough for `npx --no @hkp/counterpoint`; the `npm link` fallback was not needed"
+  - "Global install from the tarball (`npm install -g --ignore-scripts`) gives a working `counterpoint` bin; `npx --no @hkp/counterpoint` only resolved because the check ran inside the Counterpoint repo (see Correction), and `npm link` would not change that"
   - "The readiness script derives status without the runway overlay (it reads no approvals), which is the pre-approval state the plan asks to confirm"
 
 patterns-established:
@@ -60,7 +60,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: "`npx @hkp/counterpoint` resolves the globally installed 0.1.0 under /Volumes/Dock; COUNTERPOINT_HOME is set and exists with mode 700"
+    description: "The globally installed `counterpoint` 0.1.0 under /Volumes/Dock runs from any directory (npx does not resolve it, see Correction); COUNTERPOINT_HOME is set and exists with mode 700"
     requirement: FOUND-03
     verification:
       - kind: manual_procedural
@@ -90,7 +90,7 @@ status: complete
 
 # Phase 01 Plan 16: Ship to the Owner's Machine and the Cena Readiness Check Summary
 
-**@hkp/counterpoint 0.1.0 is bundled by tsdown, packed as a local tarball and installed globally under the Dock npm prefix, so `npx @hkp/counterpoint` works with no publishing. A read-only script confirms Cena master's Phase 02 is Ready to approve (01 and 01.1 Built). The signed end-to-end demo is the owner's, listed below.**
+**@hkp/counterpoint 0.1.0 is bundled by tsdown, packed as a local tarball and installed globally under the Dock npm prefix, so the `counterpoint` command works with no publishing (`npx @hkp/counterpoint` does not, see Correction). A read-only script confirms Cena master's Phase 02 is Ready to approve (01 and 01.1 Built). The signed end-to-end demo is the owner's, listed below.**
 
 ## Performance
 
@@ -104,7 +104,7 @@ status: complete
 
 - `pnpm build` now runs `pnpm lint` first, so the Biome boundary rule (core must not import an adapter) fails the build (ROADMAP SC3). It then runs typecheck, clean, `tsdown` to `dist/cli.mjs` and Vite to `dist/ui`.
 - Local tarball `.tmp/pack/hkp-counterpoint-0.1.0.tgz` contains only `package/package.json` and `package/dist/...`, including `dist/cli.mjs` and `dist/ui/index.html`. tsdown splits the CLI into `dist/cli.mjs` plus `app-*.mjs` and `daemon-*.mjs` chunks, all under `dist/`.
-- Installed on the owner's machine (owner decision "option A", run by the owner): `counterpoint` is at `/Volumes/Dock/Dev/nvm/versions/node/v24.21.0/bin/counterpoint`. `npx --no @hkp/counterpoint -- --version` prints `0.1.0`; the global install resolved, so no `npm link` was needed.
+- Installed on the owner's machine (owner decision "option A", run by the owner): `counterpoint` is at `/Volumes/Dock/Dev/nvm/versions/node/v24.21.0/bin/counterpoint`. `counterpoint --version` prints `0.1.0`. (The `npx --no @hkp/counterpoint -- --version` check that printed `0.1.0` ran inside the Counterpoint repo and is void, see Correction.)
 - `~/.zshrc` has exactly one line `export COUNTERPOINT_HOME="/Volumes/Dock/Dev/Library/Application Support/Counterpoint"` (backup `~/.zshrc.counterpoint-bak`). The home exists with mode 700.
 - Owner's Task 2 is done (verified read-only by the orchestrator): `~/.ssh/counterpoint_approval.pub` exists, `$COUNTERPOINT_HOME/trust/key.json` exists, and Cena master has Phase 02's CONTEXT and 02-01..02-13 PLAN files.
 - `scripts/host-phases.ts` against Cena master printed:
@@ -186,7 +186,7 @@ Done by the owner: the approval key, `trust-key`, and Cena Phase 2 planned on ma
 
 Run every step in your own terminal. The executor ran none of these (T-01-60).
 
-1. **Start and sign in.** In a new terminal, `cd /Volumes/Dock/Projects/HKP/Cena` and run `npx @hkp/counterpoint`.
+1. **Start and sign in.** In a new terminal, `cd /Volumes/Dock/Projects/HKP/Cena` and run `counterpoint` (not `npx @hkp/counterpoint`, see Correction).
    - It registers `cena` (base `master`), prints the console URL and a one-time sign-in link, and opens it.
    - Mission shows Cena with runway 0.
    - `counterpoint status` prints `cena  running on 127.0.0.1:4170`.
@@ -242,3 +242,7 @@ Phase 1's code is complete. Phase 1 is signed off when the owner finishes the de
 ## Self-Check: PASSED
 
 Files present: tsdown.config.ts, package.json, scripts/host-phases.ts, this SUMMARY. Commits on HEAD: f9267b1, 9abe18c.
+
+## Correction (2026-11-10, after the owner demo and phase verification)
+
+`npx @hkp/counterpoint` fails from Cena and from any directory outside the Counterpoint repo with npm `E404`: npm 12.2.0 npx does not consult the global tree for this unpublished scoped package and queries the registry. The earlier `npx --no @hkp/counterpoint -- --version` check passed only because its cwd was the Counterpoint repo, whose root package is itself `@hkp/counterpoint`. The installed `counterpoint` bin works and ran the whole owner demo. Owner decision (STATE.md [Owner] 2026-11-10): the installed `counterpoint` command satisfies FOUND-01 until the public release (PLAT-V2-02); REQUIREMENTS.md FOUND-01 and ROADMAP Phase 1 SC1 are reworded to match, and 01-VERIFICATION.md records the override.
