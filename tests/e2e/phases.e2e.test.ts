@@ -61,6 +61,8 @@ const PROBE = [
   ['git-info', '.git/info', 'write'],
   // 01-17: the eighth target. The Trust page lists it from 01-18; until then 7 rows show Blocked.
   ['outside-workdir', 'Files outside the working folder', 'write'],
+  // 01-26: the ninth target (replacement 3 for the scrub opt-out). The Trust page lists it in 01-22.
+  ['credential-env', 'Credentials in the shell environment', 'read'],
 ] as const;
 
 function doctorReport(
