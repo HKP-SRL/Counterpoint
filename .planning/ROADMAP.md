@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 16/20 plans executed
+**Plans**: 16/22 plans executed
 
 Plans:
 **Wave 1**
@@ -72,16 +72,23 @@ Plans:
 - [x] 01-17-PLAN.md — Gap (WINDOWS.md #2) 1/2: confine agent Write/Edit to the session folder in the one launch profile; probe row `Files outside the working folder` through evaluator and doctor *(wave 10)*
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- [ ] 01-18-PLAN.md — Gap (WINDOWS.md #2) 2/2: one live probe proves the row Blocked; refrozen fixtures; #2 fixed; the row on the Trust page *(wave 11)*
+- ~~01-18-PLAN.md~~ — superseded (`status: superseded`): halted at its live tracer on claude 2.1.321 (the scrub forced dontAsk to default); the owner chose auto mode; work moved to 01-21…01-23
+- [ ] 01-21-PLAN.md — Gap (auto mode, WINDOWS.md #2) 1/3: launch profile in `--permission-mode auto` with `blockWritesOutsideWorkingDirectories`; control covered by explicit allow rules; live launch tracer; evaluator counts only deterministic refusals (MATCHER_REVISION 3) *(wave 11)*
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 12)*
+- [ ] 01-22-PLAN.md — Gap 2/3: doctor checks the agent session's effective permission mode (`agentMode`, additive v1 field); the Trust page shows it, the eighth probe row and the new all-pass wording; UI-SPEC E8 *(wave 12)*
 
 **Wave 13** *(blocked on Wave 12 completion)*
-- [ ] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 13)*
+- [ ] 01-23-PLAN.md — Gap 3/3: one live eight-row proof in auto mode; refrozen fixtures; matcher version; WINDOWS.md #2 fixed *(wave 13)*
 
 **Wave 14** *(blocked on Wave 13 completion)*
-- [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena *(wave 14)*
+- [ ] 01-19-PLAN.md — Gap (WINDOWS.md #1) 1/2: structured probe evidence; owner-recorded `gh-keychain` accepted risk (`counterpoint accept-risk` / `revoke-risk`); three-way verdict in doctor and the Trust API *(wave 14)*
+
+**Wave 15** *(blocked on Wave 14 completion)*
+- [ ] 01-20-PLAN.md — Gap (WINDOWS.md #1) 2/2: the accepted risk on the Trust page and Mission card; UI contract; one live doctor proof; #1 waived *(wave 15)*
+
+**Wave 16** *(blocked on Wave 15 completion)*
+- [ ] 01-16-PLAN.md — Package and install `@hkp/counterpoint` (lint on the build path); owner key + Cena Phase 2 plan; owner-run demo and first real approval on Cena *(wave 16)*
 
 **Cross-cutting constraints:** <!-- gsd:generated -->
 - E8 populated: Verdict Banner, then Tools, Signing key and Sandbox probe tables; tool/key rows read `Pass`/`Fail`, probe rows read `Blocked`/`Reachable`, each with icon plus word
@@ -171,7 +178,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 16/20 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 16/22 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
