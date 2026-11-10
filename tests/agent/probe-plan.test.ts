@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildControlSettings,
   buildProbeLaunch,
+  controlTools,
   type KeychainPort,
   type ProbeLaunch,
   type ProbePlan,
@@ -30,6 +31,7 @@ import {
   type AgentSettings,
   buildAgentSandboxSettings,
   type ProtectedPaths,
+  pathRule,
 } from '../../src/core/security/sandbox-settings.ts';
 import { initScratchRepo, makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 
@@ -121,6 +123,8 @@ function overGranted(): AgentSettings {
       deny: [...real.permissions.deny],
       allow: [`Read(/${gitDir}/**)`, `Edit(/${gitDir}/**)`],
       additionalDirectories: [gitDir],
+      // A restriction, not a grant: the over-granted input keeps the real profile's block.
+      blockWritesOutsideWorkingDirectories: real.permissions.blockWritesOutsideWorkingDirectories,
     },
     sandbox: {
       ...real.sandbox,
@@ -170,10 +174,24 @@ function entryPath(entry: string): string | null {
   return null;
 }
 
-function assertConfined(session: { settings: AgentSettings; argv: readonly string[] }): void {
+/** The exact `Bash(<command>)` rule of every control Bash step. */
+function controlBashRules(p: ProbePlan): string[] {
+  return p.control.steps
+    .filter((step) => step.tool === 'Bash')
+    .map((step) => `Bash(${step.command as string})`);
+}
+
+function assertConfined(
+  session: { settings: AgentSettings; argv: readonly string[] },
+  p: ProbePlan = plan(),
+): void {
   const { settings } = session;
   expect(Object.keys(settings).sort()).toEqual(['permissions', 'sandbox']);
-  expect(Object.keys(settings.permissions).sort()).toEqual(['allow', 'deny']);
+  expect(Object.keys(settings.permissions).sort()).toEqual([
+    'allow',
+    'blockWritesOutsideWorkingDirectories',
+    'deny',
+  ]);
   expect(Object.keys(settings.sandbox).sort()).toEqual([
     'allowUnsandboxedCommands',
     'enabled',
@@ -189,15 +207,23 @@ function assertConfined(session: { settings: AgentSettings; argv: readonly strin
 
   const entries = allowSurface(session);
   expect(entries.length).toBeGreaterThan(0);
+  const bashRules = controlBashRules(p);
+  const exactFiles = [p.controlCanary.path, p.symlinks.control.path];
   for (const entry of entries) {
-    const path = entryPath(entry);
-    if (path === null) {
-      expect(entry).toBe('Bash');
+    // A Bash entry must be the exact command of one of the control's own Bash steps; a bare
+    // `Bash`, `Bash(*)` or any other command fails.
+    if (entry === 'Bash' || entry.startsWith('Bash(')) {
+      expect(bashRules, `${entry} is a control step's exact command`).toContain(entry);
       continue;
     }
-    expect(inside(realOrSelf(path), realOrSelf(mirrorRoot)), `${entry} is inside the mirror`).toBe(
-      true,
-    );
+    const path = entryPath(entry);
+    expect(path, `${entry} names a path`).not.toBeNull();
+    if (path === null) continue;
+    const exactFile = /^Read\(\/\/[^*]*\)$/.test(entry) && exactFiles.includes(path);
+    expect(
+      exactFile || inside(realOrSelf(path), realOrSelf(mirrorRoot)),
+      `${entry} is inside the mirror, or exactly the control canary or symlink`,
+    ).toBe(true);
     for (const dir of protectedDirs) {
       expect(overlaps(path, dir), `${entry} overlaps ${dir}`).toBe(false);
     }
@@ -476,13 +502,53 @@ describe('buildControlSettings', () => {
     expect(control.sandbox.allowUnsandboxedCommands).toBe(false);
   });
 
-  it('replaces the allow side with mirror-only rules', () => {
-    const control = buildControlSettings(buildAgentSandboxSettings(paths).settings, plan());
+  it('replaces the allow side with probe-owned rules only', () => {
+    const p = plan();
+    const control = buildControlSettings(buildAgentSandboxSettings(paths).settings, p);
     expect(control.permissions.allow).toEqual([
       `Read(/${mirrorRoot}/**)`,
       `Edit(/${mirrorRoot}/**)`,
+      `Read(/${p.controlCanary.path})`,
+      `Read(/${p.symlinks.control.path})`,
+      ...controlBashRules(p),
     ]);
     expect(control.sandbox.filesystem.allowWrite).toEqual([mirrorRoot]);
+  });
+
+  it('covers every control step with an explicit allow rule', () => {
+    const p = plan();
+    const allow = buildControlSettings(buildAgentSandboxSettings(paths).settings, p).permissions
+      .allow as string[];
+    expect(p.control.steps.length).toBeGreaterThan(0);
+    for (const step of p.control.steps) {
+      const path = step.path as string;
+      if (step.tool === 'Bash') {
+        expect(step.command).toBeDefined();
+        expect(allow, `step ${step.index}`).toContain(`Bash(${step.command as string})`);
+      } else if (step.tool === 'Read') {
+        const exact = path === p.controlCanary.path || path === p.symlinks.control.path;
+        expect(exact || inside(path, mirrorRoot), `step ${step.index} ${path}`).toBe(true);
+        expect(
+          allow.includes(`Read(/${path})`) ||
+            (inside(path, mirrorRoot) && allow.includes(pathRule('Read', mirrorRoot))),
+          `step ${step.index} has a Read rule`,
+        ).toBe(true);
+      } else {
+        // Grep, Write and Edit steps act inside the mirror only.
+        expect(inside(path, mirrorRoot), `step ${step.index} ${path}`).toBe(true);
+        const rule = step.tool === 'Grep' ? null : pathRule('Edit', mirrorRoot);
+        if (rule !== null) expect(allow).toContain(rule);
+      }
+    }
+    // The Grep steps are covered by the mirror Grep entry on --allowedTools.
+    expect(controlTools(p)).toEqual([pathRule('Grep', mirrorRoot)]);
+  });
+
+  it('copies blockWritesOutsideWorkingDirectories: true from the treatment', () => {
+    const treatment = buildAgentSandboxSettings(paths).settings;
+    expect(treatment.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
+    const control = buildControlSettings(treatment, plan());
+    expect(control.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
   });
 
   it('inherits nothing from an over-granted treatment input', () => {
@@ -538,14 +604,11 @@ describe('buildProbeLaunch', () => {
     }
   });
 
-  it('gives the control Bash plus mirror-scoped Grep only, and its own settings', () => {
+  it('gives the control mirror-scoped Grep only, and its own settings', () => {
     const p = plan();
     const l = launch(p.treatmentProfile, p);
-    expect(valuesAfter(l.control.argv, '--allowedTools')).toEqual([
-      'Bash',
-      `Grep(/${mirrorRoot}/**)`,
-    ]);
-    for (const tool of ['Read', 'Write', 'Edit', 'Grep', 'Glob']) {
+    expect(valuesAfter(l.control.argv, '--allowedTools')).toEqual([`Grep(/${mirrorRoot}/**)`]);
+    for (const tool of ['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob']) {
       expect(valuesAfter(l.control.argv, '--allowedTools')).not.toContain(tool);
     }
     expect(l.control.argv[l.control.argv.indexOf('--settings') + 1]).toBe(
@@ -555,6 +618,20 @@ describe('buildProbeLaunch', () => {
     expect(l.treatment.argv[l.treatment.argv.indexOf('-p') + 1]).toBe(p.treatment.prompt);
   });
 
+  it('the control launch carries no bare Bash entry', () => {
+    const p = plan();
+    const l = launch(p.treatmentProfile, p);
+    expect(controlTools(p)).toEqual([pathRule('Grep', p.mirrorRoot)]);
+    const tools = valuesAfter(l.control.argv, '--allowedTools');
+    const allow = l.control.settings.permissions.allow ?? [];
+    const launchedAllow = JSON.parse(valuesAfter(l.control.argv, '--settings')[0] as string)
+      .permissions.allow as string[];
+    for (const list of [tools, allow, launchedAllow]) {
+      expect(list).not.toContain('Bash');
+      expect(list).not.toContain('Bash(*)');
+    }
+  });
+
   it('passes no --add-dir to either session', () => {
     const l = launch(overGrantedProfile());
     expect(l.treatment.argv).not.toContain('--add-dir');
@@ -562,14 +639,30 @@ describe('buildProbeLaunch', () => {
   });
 
   it('confines the full control launch to the mirror (real builder output)', () => {
-    assertConfined(launch(plan().treatmentProfile).control);
+    const p = plan();
+    assertConfined(launch(p.treatmentProfile, p).control, p);
   });
 
   it('confines the full control launch to the mirror (over-granted treatment input)', () => {
-    const l = launch(overGrantedProfile());
-    assertConfined(l.control);
+    const p = plan();
+    const l = launch(overGrantedProfile(), p);
+    assertConfined(l.control, p);
     // The check really sees the over-granted treatment surface, so it would catch a leak.
-    expect(() => assertConfined(l.treatment as never)).toThrow();
+    expect(() => assertConfined(l.treatment as never, p)).toThrow();
+    // A bare Bash entry or Bash(*) on the control surface would fail it too.
+    for (const extra of ['Bash', 'Bash(*)']) {
+      const leaky = {
+        ...l.control,
+        settings: {
+          ...l.control.settings,
+          permissions: {
+            ...l.control.settings.permissions,
+            allow: [...(l.control.settings.permissions.allow ?? []), extra],
+          },
+        },
+      };
+      expect(() => assertConfined(leaky, p), extra).toThrow();
+    }
   });
 });
 

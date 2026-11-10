@@ -3,7 +3,7 @@
 import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildClaudeArgv } from '../../../src/agent/claude-argv.ts';
+import { AGENT_PERMISSION_MODE, buildClaudeArgv } from '../../../src/agent/claude-argv.ts';
 import { AGENT_ENV_ALLOW, agentEnv } from '../../../src/core/security/agent-env.ts';
 import {
   DoctorReport,
@@ -150,8 +150,13 @@ describe('buildAgentSandboxSettings', () => {
     const profile = buildAgentSandboxSettings(paths);
     const { settings } = profile;
     expect(Object.keys(settings).sort()).toEqual(['permissions', 'sandbox']);
-    expect(Object.keys(settings.permissions).sort()).toEqual(['allow', 'deny']);
+    expect(Object.keys(settings.permissions).sort()).toEqual([
+      'allow',
+      'blockWritesOutsideWorkingDirectories',
+      'deny',
+    ]);
     expect(settings.permissions.allow).toEqual([`Edit(/${work}/**)`]);
+    expect(settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(settings.permissions).not.toHaveProperty('additionalDirectories');
     expect(Object.keys(settings.sandbox.filesystem).sort()).toEqual([
       'allowWrite',
@@ -167,7 +172,13 @@ describe('buildAgentSandboxSettings', () => {
   it('has no allow side at all without a workdir, so nothing can be edited', () => {
     const { workdir: _omit, ...rest } = paths;
     const profile = buildAgentSandboxSettings(rest);
-    expect(Object.keys(profile.settings.permissions)).toEqual(['deny']);
+    expect(Object.keys(profile.settings.permissions).sort()).toEqual([
+      'blockWritesOutsideWorkingDirectories',
+      'deny',
+    ]);
+    expect(profile.settings.permissions).not.toHaveProperty('allow');
+    // The outside-write block is on without a workdir too (fail closed).
+    expect(profile.settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(profile.settings.permissions).not.toHaveProperty('additionalDirectories');
     expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
     expect(profile.workdir).toBeNull();
@@ -391,7 +402,8 @@ describe('buildClaudeArgv', () => {
     }
     expect(valueAfter(argv, '--output-format')).toBe('stream-json');
     expect(valueAfter(argv, '--setting-sources')).toBe('user');
-    expect(valueAfter(argv, '--permission-mode')).toBe('dontAsk');
+    expect(AGENT_PERMISSION_MODE).toBe('auto');
+    expect(valueAfter(argv, '--permission-mode')).toBe(AGENT_PERMISSION_MODE);
     expect(valueAfter(argv, '--permission-prompts')).toBe('none');
     expect(valueAfter(argv, '--model')).toBe('haiku');
     expect(valueAfter(argv, '--max-turns')).toBe('12');

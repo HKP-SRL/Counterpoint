@@ -3,13 +3,21 @@
 // - `--setting-sources user`: a project `.claude/settings.json` hook planted by an agent ran
 //   unsandboxed in `-p` mode during research; only the owner's user settings load.
 // - `--strict-mcp-config`: only MCP servers passed explicitly (none in Phase 1).
-// - `--permission-mode dontAsk` + `--permission-prompts none`: nothing waits for a human.
+// - `--permission-mode auto` + `--permission-prompts none` (owner decision, 2026-11-10): the
+//   permission rules decide first; a call no rule covers goes to Claude Code's auto-mode
+//   classifier; anything that would still fall back to a prompt is denied automatically, so
+//   nothing waits for a human. The guarantees `counterpoint doctor` proves never rest on the
+//   classifier: they rest on the deny rules, the Seatbelt sandbox and
+//   `permissions.blockWritesOutsideWorkingDirectories` (sandbox-settings.ts).
 // - `--output-format stream-json --verbose`: the machine-readable event stream.
 // - `--no-session-persistence`, `--max-turns`, `--max-budget-usd`: bounded, throwaway sessions.
 // The prompt goes directly after `-p` because `--allowedTools` and `--add-dir` are variadic and
 // would swallow a trailing positional argument.
 import { isAbsolute } from 'node:path';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
+
+/** The one permission mode every agent session launches with (probe sessions and builders). */
+export const AGENT_PERMISSION_MODE = 'auto';
 
 export interface ClaudeArgvInput {
   settings: AgentSettings;
@@ -67,7 +75,7 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
     'user',
     '--strict-mcp-config',
     '--permission-mode',
-    'dontAsk',
+    AGENT_PERMISSION_MODE,
     '--permission-prompts',
     'none',
   ];
