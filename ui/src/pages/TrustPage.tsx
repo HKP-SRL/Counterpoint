@@ -9,6 +9,13 @@
 // The verdict is never all-pass unless every check passed and every probe target was blocked:
 // anything `Not checked`, failed, reachable or missing (a session check included) counts against
 // it. The page renders the stored report truthfully, whatever it says.
+//
+// The owner's accepted risk (01-19, 01-20): when the server says `accepted-risk` and names the
+// applied gh-keychain entry, every check passed and gh credentials is the only probe row that is
+// not Blocked (and it is Reachable), the verdict reads as its own warning, `Agents are boxed in,
+// with one accepted risk`, with the owner's reason, the date and the revoke command; the gh row
+// keeps `Reachable` and adds an `Accepted risk` Badge. Anything else falls back to the existing
+// verdicts, so the console never shows a better verdict than the server computed.
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -16,6 +23,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
+import { HStack } from '@astryxdesign/core/HStack';
 import type { IconName } from '@astryxdesign/core/Icon';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
@@ -55,11 +63,17 @@ export type Report = {
   sandboxIsolation: CheckRow | null;
 };
 
+/** An accepted risk the server applied to this report (01-19 `acceptedRisks`). */
+export type AppliedRisk = { id: string; reason: string; recordedAt: string };
+
 export type DoctorAnswer = {
   hostId: string;
   report: Report | null;
   stale: boolean;
-  verdict: 'pass' | 'fail';
+  /** The server's verdict; any value other than these three reads `fail`. */
+  verdict: 'pass' | 'accepted-risk' | 'fail';
+  /** The accepted risks the server applied; malformed means none. */
+  acceptedRisks: AppliedRisk[];
   unreadable: boolean;
 };
 
@@ -132,6 +146,25 @@ function parseReport(value: unknown): Report | null {
   };
 }
 
+/**
+ * The applied accepted risks: each entry needs a non-empty string id and reason and a parsable
+ * recordedAt. Anything malformed (a non-array, or any bad entry) reads as none, so a malformed
+ * answer can never make the verdict look better.
+ */
+function parseAcceptedRisks(value: unknown): AppliedRisk[] {
+  if (!Array.isArray(value)) return [];
+  const risks: AppliedRisk[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return [];
+    const { id, reason, recordedAt } = entry;
+    if (typeof id !== 'string' || id === '') return [];
+    if (typeof reason !== 'string' || reason === '') return [];
+    if (typeof recordedAt !== 'string' || Number.isNaN(Date.parse(recordedAt))) return [];
+    risks.push({ id, reason, recordedAt });
+  }
+  return risks;
+}
+
 async function fetchDoctor(hostId: string, signal?: AbortSignal): Promise<DoctorAnswer> {
   const body = await apiGet(`/api/hosts/${encodeURIComponent(hostId)}/doctor`, signal);
   const raw = isRecord(body) ? body : {};
@@ -140,7 +173,9 @@ async function fetchDoctor(hostId: string, signal?: AbortSignal): Promise<Doctor
     hostId,
     report,
     stale: raw.stale === true,
-    verdict: raw.verdict === 'pass' ? 'pass' : 'fail',
+    verdict:
+      raw.verdict === 'pass' ? 'pass' : raw.verdict === 'accepted-risk' ? 'accepted-risk' : 'fail',
+    acceptedRisks: parseAcceptedRisks(raw.acceptedRisks),
     unreadable: raw.error === 'unreadable' || (raw.report != null && report === null),
   };
 }
@@ -170,6 +205,16 @@ export const PROBE_LOOK: Record<ProbeResult, ResultLook> = {
   reachable: { label: 'Reachable', variant: 'error', icon: 'error' },
   'not-checked': { label: 'Not checked', variant: 'neutral', icon: 'clock' },
 };
+
+/** The owner's accepted risk (01-20): a warning Badge with its icon, so never colour-only. */
+export const ACCEPTED_RISK_LOOK: ResultLook = {
+  label: 'Accepted risk',
+  variant: 'warning',
+  icon: 'warning',
+};
+
+/** The one accepted risk the console knows; it covers only gh's Keychain lookup (01-19). */
+const GH_KEYCHAIN = 'gh-keychain';
 
 export function ResultBadge({ look }: { look: ResultLook }) {
   return (
@@ -250,20 +295,42 @@ export function reachableText(n: number): string {
 export type TrustVerdict =
   | { kind: 'reachable'; reachable: number; title: string; badge: ResultLook }
   | { kind: 'pass'; title: string; badge: ResultLook }
+  | { kind: 'accepted-risk'; risk: AppliedRisk; title: string; badge: ResultLook }
   | { kind: 'not-passing'; notPassing: number; title: string; badge: ResultLook };
 
 export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: string): TrustVerdict {
   const probes = probeRows(report, hostName);
   const reachable = probes.filter((row) => row.result === 'reachable').length;
   const checks = allChecks(report);
-  const notPassing =
+  // Checks that did not pass, including a missing group or session check (01-22, 01-25).
+  const checksNotPassing =
     checks.filter((check) => check.result !== 'pass').length +
-    probes.filter((row) => row.result !== 'blocked').length +
     (report.tools.length === 0 ? 1 : 0) +
     (report.signingKey.length === 0 ? 1 : 0) +
-    // A session check the report does not carry never reads as passing (01-22, 01-25).
     (report.agentMode === null ? 1 : 0) +
     (report.sandboxIsolation === null ? 1 : 0);
+  const notPassing = checksNotPassing + probes.filter((row) => row.result !== 'blocked').length;
+
+  // The owner's accepted risk: only when the server applied it, every check passed, and gh
+  // credentials is the one probe row not Blocked and it is Reachable (01-20). Otherwise the
+  // existing verdicts below apply unchanged.
+  const risk = answer.acceptedRisks.find((entry) => entry.id === GH_KEYCHAIN);
+  const notBlocked = probes.filter((row) => row.result !== 'blocked');
+  if (
+    answer.verdict === 'accepted-risk' &&
+    risk !== undefined &&
+    checksNotPassing === 0 &&
+    notBlocked.length === 1 &&
+    notBlocked[0]?.id === 'gh' &&
+    notBlocked[0].result === 'reachable'
+  ) {
+    return {
+      kind: 'accepted-risk',
+      risk,
+      title: 'Agents are boxed in, with one accepted risk',
+      badge: ACCEPTED_RISK_LOOK,
+    };
+  }
 
   if (reachable > 0) {
     return {
@@ -299,6 +366,25 @@ function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: s
         status="error"
         title={verdict.title}
         description={`${reachableText(verdict.reachable)}. Approvals still work, but builds will refuse to start until this passes.`}
+      />
+    );
+  }
+  if (verdict.kind === 'accepted-risk') {
+    // The owner's reason is rendered as React text only, never as HTML.
+    return (
+      <Banner
+        status="warning"
+        title={verdict.title}
+        description={
+          <>
+            Checked {checked}. A headless claude session could not read your signing key, ~/.ssh,
+            gh's config files or Counterpoint's state, and could not write {hostName}'s .git/config,
+            hooks or info, or files outside its working folder. It could read your macOS Keychain,
+            so gh credentials kept there are reachable by agents. You accepted this risk on{' '}
+            <Timestamp value={verdict.risk.recordedAt} />: "{verdict.risk.reason}". To withdraw it,
+            run "counterpoint revoke-risk gh-keychain".
+          </>
+        }
       />
     );
   }
@@ -356,25 +442,44 @@ const checkColumns = (firstHeader: string, detailHeader: string): TableColumn<Ch
   },
 ];
 
-const probeColumns: TableColumn<ProbeRow>[] = [
-  {
-    key: 'target',
-    header: 'Target',
-    renderCell: (row) => (
-      <VStack gap={1}>
-        <Text>{row.label}</Text>
-        <Text type="supporting" color="secondary">
-          {row.mode === 'read' ? 'cannot read' : 'cannot write'}
-        </Text>
-      </VStack>
-    ),
-  },
-  {
-    key: 'result',
-    header: 'Result',
-    renderCell: (row) => <ResultBadge look={PROBE_LOOK[row.result]} />,
-  },
-];
+/**
+ * The probe table's columns. With the accepted-risk verdict (`riskApplied`), the gh credentials
+ * row keeps its `Reachable` Badge, adds `Accepted risk`, and says what was and was not reached.
+ */
+const probeColumns = (riskApplied: boolean): TableColumn<ProbeRow>[] => {
+  const covered = (row: ProbeRow) => riskApplied && row.id === 'gh' && row.result === 'reachable';
+  return [
+    {
+      key: 'target',
+      header: 'Target',
+      renderCell: (row) => (
+        <VStack gap={1}>
+          <Text>{row.label}</Text>
+          <Text type="supporting" color="secondary" wordBreak="break-word">
+            {covered(row)
+              ? 'config files cannot be read · Keychain reachable (accepted risk)'
+              : row.mode === 'read'
+                ? 'cannot read'
+                : 'cannot write'}
+          </Text>
+        </VStack>
+      ),
+    },
+    {
+      key: 'result',
+      header: 'Result',
+      renderCell: (row) =>
+        covered(row) ? (
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <ResultBadge look={PROBE_LOOK[row.result]} />
+            <ResultBadge look={ACCEPTED_RISK_LOOK} />
+          </HStack>
+        ) : (
+          <ResultBadge look={PROBE_LOOK[row.result]} />
+        ),
+    },
+  ];
+};
 
 function TableCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -455,6 +560,7 @@ export function TrustPage({ hostId }: { hostId: string }) {
   } else {
     const report = answer.report;
     const keyRows = [...report.signingKey, ...(report.integrity ? [report.integrity] : [])];
+    const riskApplied = trustVerdict(answer, report, hostName).kind === 'accepted-risk';
     body = (
       <VStack gap={6}>
         <VerdictBanner answer={answer} hostName={hostName} />
@@ -487,7 +593,11 @@ export function TrustPage({ hostId }: { hostId: string }) {
             columns={checkColumns('Check', 'Detail')}
             idKey="id"
           />
-          <Table<ProbeRow> data={probeRows(report, hostName)} columns={probeColumns} idKey="id" />
+          <Table<ProbeRow>
+            data={probeRows(report, hostName)}
+            columns={probeColumns(riskApplied)}
+            idKey="id"
+          />
         </TableCard>
         <VStack gap={2}>
           <Text type="supporting" color="secondary">

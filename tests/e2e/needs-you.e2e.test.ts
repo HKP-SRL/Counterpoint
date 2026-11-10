@@ -24,6 +24,11 @@ import { controlRequest } from '../../src/cli/control-client.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
+import {
+  type AcceptedRisk,
+  revokeAcceptedRisk,
+  writeAcceptedRisk,
+} from '../../src/core/security/accepted-risks.ts';
 import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
 import { makeThrowawayKey } from '../helpers/keys.ts';
 import { buildLargeHost, type LargeHost } from '../helpers/large-host.ts';
@@ -115,8 +120,34 @@ const PROBE = [
   ['credential-env', 'Credentials in the shell environment', 'read'],
 ] as const;
 
-/** A stored doctor report in which every check passed and every probe target was blocked. */
-function allPassReport(hostId: string, checkedAt: Date) {
+/**
+ * The gh row as the live probe records a Keychain-only reach (01-19): Bash cat, Read and Grep
+ * refused by a deny rule (control reached), the Keychain lookup reached in both sessions.
+ */
+const GH_KEYCHAIN_ONLY = {
+  result: 'reachable',
+  evidence: 'probe run: only the Keychain lookup reached',
+  steps: [
+    { index: 10, tool: 'Bash', operation: 'cat', treatment: 'denied-rule', control: 'reached' },
+    { index: 11, tool: 'Read', operation: 'read', treatment: 'denied-rule', control: 'reached' },
+    { index: 12, tool: 'Grep', operation: 'grep', treatment: 'denied-rule', control: 'reached' },
+    { index: 13, tool: 'Bash', operation: 'keychain', treatment: 'reached', control: 'reached' },
+  ],
+  leaks: ['keychain-canary'],
+  trusted: true,
+};
+
+/**
+ * A stored doctor report in which every check passed and every probe target was blocked; with
+ * `acceptedRisks`, the gh row is the Keychain-only reach and the report carries the record doctor
+ * read (01-20).
+ */
+function allPassReport(
+  hostId: string,
+  checkedAt: Date,
+  options: { acceptedRisks?: readonly AcceptedRisk[] } = {},
+) {
+  const covered = options.acceptedRisks !== undefined;
   const check = (id: string, label: string, detail: string) => ({
     id,
     label,
@@ -146,7 +177,9 @@ function allPassReport(hostId: string, checkedAt: Date) {
       mode,
       result: 'blocked',
       evidence: 'probe run',
+      ...(covered && id === 'gh' ? GH_KEYCHAIN_ONLY : {}),
     })),
+    ...(covered ? { acceptedRisks: options.acceptedRisks } : {}),
     // 01-25: a report passes only with the Sandbox isolation settings check passing.
     sandboxIsolation: {
       id: 'sandbox-isolation',
@@ -433,6 +466,29 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
 
     write(allPassReport(hostId, new Date(Date.now() - 25 * 60 * 60 * 1000)));
     await nudgeUntil(/^This check is 25 hours old\./);
+
+    // 01-20: the owner's accepted risk shows as its own warning verdict, never as Pass.
+    const entry = writeAcceptedRisk(home, { reason: 'E2E: owner accepted the Keychain residual' });
+    try {
+      write(allPassReport(hostId, new Date(), { acceptedRisks: [entry] }));
+      await nudgeUntil('Agents are boxed in, with one accepted risk');
+      expect(await trustCard().getByText('Accepted risk', { exact: true }).count()).toBe(1);
+      expect(await trustCard().getByText('Pass', { exact: true }).count()).toBe(0);
+      expect(await trustCard().getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+      expect(
+        await trustCard()
+          .getByText(/^This check is/)
+          .count(),
+      ).toBe(0);
+
+      // Revoked: the same stored report reads as not confining.
+      expect(revokeAcceptedRisk(home, 'gh-keychain')).toBe(true);
+      await nudgeUntil('Agent sandbox is not confining sessions');
+      expect(await trustCard().getByText('Reachable', { exact: true }).count()).toBe(1);
+      expect(await trustCard().getByText('Accepted risk', { exact: true }).count()).toBe(0);
+    } finally {
+      revokeAcceptedRisk(home, 'gh-keychain');
+    }
   });
 
   it('raises no Content Security Policy violation or page error', () => {
