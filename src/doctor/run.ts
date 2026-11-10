@@ -6,6 +6,12 @@
 // same settings builder the runner uses, with canaries only (01-04/01-05). A probe failure is a
 // hard doctor fail and nothing else: the console and approvals keep working (CONTEXT
 // discretion; Phase 2 refuses to spawn builders while it fails).
+//
+// The Sandbox isolation settings check (01-25, replacement 2 for the scrub opt-out): doctor reads
+// every settings source an agent session loads (the launch settings, the user file, the
+// server-managed cache and the managed sources; src/doctor/settings-sources.ts) and fails when any
+// of them turns sandbox isolation off (src/core/security/sandbox-isolation.ts). While that check
+// does not pass, no probe row counts as Blocked: each measured Blocked row is stored Not checked.
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
@@ -26,12 +32,22 @@ import {
   probeTargetLabel,
   probeTargetMode,
   reportVerdict,
+  type SandboxIsolationCheck,
 } from '../core/security/doctor-report.ts';
+import {
+  judgeSandboxIsolation,
+  type SettingsSourceRead,
+} from '../core/security/sandbox-isolation.ts';
 import {
   buildAgentSandboxSettings,
   type ProtectedPaths,
   resolveAbsolute,
 } from '../core/security/sandbox-settings.ts';
+import {
+  defaultSettingsSourceLocations,
+  readSettingsSources,
+  type SettingsSourceLocations,
+} from './settings-sources.ts';
 import { checkSigningKey } from './signing-key.ts';
 import { checkTools } from './tools.ts';
 
@@ -75,6 +91,8 @@ export interface RunDoctorInput {
   /** The user's home directory (defaults to os.homedir()). */
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
+  /** Where the settings sources live (defaults to defaultSettingsSourceLocations(homeDir)). */
+  settingsLocations?: SettingsSourceLocations;
 }
 
 export interface DoctorRun {
@@ -169,6 +187,34 @@ function notCheckedTargets(hostName: string, evidence: string): ProbeTarget[] {
   }));
 }
 
+const NOT_COUNTED =
+  'Not counted as Blocked while the Sandbox isolation settings check does not pass. Measured: ';
+
+/**
+ * The Sandbox isolation settings check over the launch settings this run's sessions use and every
+ * settings file source. Never throws: a launch profile that cannot be built is an unreadable source.
+ */
+async function sandboxIsolationCheck(
+  protectedPaths: ProtectedPaths,
+  locations: SettingsSourceLocations,
+  homeDir: string,
+): Promise<SandboxIsolationCheck> {
+  let launchSettings: unknown;
+  try {
+    launchSettings = buildAgentSandboxSettings(protectedPaths).settings;
+  } catch (error) {
+    const launch: SettingsSourceRead = {
+      kind: 'launch',
+      label: 'launch settings',
+      path: null,
+      state: 'unreadable',
+      problem: `could not be built (${(error as Error).message})`,
+    };
+    return judgeSandboxIsolation([launch], homeDir);
+  }
+  return judgeSandboxIsolation(await readSettingsSources({ launchSettings, locations }), homeDir);
+}
+
 /** Writes `hosts/{id}/doctor.json` (dir 0700, file 0600, atomic rename). */
 export function writeDoctorReport(home: string, report: DoctorReport): string {
   const dir = hostDir(home, report.hostId);
@@ -210,6 +256,13 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     ghConfigDir: ghConfigDir(env, homeDir),
     hostGitDir: host.gitCommonDir,
   };
+
+  // Computed whether or not the probe runs: it is a property of the configuration.
+  const sandboxIsolation = await sandboxIsolationCheck(
+    protectedPaths,
+    input.settingsLocations ?? defaultSettingsSourceLocations(homeDir),
+    homeDir,
+  );
 
   let probe: ProbeTarget[];
   let claudeVersion: string | null = null;
@@ -256,6 +309,19 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
         : row,
     );
   }
+  // The probe side of replacement 2 (owner, 2026-11-10: "doctor/probe fail"). A Blocked row is
+  // evidence of confinement only while isolation holds. The measured rows cannot enforce that on
+  // their own: with isolation off a step can still read Blocked when a deny rule refuses it, and
+  // keys such as excludedCommands or a managed allowUnsandboxedCommands leave the probe's own
+  // commands untouched. So while the check does not pass, no row counts as Blocked; Reachable
+  // rows stay as measured, because they are real exposure.
+  if (sandboxIsolation.result !== 'pass') {
+    probe = probe.map((row) =>
+      row.result === 'blocked'
+        ? { ...row, result: 'not-checked', evidence: `${NOT_COUNTED}${row.evidence}` }
+        : row,
+    );
+  }
 
   const report = DoctorReport.parse({
     schema: DOCTOR_SCHEMA,
@@ -268,6 +334,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     signingKey,
     integrity,
     probe,
+    sandboxIsolation,
   });
   const reportPath = writeDoctorReport(home, report);
   return { report, reportPath, logDir };
@@ -282,6 +349,9 @@ const PROBE_WORD = {
   'not-checked': 'NOT CHECKED',
 } as const;
 const WORD_WIDTH = 'NOT CHECKED'.length;
+/** The isolation line of a report written before 01-25 (`NOT CHECKED` fills the word column). */
+const ISOLATION_NOT_RECORDED =
+  '  NOT CHECKED  Sandbox isolation settings: not recorded in this report';
 
 function line(word: string, label: string, detail: string): string {
   return `  ${word.padEnd(WORD_WIDTH)}  ${label}${detail === '' ? '' : `: ${detail}`}`;
@@ -305,7 +375,10 @@ export function doctorVerdict(report: DoctorReport): string {
     return `Agent sandbox is not confining sessions: ${reachable} ${plural(reachable, 'target was', 'targets were')} reachable.`;
   }
   const checks = [...report.tools, ...report.signingKey, report.integrity];
-  const failedChecks = checks.filter((check) => check.result !== 'pass').length;
+  const isolationFailed =
+    report.sandboxIsolation === undefined || report.sandboxIsolation.result !== 'pass';
+  const failedChecks =
+    checks.filter((check) => check.result !== 'pass').length + (isolationFailed ? 1 : 0);
   const failedTargets = PROBE_TARGET_IDS.filter((id) => {
     const rows = report.probe.filter((row) => row.id === id);
     return rows.length === 0 || rows.some((row) => row.result !== 'blocked');
@@ -317,7 +390,9 @@ export function doctorVerdict(report: DoctorReport): string {
 /**
  * The UI-SPEC CLI contract: groups `Tools`, `Signing key`, `Sandbox probe`; one line per check
  * (`PASS` / `FAIL` / `NOT CHECKED`, probe rows `BLOCKED` / `REACHABLE` / `NOT CHECKED`), an
- * indented `Fix:` line under a failure, then the verdict.
+ * indented `Fix:` line under a failure, then the verdict. The `Sandbox probe` group starts with
+ * the Sandbox isolation settings check; a report from before 01-25 shows it as `NOT CHECKED ...
+ * not recorded in this report`.
  */
 export function formatDoctorReport(report: DoctorReport): string[] {
   const lines: string[] = ['Tools'];
@@ -325,6 +400,11 @@ export function formatDoctorReport(report: DoctorReport): string[] {
   lines.push('Signing key');
   for (const check of [...report.signingKey, report.integrity]) lines.push(...checkLines(check));
   lines.push('Sandbox probe');
+  if (report.sandboxIsolation === undefined) {
+    lines.push(ISOLATION_NOT_RECORDED);
+  } else {
+    lines.push(...checkLines(report.sandboxIsolation));
+  }
   for (const row of report.probe) lines.push(line(PROBE_WORD[row.result], row.label, row.evidence));
   lines.push('');
   lines.push(doctorVerdict(report));
