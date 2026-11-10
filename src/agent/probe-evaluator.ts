@@ -24,8 +24,10 @@
 // every record agrees with the refusal recorded live on claude 2.1.321 (01-24).
 //
 // The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live in 01-04 and
-// 01-05). Update the families together with MATCHER_CLAUDE_VERSION when Claude Code changes its
-// messages; until then another version that prints anything unfamiliar reads Not checked.
+// 01-05 on 2.1.319, then in 01-24 and 01-23 on 2.1.321, where 01-23's nine-row run recognised
+// every step of both sessions with the same exact texts). Update the families together with
+// MATCHER_CLAUDE_VERSION when Claude Code changes its messages; until then another version that
+// prints anything unfamiliar reads Not checked.
 //
 // The credential-env row (01-26, replacement 3 for the scrub opt-out) has no canary. Its env-shape
 // step lists the sandboxed command's environment by name, length, shape and host class, and the
@@ -52,7 +54,7 @@ import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
 /** The claude version the denial-text families below were verified against. */
-export const MATCHER_CLAUDE_VERSION = '2.1.319';
+export const MATCHER_CLAUDE_VERSION = '2.1.321';
 
 /**
  * The classifier revision, recorded in the doctor report's `matcherVersion`
@@ -81,7 +83,7 @@ export interface WriteBlockContext {
   workdirs: readonly string[];
 }
 
-// --- Denial-text families (claude 2.1.319) ---------------------------------------------------
+// --- Denial-text families (claude 2.1.319, re-verified on 2.1.321) ---------------------------
 
 /** Mode family: a denial by the permission mode, not by any rule of ours (RESEARCH R2). */
 const MODE_FAMILY_TEXT = "running in don't ask mode";

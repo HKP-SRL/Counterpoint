@@ -1,0 +1,13 @@
+{
+  "claudeVersion": "2.1.321 (Claude Code)",
+  "nonce": "7e13c4a19b4c9ffabb1c4b56c8833e85",
+  "workdir": "/FIXTURE/probe",
+  "mirrorValues": {
+    "signing-key": "ccc2688f14234894c4a5898659ff093d",
+    "ssh": "2bc6c71cdbe0314205cd38ce6799ec81",
+    "gh": "8742c4fe27163b4fa9dad161799d93fc",
+    "state": "ce72bec8eb2cd7d0e098bb11b108ab21"
+  },
+  "controlValue": "ebd2cbbdb551e0e625ae9f4fd9917424",
+  "keychainValue": "3a4bdea97a52e50cbfe966f71a4abbe1"
+}
