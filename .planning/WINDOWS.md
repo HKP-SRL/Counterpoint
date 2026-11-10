@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 2
+open_count: 3
 waived_count: 0
 fixed_count: 0
-total_count: 2
-last_updated: 2026-11-09T17:06:48.604Z
+total_count: 3
+last_updated: 2026-11-10T09:56:10.770Z
 ---
 
 # Broken Windows Ledger
@@ -17,6 +17,7 @@ last_updated: 2026-11-09T17:06:48.604Z
 |----|-------|------|------|------|-------------|--------|--------|-------------|-------------|
 | 1 | 01 | unmet-truth | src/agent/probe.ts |  | Live probe on claude 2.1.319/macOS: a temporary Keychain canary item was readable from sandboxed agent Bash (RESEARCH A5 false); gh keyring credentials are reachable by agents until the owner chooses a remediation | open |  | 2026-11-09T16:49:49.183Z |  |
 | 2 | 01 | unmet-truth | src/core/security/sandbox-settings.ts |  | Live check on claude 2.1.319 (01-05): agent Write and Edit tools succeeded on an unprotected path outside the session cwd (allowWrite: [] confines only Bash). Any user-writable file not under a deny rule (for example ~/.claude/settings.json, shell rc files) is writable by agents; owner decision needed (Edit deny or allow-only-workdir rules) | open |  | 2026-11-09T17:06:48.604Z |  |
+| 3 | 01 | unmet-truth | src/core/security/agent-env.ts |  | claude 2.1.321: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forces --permission-mode auto down to default; agent sessions do not run in the owner's chosen auto mode (01-21 evidence) | open |  | 2026-11-10T09:56:10.770Z |  |
 
 ````json
 [
@@ -43,6 +44,19 @@ last_updated: 2026-11-09T17:06:48.604Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-09T17:06:48.604Z",
+    "resolved_at": null,
+    "milestone": null
+  },
+  {
+    "id": 3,
+    "kind": "unmet-truth",
+    "phase": "01",
+    "file": "src/core/security/agent-env.ts",
+    "line": null,
+    "description": "claude 2.1.321: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forces --permission-mode auto down to default; agent sessions do not run in the owner's chosen auto mode (01-21 evidence)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-10T09:56:10.770Z",
     "resolved_at": null,
     "milestone": null
   }
