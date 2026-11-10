@@ -14,13 +14,19 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
 import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../../src/agent/probe-evaluator.ts';
-import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
+import {
+  type AgentRun,
+  type AgentRunner,
+  type AgentRunRequest,
+  sessionModeEvidence,
+} from '../../src/agent/runner.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { type TrustResult, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import {
   type Check,
   DoctorReport,
+  judgeAgentMode,
   PROBE_TARGET_IDS,
   type ProbeResult,
   type ProbeTarget,
@@ -117,7 +123,12 @@ interface ProbeCall {
 
 function fakeProbe(
   results: Partial<Record<(typeof PROBE_TARGET_IDS)[number], ProbeResult>> = {},
-  options: { calls?: ProbeCall[]; staleLeftovers?: (paths: ProtectedPaths) => string[] } = {},
+  options: {
+    calls?: ProbeCall[];
+    staleLeftovers?: (paths: ProtectedPaths) => string[];
+    /** What the treatment reported about its permission mode (default: one init event, auto). */
+    agentSession?: { modes: Array<string | null>; notices: string[] };
+  } = {},
 ) {
   return async (input: ProbeCall) => {
     options.calls?.push(input);
@@ -132,6 +143,7 @@ function fakeProbe(
       targets,
       claudeVersion: '2.1.319 (Claude Code)',
       staleLeftovers: options.staleLeftovers?.(input.protectedPaths) ?? [],
+      agentSession: options.agentSession ?? { modes: ['auto'], notices: [] },
     };
   };
 }
@@ -213,8 +225,11 @@ describe('counterpoint doctor', () => {
       /^ {2}PASS {9}drepo-\S+ \.git\/config and hooks match your baseline: /,
     );
     const probeGroup = group(run.out, 'Sandbox probe');
-    expect(probeGroup[0]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
-    const probeRows = probeGroup.slice(1);
+    expect(probeGroup[0]).toBe(
+      "  PASS         Agent permission mode: The probe's agent session ran in auto mode.",
+    );
+    expect(probeGroup[1]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
+    const probeRows = probeGroup.slice(2);
     expect(probeRows).toHaveLength(9);
     for (const row of probeRows) expect(row).toMatch(/^ {2}BLOCKED {5}/);
     expect(probeRows.at(-2)).toBe(
@@ -319,8 +334,9 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     const run = await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
     expect(run.code).toBe(1);
-    // The first line is the Sandbox isolation settings check; the probe rows follow it.
-    const rows = group(run.out, 'Sandbox probe').slice(1);
+    // The first lines are the Agent permission mode and Sandbox isolation settings checks; the
+    // probe rows follow them.
+    const rows = group(run.out, 'Sandbox probe').slice(2);
     expect(rows.filter((row) => /^ {2}REACHABLE {4}gh credentials: /.test(row))).toHaveLength(1);
     for (const row of rows) expect(row).not.toMatch(/^ {2}(PASS|FAIL) /);
     expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
@@ -354,12 +370,22 @@ describe('counterpoint doctor', () => {
       },
     });
     expect(run.code).toBe(1);
-    const rows = group(run.out, 'Sandbox probe').slice(1);
+    const probeGroup = group(run.out, 'Sandbox probe');
+    expect(probeGroup[0]).toBe(
+      '  NOT CHECKED  Agent permission mode: The probe could not run, so the agent permission mode was not seen.',
+    );
+    const rows = probeGroup.slice(2);
     expect(rows).toHaveLength(9);
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
     }
     const report = readReport(host.home);
+    expect(report.agentMode).toMatchObject({
+      id: 'agent-mode',
+      result: 'not-checked',
+      expected: 'auto',
+      effective: null,
+    });
     expect(report.claudeVersion).toBeNull();
     expect(report.probe.map((row) => [row.id, row.mode])).toEqual(
       PROBE_TARGET_IDS.map((id) => [id, probeTargetMode(id)]),
@@ -472,10 +498,15 @@ describe('counterpoint doctor', () => {
           this.outsideDirs.push(dirname(target));
           writeFileSync(target, 'cp-probe');
         }
-        writeFileSync(request.rawLogPath, '{"type":"result","subtype":"success"}\n', { flag: 'a' });
+        const raw =
+          '{"type":"system","subtype":"init","permissionMode":"auto"}\n{"type":"result","subtype":"success"}\n';
+        writeFileSync(request.rawLogPath, raw, { flag: 'a' });
         return {
-          events: [{ type: 'result', subtype: 'success' }],
-          raw: '{"type":"result","subtype":"success"}\n',
+          events: [
+            { type: 'system', subtype: 'init', permissionMode: 'auto' },
+            { type: 'result', subtype: 'success' },
+          ],
+          raw,
           stderr: '',
           exitCode: 0,
           timedOut: false,
@@ -510,6 +541,7 @@ describe('counterpoint doctor', () => {
           targets: outcome.targets,
           claudeVersion: outcome.claudeVersion,
           staleLeftovers: outcome.staleLeftovers,
+          agentSession: sessionModeEvidence(outcome.treatment),
         };
       },
     });
@@ -552,7 +584,9 @@ describe('counterpoint doctor', () => {
         this.runs += 1;
         const prompt = request.argv[request.argv.indexOf('-p') + 1] as string;
         const session = /\/cp-mirror-[0-9a-f]{32}\//.test(prompt) ? 'control' : 'treatment';
-        const events: Array<Record<string, unknown>> = [];
+        const events: Array<Record<string, unknown>> = [
+          { type: 'system', subtype: 'init', permissionMode: 'auto' },
+        ];
         const answer = (tool: string, input: Record<string, unknown>, content: string) => {
           const id = `toolu_fake_${this.runs}_${events.length}`;
           events.push({
@@ -655,6 +689,7 @@ describe('counterpoint doctor', () => {
             targets: others.map((t) => (t.id === 'credential-env' ? real : t)),
             claudeVersion: outcome.claudeVersion,
             staleLeftovers: outcome.staleLeftovers,
+            agentSession: sessionModeEvidence(outcome.treatment),
           };
         },
       });
@@ -668,7 +703,7 @@ describe('counterpoint doctor', () => {
     it('prints every row BLOCKED on clean listings in both sessions, and exits 0', async () => {
       const text = CLEAN.join('\n');
       const { run, line, row } = await runWithListings({ treatment: text, control: text });
-      for (const r of group(run.out, 'Sandbox probe').slice(1)) {
+      for (const r of group(run.out, 'Sandbox probe').slice(2)) {
         expect(r).toMatch(/^ {2}BLOCKED {5}/);
       }
       expect(line).toBe(
@@ -681,7 +716,7 @@ describe('counterpoint doctor', () => {
     it('prints every row BLOCKED with the twelve loopback proxy URLs, naming the owner exception', async () => {
       const text = [...CLEAN, ...PROXY_URLS].join('\n');
       const { run, line, row } = await runWithListings({ treatment: text, control: text });
-      for (const r of group(run.out, 'Sandbox probe').slice(1)) {
+      for (const r of group(run.out, 'Sandbox probe').slice(2)) {
         expect(r).toMatch(/^ {2}BLOCKED {5}/);
       }
       expect(line).toMatch(/^ {2}BLOCKED {6}Credentials in the shell environment: /);
@@ -743,13 +778,14 @@ describe('counterpoint doctor', () => {
       const run = await runDoctorCommand(host, settingsHome(DISABLED));
       expect(run.code).toBe(1);
       const rows = group(run.out, 'Sandbox probe');
-      expect(rows[0]).toBe(
+      expect(rows[0]).toMatch(/^ {2}PASS {9}Agent permission mode: /);
+      expect(rows[1]).toBe(
         '  FAIL         Sandbox isolation settings: user settings sets sandbox.filesystem.disabled to true, which turns filesystem isolation off.',
       );
-      expect(rows[1]).toBe(
+      expect(rows[2]).toBe(
         '               Fix: Remove sandbox.filesystem.disabled from ~/.claude/settings.json, then run "counterpoint doctor" again.',
       );
-      const probeRows = rows.slice(2);
+      const probeRows = rows.slice(3);
       expect(probeRows).toHaveLength(9);
       for (const row of probeRows) {
         expect(row).toMatch(/^ {2}NOT CHECKED {2}/);
@@ -785,7 +821,7 @@ describe('counterpoint doctor', () => {
         probe: fakeProbe({ ssh: 'reachable' }),
       });
       expect(run.code).toBe(1);
-      const rows = group(run.out, 'Sandbox probe').slice(2);
+      const rows = group(run.out, 'Sandbox probe').slice(3);
       expect(rows).toContain('  REACHABLE    ~/.ssh: evidence for ssh');
       expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(8);
       expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
@@ -798,11 +834,11 @@ describe('counterpoint doctor', () => {
       const run = await runDoctorCommand(host, settingsHome());
       expect(run.code).toBe(0);
       const rows = group(run.out, 'Sandbox probe');
-      expect(rows[0]).toBe(
+      expect(rows[1]).toBe(
         '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
       );
-      expect(rows.slice(1)).toHaveLength(9);
-      for (const row of rows.slice(1)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
+      expect(rows.slice(2)).toHaveLength(9);
+      for (const row of rows.slice(2)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
       const report = readReport(host.home);
       expect(report.sandboxIsolation?.result).toBe('pass');
       expect(report.sandboxIsolation?.sources.map((source) => [source.kind, source.state])).toEqual(
@@ -822,10 +858,177 @@ describe('counterpoint doctor', () => {
       const report = DoctorReport.parse(older);
       expect(reportVerdict(report)).toBe('fail');
       const lines = formatDoctorReport(report);
-      expect(lines[lines.indexOf('Sandbox probe') + 1]).toBe(
+      expect(lines[lines.indexOf('Sandbox probe') + 2]).toBe(
         '  NOT CHECKED  Sandbox isolation settings: not recorded in this report',
       );
       expect(lines).toContain('1 check did not pass.');
+    });
+  });
+
+  describe('the Agent permission mode check (01-22)', () => {
+    const FORCED =
+      '⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (it blocks auto mode).';
+    const FIX =
+      'Counterpoint launches agent sessions with --permission-mode auto. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.';
+
+    it('prints PASS Agent permission mode first in Sandbox probe and exits 0 when the treatment ran in auto', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, {
+        probe: fakeProbe({}, { agentSession: { modes: ['auto', 'auto'], notices: [] } }),
+      });
+      expect(run.code).toBe(0);
+      const rows = group(run.out, 'Sandbox probe');
+      expect(rows[0]).toBe(
+        "  PASS         Agent permission mode: The probe's agent session ran in auto mode.",
+      );
+      expect(rows[1]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
+      expect(readReport(host.home).agentMode).toEqual({
+        id: 'agent-mode',
+        label: 'Agent permission mode',
+        result: 'pass',
+        detail: "The probe's agent session ran in auto mode.",
+        expected: 'auto',
+        effective: 'auto',
+      });
+      expect(run.out).toContain('Agents are boxed in');
+    });
+
+    it('prints FAIL with the detail and a Fix line, counts it, and exits 1 when claude forced default', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, {
+        probe: fakeProbe({}, { agentSession: { modes: ['default'], notices: [FORCED] } }),
+      });
+      expect(run.code).toBe(1);
+      const rows = group(run.out, 'Sandbox probe');
+      expect(rows[0]).toBe(
+        `  FAIL         Agent permission mode: The probe's agent session ran in default mode, not auto. claude said: "${FORCED}"`,
+      );
+      expect(rows[1]).toBe(`               Fix: ${FIX}`);
+      expect(rows[2]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
+      // Every probe row still reads as measured; only the mode check fails.
+      for (const row of rows.slice(3)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
+      expect(run.out).toContain('1 check did not pass.');
+      expect(run.out).not.toContain('Agents are boxed in');
+      const report = readReport(host.home);
+      expect(report.agentMode).toMatchObject({ result: 'fail', effective: 'default' });
+      expect(reportVerdict(report)).toBe('fail');
+    });
+
+    it('fails when the session reported no mode, or auto with a notice', async () => {
+      for (const agentSession of [
+        { modes: [], notices: [] },
+        { modes: [null], notices: [] },
+        { modes: ['auto'], notices: ['auto mode is unavailable for this account'] },
+      ]) {
+        const host = await scratchHost();
+        const run = await runDoctorCommand(host, { probe: fakeProbe({}, { agentSession }) });
+        expect(run.code, JSON.stringify(agentSession)).toBe(1);
+        expect(group(run.out, 'Sandbox probe')[0]).toMatch(/^ {2}FAIL {9}Agent permission mode: /);
+        expect(run.out).toContain('1 check did not pass.');
+      }
+    });
+
+    it('prints NOT CHECKED and exits 1 when the probe throws', async () => {
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, {
+        probe: async () => {
+          throw new Error('claude was not found on PATH.');
+        },
+      });
+      expect(run.code).toBe(1);
+      expect(group(run.out, 'Sandbox probe')[0]).toBe(
+        '  NOT CHECKED  Agent permission mode: The probe could not run, so the agent permission mode was not seen.',
+      );
+    });
+
+    it('prints an older report without the check as not recorded, and fails it', async () => {
+      const host = await scratchHost();
+      await runDoctorCommand(host);
+      const { agentMode: _dropped, ...older } = readReport(host.home);
+      const report = DoctorReport.parse(older);
+      expect(report.agentMode).toBeUndefined();
+      expect(reportVerdict(report)).toBe('fail');
+      const lines = formatDoctorReport(report);
+      expect(lines[lines.indexOf('Sandbox probe') + 1]).toBe(
+        '  NOT CHECKED  Agent permission mode: not recorded in this report',
+      );
+      expect(lines[lines.indexOf('Sandbox probe') + 2]).toMatch(
+        /^ {2}PASS {9}Sandbox isolation settings: /,
+      );
+      expect(lines).toContain('1 check did not pass.');
+    });
+
+    it('reads the mode from the real probe pipeline: every init event of the treatment, and its stderr', async () => {
+      // The real runSandboxProbe behind doctorCommand, with a fake claude that reports `mode` in
+      // its init event and prints `stderr`. No live claude, no real Keychain.
+      class ModeReporter implements AgentRunner {
+        private readonly mode: string;
+        private readonly stderr: string;
+        constructor(mode: string, stderr: string) {
+          this.mode = mode;
+          this.stderr = stderr;
+        }
+        async run(request: AgentRunRequest): Promise<AgentRun> {
+          const events = [
+            { type: 'system', subtype: 'init', permissionMode: this.mode },
+            { type: 'result', subtype: 'success', permission_denials: [] },
+          ];
+          const raw = `${events.map((e) => JSON.stringify(e)).join('\n')}\n`;
+          writeFileSync(request.rawLogPath, raw, { flag: 'a' });
+          return {
+            events,
+            raw,
+            stderr: this.stderr,
+            exitCode: 0,
+            timedOut: false,
+            result: { type: 'result', subtype: 'success' },
+          };
+        }
+        async version(): Promise<string | null> {
+          return '2.1.319 (Claude Code)';
+        }
+      }
+      const keychain: KeychainPort = {
+        async add() {
+          return true;
+        },
+        async remove() {},
+      };
+      const outcomeFor = async (runner: AgentRunner) => {
+        const host = await scratchHost();
+        const tmpRoot = makeScratchDir('dmtmp');
+        const run = await runDoctorCommand(host, {
+          probe: async (input) => {
+            const outcome = await runSandboxProbe({
+              protectedPaths: input.protectedPaths,
+              runner,
+              logDir: input.logDir,
+              keychain,
+              tmpRoot,
+            });
+            return {
+              targets: outcome.targets,
+              claudeVersion: outcome.claudeVersion,
+              staleLeftovers: outcome.staleLeftovers,
+              agentSession: sessionModeEvidence(outcome.treatment),
+            };
+          },
+        });
+        return { run, report: readReport(host.home) };
+      };
+
+      const auto = await outcomeFor(new ModeReporter('auto', ''));
+      expect(auto.report.agentMode?.result).toBe('pass');
+      expect(auto.report.agentMode?.effective).toBe('auto');
+
+      const forced = await outcomeFor(new ModeReporter('default', `${FORCED}\n`));
+      expect(forced.report.agentMode?.result).toBe('fail');
+      expect(forced.report.agentMode?.effective).toBe('default');
+      expect(forced.report.agentMode?.detail).toContain(`claude said: "${FORCED}"`);
+      expect(group(forced.run.out, 'Sandbox probe')[0]).toMatch(
+        /^ {2}FAIL {9}Agent permission mode: /,
+      );
+      expect(forced.run.code).toBe(1);
     });
   });
 
@@ -923,5 +1126,117 @@ describe('resolveHostForCommand', () => {
     });
     expect(code).toBe(2);
     expect(err).toEqual(['No project registered yet. Run counterpoint inside it first.']);
+  });
+});
+
+describe('sessionModeEvidence (01-22)', () => {
+  it('records one mode per init event and no notice on empty stderr', () => {
+    const events = [
+      { type: 'system', subtype: 'init', permissionMode: 'auto' },
+      { type: 'assistant', message: {} },
+      { type: 'system', subtype: 'status', permissionMode: 'default' },
+      { type: 'result', subtype: 'success' },
+      { type: 'system', subtype: 'init', permissionMode: 'auto' },
+    ];
+    expect(sessionModeEvidence({ events, stderr: '' })).toEqual({
+      modes: ['auto', 'auto'],
+      notices: [],
+    });
+  });
+
+  it('records null for an init event without a string permissionMode', () => {
+    const events = [
+      { type: 'system', subtype: 'init' },
+      { type: 'system', subtype: 'init', permissionMode: 3 },
+      { type: 'unknown' as const, raw: '{"type":"system","subtype":"init"' },
+    ];
+    expect(sessionModeEvidence({ events, stderr: '' }).modes).toEqual([null, null]);
+  });
+
+  it('returns every trimmed stderr line about the permission mode or auto mode as a notice', () => {
+    const stderr = [
+      '  ⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set  ',
+      'some other warning',
+      '',
+      'AUTO MODE unavailable',
+    ].join('\n');
+    expect(sessionModeEvidence({ events: [], stderr }).notices).toEqual([
+      '⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set',
+      'AUTO MODE unavailable',
+    ]);
+  });
+});
+
+describe('judgeAgentMode (01-22)', () => {
+  const FIX =
+    'Counterpoint launches agent sessions with --permission-mode auto. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.';
+
+  it('passes when every attempt reported auto and there is no notice', () => {
+    expect(judgeAgentMode({ expected: 'auto', modes: ['auto'], notices: [] })).toEqual({
+      id: 'agent-mode',
+      label: 'Agent permission mode',
+      result: 'pass',
+      expected: 'auto',
+      effective: 'auto',
+      detail: "The probe's agent session ran in auto mode.",
+    });
+    expect(judgeAgentMode({ expected: 'auto', modes: ['auto', 'auto'], notices: [] }).result).toBe(
+      'pass',
+    );
+  });
+
+  it('fails a session that ran in default mode, with the fix', () => {
+    expect(judgeAgentMode({ expected: 'auto', modes: ['default'], notices: [] })).toEqual({
+      id: 'agent-mode',
+      label: 'Agent permission mode',
+      result: 'fail',
+      expected: 'auto',
+      effective: 'default',
+      detail: "The probe's agent session ran in default mode, not auto.",
+      fix: FIX,
+    });
+  });
+
+  it('fails a session that reported no mode', () => {
+    const check = judgeAgentMode({ expected: 'auto', modes: [], notices: [] });
+    expect(check).toMatchObject({ result: 'fail', effective: null, fix: FIX });
+    expect(check.detail).toBe("The probe's agent session did not report its permission mode.");
+  });
+
+  it('fails when any attempt reported another mode, naming the first one', () => {
+    const check = judgeAgentMode({ expected: 'auto', modes: ['auto', 'default'], notices: [] });
+    expect(check).toMatchObject({ result: 'fail', effective: 'default' });
+    const unknown = judgeAgentMode({ expected: 'auto', modes: ['auto', null], notices: [] });
+    expect(unknown).toMatchObject({ result: 'fail', effective: null });
+    expect(unknown.detail).toBe("The probe's agent session ran in an unknown mode, not auto.");
+  });
+
+  it('fails auto with a notice, quoting the sanitised notice', () => {
+    const check = judgeAgentMode({
+      expected: 'auto',
+      modes: ['auto'],
+      notices: ['auto mode\u0007 is off\u009b'],
+    });
+    expect(check).toMatchObject({ result: 'fail', effective: 'auto', fix: FIX });
+    expect(check.detail).toBe('claude reported a permission mode change: "auto mode  is off".');
+  });
+
+  it('appends the first notice to a wrong-mode detail and caps it at 300 characters', () => {
+    const notice = `Permission mode forced to default ${'x'.repeat(400)}`;
+    const check = judgeAgentMode({ expected: 'auto', modes: ['default'], notices: [notice] });
+    expect(check.detail).toBe(
+      `The probe's agent session ran in default mode, not auto. claude said: "${notice.slice(0, 300)}"`,
+    );
+  });
+
+  it('reads not-checked when the probe did not run', () => {
+    expect(judgeAgentMode({ expected: 'auto', modes: null, notices: [] })).toEqual({
+      id: 'agent-mode',
+      label: 'Agent permission mode',
+      result: 'not-checked',
+      expected: 'auto',
+      effective: null,
+      detail: 'The probe could not run, so the agent permission mode was not seen.',
+    });
   });
 });

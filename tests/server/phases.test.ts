@@ -367,6 +367,18 @@ describe('GET /api/hosts/:hostId/doctor', () => {
               ],
             },
           }),
+      ...(overrides.noAgentMode === true
+        ? {}
+        : {
+            agentMode: {
+              id: 'agent-mode',
+              label: 'Agent permission mode',
+              result: 'pass',
+              detail: "The probe's agent session ran in auto mode.",
+              expected: 'auto',
+              effective: 'auto',
+            },
+          }),
       ...(overrides.checkedAt === undefined ? {} : { checkedAt: overrides.checkedAt }),
       ...(overrides.hostId === undefined ? {} : { hostId: overrides.hostId }),
     };
@@ -407,6 +419,23 @@ describe('GET /api/hosts/:hostId/doctor', () => {
 
     write(report());
     expect((await doctor()).body.verdict).toBe('pass');
+  });
+
+  it('fails a stored report that lacks the agent permission mode check (01-22)', async () => {
+    write(report({ noAgentMode: true }));
+    const older = await doctor();
+    expect(older.status).toBe(200);
+    expect(older.body.verdict).toBe('fail');
+    expect((older.body.report as Record<string, unknown>).agentMode).toBeUndefined();
+
+    write(report());
+    const current = await doctor();
+    expect(current.body.verdict).toBe('pass');
+    expect((current.body.report as Record<string, unknown>).agentMode).toMatchObject({
+      id: 'agent-mode',
+      result: 'pass',
+      effective: 'auto',
+    });
   });
 
   it('refuses a symlinked, malformed or other-host report as unreadable, never as a verdict', async () => {

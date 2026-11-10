@@ -521,6 +521,14 @@ describe('DoctorReport', () => {
           },
         ],
       },
+      agentMode: {
+        id: 'agent-mode' as const,
+        label: 'Agent permission mode',
+        result: 'pass' as const,
+        detail: "The probe's agent session ran in auto mode.",
+        expected: 'auto',
+        effective: 'auto' as string | null,
+      },
     };
   }
 
@@ -577,6 +585,32 @@ describe('DoctorReport', () => {
       expect(reportVerdict(DoctorReport.parse({ ...report, sandboxIsolation }))).toBe('fail');
     },
   );
+
+  it('parses an older report without agentMode, and fails it (01-22)', () => {
+    const { agentMode: _dropped, ...older } = validReport();
+    const parsed = DoctorReport.parse(older);
+    expect(parsed.schema).toBe('counterpoint/doctor/v1');
+    expect(parsed.agentMode).toBeUndefined();
+    expect(reportVerdict(parsed)).toBe('fail');
+  });
+
+  it.each(['fail', 'not-checked'] as const)(
+    'fails when the agent permission mode check is %s (01-22)',
+    (result) => {
+      const report = validReport();
+      const agentMode = { ...report.agentMode, result, effective: 'default' };
+      expect(reportVerdict(DoctorReport.parse({ ...report, agentMode }))).toBe('fail');
+    },
+  );
+
+  it('rejects an agentMode with another id or without expected (01-22)', () => {
+    const report = validReport();
+    expect(
+      DoctorReport.safeParse({ ...report, agentMode: { ...report.agentMode, id: 'mode' } }).success,
+    ).toBe(false);
+    const { expected: _expected, ...noExpected } = report.agentMode;
+    expect(DoctorReport.safeParse({ ...report, agentMode: noExpected }).success).toBe(false);
+  });
 
   it('fails when a probe target is missing', () => {
     const report = validReport();
