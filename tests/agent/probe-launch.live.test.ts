@@ -1,4 +1,6 @@
-// Live launch facts of the one production launch profile on the owner's real `claude` (01-21).
+// Live launch facts of the one production launch profile on the owner's real `claude` (01-21,
+// extended in 01-24 for the scrub opt-out: agentEnv sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to `0`,
+// and the profile sets `sandbox.autoAllowBashIfSandboxed: false` as replacement 1).
 //
 // Gated by COUNTERPOINT_LIVE_PROBE=1: it needs a signed-in `claude` and spends a few cents of
 // haiku. Every protected directory is a scratch directory (a fake home with .ssh and .config/gh, a
@@ -6,9 +8,14 @@
 // repo); the owner's real directories are never targeted. The probe directory itself is a scratch
 // directory too (CP_TEST_SCRATCH), never os.tmpdir().
 //
-// It answers three launch questions, not the evaluator's verdicts (01-23 asserts those):
-// - does claude really run the profile in `--permission-mode auto` (each init `permissionMode`,
-//   and no permission-mode notice on stderr);
+// It answers these launch questions, not the evaluator's verdicts (01-23 asserts those):
+// - does claude really run the profile in `--permission-mode auto` under the scrub opt-out (each
+//   init `permissionMode`, and no permission-mode or auto-mode notice on stderr);
+// - did both launched requests carry the scrub value `0` and only the allow-listed variable names
+//   (`launched.*.scrub`, `launched.*.envNames`; no other environment value is recorded), and did
+//   both launched `--settings` carry `sandbox.autoAllowBashIfSandboxed: false` and the block;
+// - did the treatment reach its own control canary (`treatmentBaseline`: the Bash cat and the Read
+//   of the control canary; the value itself is never written);
 // - does `permissions.blockWritesOutsideWorkingDirectories` refuse the outside Write and Edit,
 //   and what does that refusal look like;
 // - does every control step get accepted by an explicit rule (the control attribution rule: a
@@ -36,6 +43,7 @@ import {
   ClaudeCliRunner,
   type StreamEvent,
 } from '../../src/agent/runner.ts';
+import { AGENT_ENV_ALLOW, agentEnv } from '../../src/core/security/agent-env.ts';
 import {
   type AgentSettings,
   buildAgentSandboxSettings,
@@ -54,13 +62,32 @@ function isObject(value: unknown): value is Json {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Records each request's argv and cwd, then delegates unchanged to the real runner. */
+interface RecordedRequest {
+  argv: string[];
+  cwd: string;
+  /** The CLAUDE_CODE_SUBPROCESS_ENV_SCRUB value of the env the real runner spawns with. */
+  scrub: string | null;
+  /** That env's sorted variable names. No other environment value is recorded. */
+  envNames: string[];
+}
+
+/**
+ * Records each request's argv and cwd, plus the scrub value and the variable names of
+ * `agentEnv(request.env ?? process.env)` (exactly what ClaudeCliRunner spawns with), then
+ * delegates unchanged to the real runner.
+ */
 class RecordingRunner implements AgentRunner {
-  readonly requests: Array<{ argv: string[]; cwd: string }> = [];
+  readonly requests: RecordedRequest[] = [];
   readonly inner: ClaudeCliRunner = new ClaudeCliRunner();
 
   run(request: AgentRunRequest): Promise<AgentRun> {
-    this.requests.push({ argv: [...request.argv], cwd: request.cwd });
+    const env = agentEnv(request.env ?? process.env);
+    this.requests.push({
+      argv: [...request.argv],
+      cwd: request.cwd,
+      scrub: env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null,
+      envNames: Object.keys(env).sort(),
+    });
     return this.inner.run(request);
   }
 
@@ -133,6 +160,32 @@ function resultText(content: unknown): string {
       .join('\n');
   }
   return '';
+}
+
+/** The tool_result block and tool_result_meta entry of one tool call, if any. */
+function resultOf(events: readonly StreamEvent[], useId: string): { block?: Json; meta?: Json } {
+  for (const event of events) {
+    if (event.type !== 'user') continue;
+    const block = contentBlocks(event).find(
+      (b) => b.type === 'tool_result' && b.tool_use_id === useId,
+    );
+    if (!block) continue;
+    const metaList = (event as Json).tool_result_meta;
+    const meta = Array.isArray(metaList)
+      ? metaList.filter(isObject).find((m) => m.id === useId)
+      : undefined;
+    return { block, meta };
+  }
+  return {};
+}
+
+function decisionOf(
+  meta: Json | undefined,
+): { decision: unknown; source: unknown; reason_type: unknown } | null {
+  const pd = isObject(meta?.permission_decision) ? meta.permission_decision : null;
+  return pd === null
+    ? null
+    : { decision: pd.decision, source: pd.source, reason_type: pd.reason_type };
 }
 
 interface StepRecord {
@@ -243,26 +296,11 @@ function stepRecords(
       continue;
     }
     matching.forEach((use, i) => {
-      let block: Json | undefined;
-      let meta: Json | undefined;
-      for (const event of events) {
-        if (event.type !== 'user') continue;
-        const found = contentBlocks(event).find(
-          (b) => b.type === 'tool_result' && b.tool_use_id === use.id,
-        );
-        if (!found) continue;
-        block = found;
-        const metaList = (event as Json).tool_result_meta;
-        if (Array.isArray(metaList)) meta = metaList.filter(isObject).find((m) => m.id === use.id);
-        break;
-      }
+      const { block, meta } = resultOf(events, use.id);
       const isError = typeof block?.is_error === 'boolean' ? block.is_error : null;
       const text = block === undefined ? '' : resultText(block.content);
       const pd = isObject(meta?.permission_decision) ? meta.permission_decision : null;
-      const decision =
-        pd === null
-          ? null
-          : { decision: pd.decision, source: pd.source, reason_type: pd.reason_type };
+      const decision = decisionOf(meta);
       const deniedEvent = deniedEvents.get(use.id);
       const rejected = pd?.decision === 'reject';
       const refused = isError === true || rejected;
@@ -307,6 +345,71 @@ function stepRecords(
     });
   }
   return records;
+}
+
+interface BaselineEntry {
+  index: number;
+  tool: string;
+  /** True when the control canary value appears in one of this step's tool results. */
+  reached: boolean;
+  decision: { decision: unknown; source: unknown; reason_type: unknown } | null;
+}
+
+/**
+ * The treatment's own control steps (target `control`: the Bash cat and the Read of the control
+ * canary). One entry per step; `decision` is that of the call that reached the canary, else of the
+ * last matching call. The canary value itself is never written.
+ */
+function treatmentBaseline(
+  steps: readonly ProbeStep[],
+  events: readonly StreamEvent[],
+  canaryValue: string,
+): BaselineEntry[] {
+  const uses = toolUses(events);
+  return steps
+    .filter((step) => step.target === 'control')
+    .map((step) => {
+      const results = uses
+        .filter((use) => matches(step, use))
+        .map((use) => resultOf(events, use.id));
+      const hit = results.find(
+        (r) => r.block !== undefined && resultText(r.block.content).includes(canaryValue),
+      );
+      const chosen = hit ?? results.at(-1);
+      return {
+        index: step.index,
+        tool: step.tool,
+        reached: hit !== undefined,
+        decision: decisionOf(chosen?.meta),
+      };
+    });
+}
+
+interface LaunchedFact {
+  scrub: string | null;
+  envNames: string[];
+  autoAllowBashIfSandboxed: unknown;
+  blockWritesOutsideWorkingDirectories: unknown;
+}
+
+/** The launch facts of one recorded request, the last two read from its `--settings` JSON. */
+function launchedFact(request: RecordedRequest | undefined): LaunchedFact | null {
+  if (request === undefined) return null;
+  let settings: Json = {};
+  try {
+    const parsed = JSON.parse(valuesAfter(request.argv, '--settings')[0] ?? '{}') as unknown;
+    if (isObject(parsed)) settings = parsed;
+  } catch {
+    settings = {};
+  }
+  const sandbox = isObject(settings.sandbox) ? settings.sandbox : {};
+  const permissions = isObject(settings.permissions) ? settings.permissions : {};
+  return {
+    scrub: request.scrub,
+    envNames: request.envNames,
+    autoAllowBashIfSandboxed: sandbox.autoAllowBashIfSandboxed,
+    blockWritesOutsideWorkingDirectories: permissions.blockWritesOutsideWorkingDirectories,
+  };
 }
 
 interface SessionFact {
@@ -392,6 +495,19 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live launch profil
     const controlRequest = runner.requests.find(
       (r) => r.argv[r.argv.indexOf('-p') + 1] === plan.control.prompt,
     );
+    const treatmentRequests = runner.requests.filter(
+      (r) => r.argv[r.argv.indexOf('-p') + 1] === plan.treatment.prompt,
+    );
+    const launched = {
+      treatment: launchedFact(treatmentRequests.at(-1)),
+      control: launchedFact(controlRequest),
+    };
+    const launchedTreatmentAll = treatmentRequests.map((r) => launchedFact(r));
+    const baseline = treatmentBaseline(
+      plan.treatment.steps,
+      treatment.events,
+      plan.controlCanary.value,
+    );
     const controlArgv = controlRequest?.argv ?? [];
     const launchedSettings = JSON.parse(
       valuesAfter(controlArgv, '--settings')[0] ?? '{"permissions":{}}',
@@ -435,6 +551,9 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live launch profil
       treatmentAttempts: outcome.treatmentAttempts,
       sessions,
       notices: { treatment: notices(treatment.stderr), control: notices(control.stderr) },
+      launched,
+      treatmentRequests: treatmentRequests.length,
+      treatmentBaseline: baseline,
       controlAllowSurface,
       controlWorkdir,
       controlDecisionSources,
@@ -493,6 +612,34 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live launch profil
     }
     expect.soft(facts.notices.treatment, 'treatment notices').toEqual([]);
     expect.soft(facts.notices.control, 'control notices').toEqual([]);
+
+    // Both launched requests carried the scrub opt-out, only the allow-listed variable names,
+    // sandbox auto-allow off and the outside-write block (01-24).
+    const expectedEnvNames = [
+      ...AGENT_ENV_ALLOW.filter((name) => typeof process.env[name] === 'string'),
+      'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB',
+    ].sort();
+    expect.soft(treatmentRequests.length, 'treatment requests').toBe(outcome.treatmentAttempts);
+    const launchedAll: Array<[string, LaunchedFact | null]> = [
+      ...launchedTreatmentAll.map((f, i): [string, LaunchedFact | null] => [
+        `treatment request ${i + 1}`,
+        f,
+      ]),
+      ['control', launched.control],
+    ];
+    for (const [label, fact] of launchedAll) {
+      expect.soft(fact, `${label} recorded`).not.toBeNull();
+      expect.soft(fact?.scrub, `${label} scrub`).toBe('0');
+      expect.soft(fact?.envNames, `${label} env names`).toEqual(expectedEnvNames);
+      expect.soft(fact?.autoAllowBashIfSandboxed, `${label} autoAllowBashIfSandboxed`).toBe(false);
+      expect.soft(fact?.blockWritesOutsideWorkingDirectories, `${label} block`).toBe(true);
+    }
+
+    // The treatment reached its own control canary (the Bash cat and the Read).
+    expect.soft(baseline.length, 'treatment baseline steps').toBe(2);
+    for (const b of baseline) {
+      expect.soft(b.reached, `treatment baseline ${b.index} ${b.tool} reached`).toBe(true);
+    }
 
     // Nothing was written or changed outside the working folder.
     expect.soft(outcome.leftovers).toEqual([]);

@@ -121,6 +121,12 @@ describe('buildAgentSandboxSettings', () => {
     expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
   });
 
+  it('turns sandbox auto-allow off explicitly, with and without a workdir (scrub replacement 1)', () => {
+    const { workdir: _omit, ...rest } = paths;
+    expect(buildAgentSandboxSettings(paths).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
+    expect(buildAgentSandboxSettings(rest).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
+  });
+
   it('lists the read-protected directories as plain absolute denyRead paths', () => {
     const { settings } = buildAgentSandboxSettings(paths);
     expect([...settings.sandbox.filesystem.denyRead].sort()).toEqual(
@@ -158,6 +164,14 @@ describe('buildAgentSandboxSettings', () => {
     expect(settings.permissions.allow).toEqual([`Edit(/${work}/**)`]);
     expect(settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(settings.permissions).not.toHaveProperty('additionalDirectories');
+    expect(Object.keys(settings.sandbox).sort()).toEqual([
+      'allowUnsandboxedCommands',
+      'autoAllowBashIfSandboxed',
+      'enabled',
+      'failIfUnavailable',
+      'filesystem',
+    ]);
+    expect(settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
     expect(Object.keys(settings.sandbox.filesystem).sort()).toEqual([
       'allowWrite',
       'denyRead',
@@ -180,6 +194,15 @@ describe('buildAgentSandboxSettings', () => {
     // The outside-write block is on without a workdir too (fail closed).
     expect(profile.settings.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     expect(profile.settings.permissions).not.toHaveProperty('additionalDirectories');
+    expect(Object.keys(profile.settings.sandbox).sort()).toEqual([
+      'allowUnsandboxedCommands',
+      'autoAllowBashIfSandboxed',
+      'enabled',
+      'failIfUnavailable',
+      'filesystem',
+    ]);
+    // Sandbox auto-allow is off without a workdir too.
+    expect(profile.settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
     expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
     expect(profile.workdir).toBeNull();
   });
@@ -330,12 +353,13 @@ describe('agentEnv', () => {
     NODE_OPTIONS: '--require /tmp/evil.js',
   };
 
-  it('keeps only the allow-listed variables and adds the subprocess scrub flag', () => {
+  it("keeps only the allow-listed variables and opts out of the subprocess scrub ('0')", () => {
     const env = agentEnv(parent);
     expect(Object.keys(env).sort()).toEqual(
       [...AGENT_ENV_ALLOW, 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'].sort(),
     );
-    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('1');
+    // The owner's scrub opt-out (STATE.md [Owner] 2026-11-10): the value is exactly '0'.
+    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('0');
     expect(env.PATH).toBe(parent.PATH);
   });
 

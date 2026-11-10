@@ -515,8 +515,10 @@ export function probePrompt(steps: readonly ProbeStep[]): string {
 }
 
 /**
- * Settings for the control session. The deny side, the sandbox flags and the outside-write block
- * (a restriction, not a grant) are copied from the treatment; the allow side is written fresh.
+ * Settings for the control session. The deny side, the sandbox flags, the outside-write block
+ * (`blockWritesOutsideWorkingDirectories`) and sandbox auto-allow off (`autoAllowBashIfSandboxed:
+ * false`, 01-24) are copied from the treatment; both are restrictions, not grants. The allow side
+ * is written fresh.
  * Nothing on the treatment's allow side (allow rules, additionalDirectories, allowWrite,
  * excludedCommands, ...) is ever read.
  *
@@ -556,6 +558,9 @@ export function buildControlSettings(treatment: AgentSettings, plan: ProbePlan):
       enabled: treatment.sandbox.enabled,
       failIfUnavailable: treatment.sandbox.failIfUnavailable,
       allowUnsandboxedCommands: false,
+      ...(treatment.sandbox.autoAllowBashIfSandboxed === false
+        ? { autoAllowBashIfSandboxed: false }
+        : {}),
       filesystem: {
         denyRead: [...treatment.sandbox.filesystem.denyRead],
         denyWrite: [...treatment.sandbox.filesystem.denyWrite],

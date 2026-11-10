@@ -28,6 +28,14 @@
 // every built-in file-editing tool); without one there is no allow side. Deny rules are evaluated
 // before allow rules in every mode, so the workdir's `.claude/` folder and every protected
 // directory stay unwritable.
+//
+// Sandbox auto-allow (replacement 1 for the scrub, 01-24). Claude Code's default
+// (`autoAllowBashIfSandboxed: true`) runs sandboxed Bash commands without the permission prompt
+// flow. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` kept that off; agent sessions now opt out of the scrub
+// (agent-env.ts), so the profile sets `sandbox.autoAllowBashIfSandboxed: false` explicitly, with or
+// without a workdir. With it off, an unlisted sandboxed command goes through the permission rules
+// and, in auto mode, the classifier. The `--settings` flag outranks user, project and local
+// settings but not managed settings; doctor checks managed sources for it (01-25).
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -65,6 +73,8 @@ export interface AgentSettings {
     enabled: boolean;
     failIfUnavailable: boolean;
     allowUnsandboxedCommands: boolean;
+    /** False sends sandboxed Bash commands through the permission rules (and, in auto mode, the classifier). */
+    autoAllowBashIfSandboxed?: boolean;
     excludedCommands?: string[];
     filesystem: {
       denyRead: string[];
@@ -185,6 +195,7 @@ export function buildAgentSandboxSettings(paths: ProtectedPaths): AgentSandbox {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: false,
       filesystem: {
         denyRead: readDirs,
         denyWrite: writeTargets.map((target) => target.path),

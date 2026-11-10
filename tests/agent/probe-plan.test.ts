@@ -128,6 +128,8 @@ function overGranted(): AgentSettings {
     },
     sandbox: {
       ...real.sandbox,
+      // A restriction, not a grant: the over-granted input keeps the real profile's auto-allow off.
+      autoAllowBashIfSandboxed: real.sandbox.autoAllowBashIfSandboxed,
       excludedCommands: ['git'],
       filesystem: { ...real.sandbox.filesystem, allowWrite: [gitDir] },
     },
@@ -194,6 +196,7 @@ function assertConfined(
   ]);
   expect(Object.keys(settings.sandbox).sort()).toEqual([
     'allowUnsandboxedCommands',
+    'autoAllowBashIfSandboxed',
     'enabled',
     'failIfUnavailable',
     'filesystem',
@@ -204,6 +207,7 @@ function assertConfined(
     'denyWrite',
   ]);
   expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
+  expect(settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
 
   const entries = allowSurface(session);
   expect(entries.length).toBeGreaterThan(0);
@@ -549,6 +553,13 @@ describe('buildControlSettings', () => {
     expect(treatment.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
     const control = buildControlSettings(treatment, plan());
     expect(control.permissions.blockWritesOutsideWorkingDirectories).toBe(true);
+  });
+
+  it('copies autoAllowBashIfSandboxed: false from the treatment (scrub replacement 1)', () => {
+    const treatment = buildAgentSandboxSettings(paths).settings;
+    expect(treatment.sandbox.autoAllowBashIfSandboxed).toBe(false);
+    const control = buildControlSettings(treatment, plan());
+    expect(control.sandbox.autoAllowBashIfSandboxed).toBe(false);
   });
 
   it('inherits nothing from an over-granted treatment input', () => {
