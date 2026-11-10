@@ -81,6 +81,35 @@ function parseLine(line: string): StreamEvent {
   return { type: 'unknown', raw: line };
 }
 
+/** A stderr line that speaks about the permission mode or auto mode (01-22). */
+const MODE_NOTICE_RE = /permission mode|auto mode/i;
+
+/**
+ * The permission modes a session really ran in, as claude itself reports them (01-22): one entry
+ * per `system/init` event, in order (a retried session has two), holding its `permissionMode`
+ * when that is a string and `null` otherwise. `notices` are the trimmed, non-empty stderr lines
+ * that mention the permission mode or auto mode (claude 2.1.321 printed `⚠ Permission mode forced
+ * to default …` when it overrode the requested mode). Read from structured data only: never from
+ * the argv the session was launched with, nor from the model's prose.
+ */
+export function sessionModeEvidence(run: { events: readonly StreamEvent[]; stderr: string }): {
+  modes: Array<string | null>;
+  notices: string[];
+} {
+  const modes: Array<string | null> = [];
+  for (const event of run.events) {
+    const known = event as KnownStreamEvent;
+    if (known.type !== 'system' || known.subtype !== 'init') continue;
+    const mode = known.permissionMode;
+    modes.push(typeof mode === 'string' ? mode : null);
+  }
+  const notices = run.stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && MODE_NOTICE_RE.test(line));
+  return { modes, notices };
+}
+
 /** The absolute real path of the `claude` binary on PATH. */
 export function resolveClaudeBinary(parentEnv: NodeJS.ProcessEnv = process.env): string {
   for (const dir of (parentEnv.PATH ?? '').split(delimiter)) {

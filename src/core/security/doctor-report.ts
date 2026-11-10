@@ -1,7 +1,8 @@
 // The doctor report: schema `counterpoint/doctor/v1`, written by `counterpoint doctor` and
 // rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check (the
-// Sandbox isolation settings check included) passes and every one of the nine probe targets is
-// `blocked`; anything missing, failed, reachable or not checked is a fail (never a silent pass).
+// Sandbox isolation settings and Agent permission mode checks included) passes and every one of
+// the nine probe targets is `blocked`; anything missing, failed, reachable or not checked is a
+// fail (never a silent pass).
 //
 // `outside-workdir` (01-17) was added to schema v1 as an additive row: a report written before it
 // still parses, and its verdict is `fail` because that row is missing. The classifier revision
@@ -15,6 +16,12 @@
 // `outside-workdir`: a report without it still parses, and its verdict is `fail`. A row's optional
 // `exceptions` field records an owner exception the row applied (`sandbox-proxy-login`, STATE.md
 // [Owner] 2026-11-10), so a row that needed one is never a silent pass.
+//
+// `agentMode` (01-22) is an additive v1 field: the Agent permission mode check, the permission
+// mode the probe's agent session really ran in, read from claude's own init events and stderr
+// (never from the argv). A report written before it still parses, and its verdict is `fail`,
+// because the check is required to pass. Core receives the expected mode as a parameter, so it
+// imports nothing from `src/agent/`.
 import { z } from 'zod';
 
 export const PROBE_TARGET_IDS = [
@@ -120,6 +127,90 @@ export const SandboxIsolationCheck = Check.extend({
 });
 export type SandboxIsolationCheck = z.infer<typeof SandboxIsolationCheck>;
 
+/** The Agent permission mode check (01-22): the mode Counterpoint launched with and what ran. */
+export const AgentModeCheck = Check.extend({
+  id: z.literal('agent-mode'),
+  expected: z.string().min(1),
+  effective: z.string().nullable(),
+});
+export type AgentModeCheck = z.infer<typeof AgentModeCheck>;
+
+const AGENT_MODE_LABEL = 'Agent permission mode';
+const NOTICE_MAX = 300;
+
+/** Control characters (C0, DEL, C1, U+2028, U+2029) become spaces; trimmed; at most 300 chars. */
+function sanitiseNotice(text: string): string {
+  let result = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const control =
+      code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+    result += control ? ' ' : ch;
+  }
+  return [...result.trim()].slice(0, NOTICE_MAX).join('');
+}
+
+/**
+ * Judges the probe's agent session mode (01-22). `modes` holds one entry per init event of every
+ * attempt (null when the event carried no mode), or is `null` when the probe did not run. Passes
+ * only when every attempt reported `expected` and claude printed no permission-mode notice.
+ */
+export function judgeAgentMode(input: {
+  expected: string;
+  modes: ReadonlyArray<string | null> | null;
+  notices: readonly string[];
+}): AgentModeCheck {
+  const { expected, modes } = input;
+  const base = { id: 'agent-mode' as const, label: AGENT_MODE_LABEL, expected };
+  const fix = `Counterpoint launches agent sessions with --permission-mode ${expected}. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.`;
+  if (modes === null) {
+    return {
+      ...base,
+      result: 'not-checked',
+      effective: null,
+      detail: 'The probe could not run, so the agent permission mode was not seen.',
+    };
+  }
+  // Every notice counts, even one that sanitises to nothing (fail closed).
+  const notices = input.notices.map(sanitiseNotice);
+  const said = notices[0] === undefined ? '' : ` claude said: "${notices[0]}"`;
+  if (modes.length === 0) {
+    return {
+      ...base,
+      result: 'fail',
+      effective: null,
+      detail: "The probe's agent session did not report its permission mode.",
+      fix,
+    };
+  }
+  const other = modes.find((mode) => mode !== expected);
+  if (other !== undefined) {
+    const effective = other;
+    return {
+      ...base,
+      result: 'fail',
+      effective,
+      detail: `The probe's agent session ran in ${effective ?? 'an unknown'} mode, not ${expected}.${said}`,
+      fix,
+    };
+  }
+  if (notices[0] !== undefined) {
+    return {
+      ...base,
+      result: 'fail',
+      effective: expected,
+      detail: `claude reported a permission mode change: "${notices[0]}".`,
+      fix,
+    };
+  }
+  return {
+    ...base,
+    result: 'pass',
+    effective: expected,
+    detail: `The probe's agent session ran in ${expected} mode.`,
+  };
+}
+
 export const DOCTOR_SCHEMA = 'counterpoint/doctor/v1';
 
 export const DoctorReport = z.object({
@@ -134,6 +225,8 @@ export const DoctorReport = z.object({
   probe: z.array(ProbeTarget),
   /** Additive (01-25). Missing reads as not passing. */
   sandboxIsolation: SandboxIsolationCheck.optional(),
+  /** Additive (01-22). Missing reads as not passing. */
+  agentMode: AgentModeCheck.optional(),
 });
 export type DoctorReport = z.infer<typeof DoctorReport>;
 
@@ -148,6 +241,7 @@ export function reportVerdict(report: DoctorReport): Verdict {
   if (report.sandboxIsolation === undefined || report.sandboxIsolation.result !== 'pass') {
     return 'fail';
   }
+  if (report.agentMode === undefined || report.agentMode.result !== 'pass') return 'fail';
   for (const id of PROBE_TARGET_IDS) {
     const rows = report.probe.filter((row) => row.id === id);
     if (rows.length === 0 || rows.some((row) => row.result !== 'blocked')) return 'fail';

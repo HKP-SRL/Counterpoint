@@ -12,12 +12,19 @@
 // server-managed cache and the managed sources; src/doctor/settings-sources.ts) and fails when any
 // of them turns sandbox isolation off (src/core/security/sandbox-isolation.ts). While that check
 // does not pass, no probe row counts as Blocked: each measured Blocked row is stored Not checked.
+//
+// The Agent permission mode check (01-22): doctor records the permission mode the probe's
+// treatment session really ran in, from claude's own `system/init` events (every attempt) and a
+// stderr cross-check (sessionModeEvidence), and fails anything but AGENT_PERMISSION_MODE, the mode
+// the argv launches with. A claude upgrade or a settings source that silently overrides the mode
+// (claude 2.1.321 forced `default` under the scrub, 01-18/01-21) then fails doctor.
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
 import { runSandboxProbe } from '../agent/probe.ts';
 import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
-import { ClaudeCliRunner } from '../agent/runner.ts';
+import { ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
 import { homePaths, hostDir } from '../core/host/home.ts';
@@ -26,6 +33,7 @@ import {
   type Check,
   DOCTOR_SCHEMA,
   DoctorReport,
+  judgeAgentMode,
   PROBE_TARGET_IDS,
   type ProbeTarget,
   type ProbeTargetId,
@@ -57,6 +65,11 @@ export interface ProbeSummary {
   claudeVersion: string | null;
   /** Artifacts of an earlier killed probe that this run removed before starting. */
   staleLeftovers: readonly string[];
+  /**
+   * What the treatment session reported about its permission mode (01-22): one entry per init
+   * event of every attempt, and the stderr mode notices (sessionModeEvidence).
+   */
+  agentSession: { modes: Array<string | null>; notices: string[] };
 }
 
 export type DoctorProbe = (input: {
@@ -72,6 +85,7 @@ export const liveSandboxProbe: DoctorProbe = async ({ protectedPaths, logDir }) 
     targets: outcome.targets,
     claudeVersion: outcome.claudeVersion,
     staleLeftovers: outcome.staleLeftovers,
+    agentSession: sessionModeEvidence(outcome.treatment),
   };
 };
 
@@ -266,9 +280,12 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
 
   let probe: ProbeTarget[];
   let claudeVersion: string | null = null;
+  // null until the probe ran: the mode check then reads Not checked.
+  let agentSession: ProbeSummary['agentSession'] | null = null;
   try {
     const summary = await (input.probe ?? liveSandboxProbe)({ protectedPaths, logDir });
     claudeVersion = summary.claudeVersion;
+    agentSession = summary.agentSession;
     const stale = new Map<ProbeTargetId, string[]>();
     for (const path of summary.staleLeftovers) {
       const id = targetOfPath(path, protectedPaths);
@@ -297,7 +314,14 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     });
   } catch (error) {
     probe = notCheckedTargets(hostName, `The probe could not run: ${(error as Error).message}`);
+    agentSession = null;
   }
+  // The expected mode is the one the argv launches with, so the two cannot drift.
+  const agentMode = judgeAgentMode({
+    expected: AGENT_PERMISSION_MODE,
+    modes: agentSession === null ? null : agentSession.modes,
+    notices: agentSession === null ? [] : agentSession.notices,
+  });
   if (!trust.ok) {
     probe = probe.map((row) =>
       row.id === 'signing-key'
@@ -335,6 +359,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     integrity,
     probe,
     sandboxIsolation,
+    agentMode,
   });
   const reportPath = writeDoctorReport(home, report);
   return { report, reportPath, logDir };
@@ -349,6 +374,8 @@ const PROBE_WORD = {
   'not-checked': 'NOT CHECKED',
 } as const;
 const WORD_WIDTH = 'NOT CHECKED'.length;
+/** The mode line of a report written before 01-22 (`NOT CHECKED` fills the word column). */
+const AGENT_MODE_NOT_RECORDED = '  NOT CHECKED  Agent permission mode: not recorded in this report';
 /** The isolation line of a report written before 01-25 (`NOT CHECKED` fills the word column). */
 const ISOLATION_NOT_RECORDED =
   '  NOT CHECKED  Sandbox isolation settings: not recorded in this report';
@@ -377,8 +404,11 @@ export function doctorVerdict(report: DoctorReport): string {
   const checks = [...report.tools, ...report.signingKey, report.integrity];
   const isolationFailed =
     report.sandboxIsolation === undefined || report.sandboxIsolation.result !== 'pass';
+  const modeFailed = report.agentMode === undefined || report.agentMode.result !== 'pass';
   const failedChecks =
-    checks.filter((check) => check.result !== 'pass').length + (isolationFailed ? 1 : 0);
+    checks.filter((check) => check.result !== 'pass').length +
+    (isolationFailed ? 1 : 0) +
+    (modeFailed ? 1 : 0);
   const failedTargets = PROBE_TARGET_IDS.filter((id) => {
     const rows = report.probe.filter((row) => row.id === id);
     return rows.length === 0 || rows.some((row) => row.result !== 'blocked');
@@ -391,8 +421,9 @@ export function doctorVerdict(report: DoctorReport): string {
  * The UI-SPEC CLI contract: groups `Tools`, `Signing key`, `Sandbox probe`; one line per check
  * (`PASS` / `FAIL` / `NOT CHECKED`, probe rows `BLOCKED` / `REACHABLE` / `NOT CHECKED`), an
  * indented `Fix:` line under a failure, then the verdict. The `Sandbox probe` group starts with
- * the Sandbox isolation settings check; a report from before 01-25 shows it as `NOT CHECKED ...
- * not recorded in this report`.
+ * the Agent permission mode check (01-22), then the Sandbox isolation settings check (01-25), then
+ * the probe rows; a report from before either shows that check as `NOT CHECKED ... not recorded in
+ * this report`.
  */
 export function formatDoctorReport(report: DoctorReport): string[] {
   const lines: string[] = ['Tools'];
@@ -400,6 +431,11 @@ export function formatDoctorReport(report: DoctorReport): string[] {
   lines.push('Signing key');
   for (const check of [...report.signingKey, report.integrity]) lines.push(...checkLines(check));
   lines.push('Sandbox probe');
+  if (report.agentMode === undefined) {
+    lines.push(AGENT_MODE_NOT_RECORDED);
+  } else {
+    lines.push(...checkLines(report.agentMode));
+  }
   if (report.sandboxIsolation === undefined) {
     lines.push(ISOLATION_NOT_RECORDED);
   } else {
