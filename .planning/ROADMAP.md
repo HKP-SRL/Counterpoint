@@ -72,8 +72,7 @@ Plans:
 - [x] 01-17-PLAN.md — Gap (WINDOWS.md #2) 1/2: confine agent Write/Edit to the session folder in the one launch profile; probe row `Files outside the working folder` through evaluator and doctor *(wave 10)*
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- ~~01-18-PLAN.md~~ — superseded (`status: superseded`): halted at its live tracer on claude 2.1.321 (the scrub forced dontAsk to default); the owner chose auto mode; work moved to 01-21…01-23
-- [ ] 01-21-PLAN.md — Gap (auto mode, WINDOWS.md #2) 1/3: launch profile in `--permission-mode auto` with `blockWritesOutsideWorkingDirectories`; control covered by explicit allow rules; live launch tracer; evaluator counts only deterministic refusals (MATCHER_REVISION 3) *(wave 11)*
+- [ ] 01-21-PLAN.md — Gap (auto mode, WINDOWS.md #2) 1/3: launch profile in `--permission-mode auto` with `blockWritesOutsideWorkingDirectories`; control covered by explicit allow rules; live launch tracer; evaluator counts only deterministic refusals (MATCHER_REVISION 3). **Likely owner-decision gate:** on claude 2.1.321 the scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`) forced the mode down, and the notice names the scrub, not dontAsk. If the live run shows auto forced down too, 01-21 stops, and Waves 12–16 wait until the owner picks one of: a layer-preserving launch variant that reached auto; opting out of the scrub (drops a security layer); or default mode with allow lists (contradicts the auto decision). The gap is then re-planned *(wave 11)*
 
 **Wave 12** *(blocked on Wave 11 completion)*
 - [ ] 01-22-PLAN.md — Gap 2/3: doctor checks the agent session's effective permission mode (`agentMode`, additive v1 field); the Trust page shows it, the eighth probe row and the new all-pass wording; UI-SPEC E8 *(wave 12)*
@@ -96,6 +95,7 @@ Plans:
 
 **UI hint**: yes
 **Notes**: Start with the sandbox spike. Confirm that Claude Code's sandbox confines headless `claude -p` sessions (Bash and the Read/Edit tools) before building the trust model on it. If it does not, wrap the whole process or document a weaker boundary. Approvals live in Cena's normal history; there is no separate approvals repo. The approval statement's draft-hash slot stays empty until Phase 4 adds design sign-off.
+**Retired plans**: 01-18-PLAN.md is superseded and never runs. Its frontmatter `status: superseded` (GSD #2349) drops it from `phase-plan-index` and `roadmap analyze`, so it is never scheduled; 01-21's verify checks that. It halted at its live tracer on claude 2.1.321, where the scrub forced dontAsk to default. The owner then chose auto mode, and its work moved to 01-21…01-23. It is listed here rather than in the Plans checklist because a non-checkbox row splits that list for `roadmap annotate-dependencies`.
 
 ### Phase 2: First Unattended Run
 **Goal**: The owner can start a run on an approved Cena QR-menu phase and walk away. Counterpoint builds it overnight in its own worktree, judges it only by gate exit codes, and leaves either a green PR with a preview link or a parked item with the reason.
