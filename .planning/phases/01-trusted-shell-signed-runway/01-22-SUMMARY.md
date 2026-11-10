@@ -240,3 +240,10 @@ None.
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-10*
+
+## Self-Check: PASSED
+
+- This SUMMARY exists, and every modified file is in commits `f896129` and `fea0cd5`.
+- `git log --oneline -4` shows `cb105e8` (this SUMMARY), `fea0cd5`, `f896129` and the base `25bd20e`, so `git rev-list --count 25bd20e..HEAD` was 2 before the SUMMARY commit. The working tree was clean.
+- The guard refused the combined self-check command (a loop over `git merge-base`) with the same "names git in a form too complex" text. I reran it as plain `git log` and `git status` commands.
+- STATE.md, ROADMAP.md and REQUIREMENTS.md were not touched (worktree mode; FOUND-03 and FOUND-04 are blocked in `requirements.ready-ids`).
