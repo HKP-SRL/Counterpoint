@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch 001 · Mission page</title>
+<link rel="stylesheet" href="../themes/default.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: var(--font-family-body); font-size: var(--text-body); line-height: 20px;
+    color: var(--color-text-primary); background: var(--color-background-body);
+    padding-top: 48px; -webkit-font-smoothing: antialiased;
+  }
+  button, select, input { font: inherit; color: inherit; }
+  .ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .ic.sm { width: 14px; height: 14px; }
+  .ic.lg { width: 20px; height: 20px; }
+  .spin { animation: spin 1.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- Sketch chrome (not part of the design) ---------- */
+  #variant-nav {
+    position: fixed; top: 0; left: 0; right: 0; height: 48px; z-index: 9998;
+    display: flex; align-items: center; gap: 6px; padding: 0 12px; overflow-x: auto;
+    background: #101010; color: #cfcfcf; font: 12px/1 system-ui, sans-serif; border-bottom: 1px solid #262626;
+  }
+  #variant-nav .lbl { color: #8a8a8a; margin: 0 4px 0 8px; white-space: nowrap; }
+  #variant-nav button {
+    background: transparent; border: 1px solid #333; color: #bdbdbd; padding: 6px 10px;
+    border-radius: 6px; cursor: pointer; white-space: nowrap; transition: all .15s ease;
+  }
+  #variant-nav button:hover { border-color: #666; color: #fff; }
+  #variant-nav button.active { background: #f1f1f1; color: #111; border-color: #f1f1f1; }
+  #variant-nav .sep { width: 1px; height: 20px; background: #333; margin: 0 6px; flex: none; }
+
+  /* ---------- App shell (Astryx AppShell + TopNav + SideNav look) ---------- */
+  #frame { margin: 0 auto; container-type: inline-size; transition: max-width .2s ease; }
+  .shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); grid-template-rows: 56px 1fr; min-height: calc(100vh - 48px); }
+  .topnav {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+    background: var(--color-background-surface); border-bottom: 1px solid var(--color-border);
+  }
+  .wordmark { font-weight: 600; }
+  .hostsw { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 0; background: transparent; border-radius: var(--radius-element); cursor: pointer; }
+  .hostsw:hover { background: var(--color-neutral); }
+  .topnav .end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-secondary); }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); display: inline-block; }
+  .iconbtn { width: 32px; height: 32px; display: grid; place-items: center; border: 0; background: transparent; border-radius: var(--radius-element); cursor: pointer; color: var(--color-text-secondary); }
+  .iconbtn:hover { background: var(--color-neutral); color: var(--color-text-primary); }
+  .sidenav { background: var(--color-background-surface); border-right: 1px solid var(--color-border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .navitem { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0; background: transparent; border-radius: var(--radius-element); color: var(--color-text-secondary); cursor: pointer; text-align: left; transition: all .15s ease; }
+  .navitem:hover { background: var(--color-neutral); color: var(--color-text-primary); }
+  .navitem.sel { background: var(--color-accent); color: var(--color-on-accent); }
+  .navcount { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; }
+  main { padding: 24px; min-width: 0; }
+  @container (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; }
+    .sidenav { display: none; }
+    main { padding: 16px; }
+    .hostsw .sup { display: none; }
+  }
+
+  /* ---------- Primitives ---------- */
+  .h2 { font-size: var(--text-heading); line-height: 28px; font-weight: 600; margin: 0; }
+  .sup { font-size: var(--text-supporting); line-height: 20px; color: var(--color-text-secondary); }
+  .label { font-weight: 600; }
+  .muted { color: var(--color-text-secondary); }
+  .mono, code { font-family: var(--font-family-code); font-size: 13px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .display { font-size: var(--text-display); line-height: 36px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .stack { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+  .stack.tight { gap: 12px; }
+  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .card { background: var(--color-background-card); border: 1px solid var(--color-border); border-radius: var(--radius-container); min-width: 0; }
+  .card-h { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid var(--color-border); }
+  .card-h .end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .card-b { padding: 12px 16px; }
+  .cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 24px; align-items: start; }
+  .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  @container (max-width: 980px) { .cols, .cols.even { grid-template-columns: minmax(0, 1fr); } }
+  .page-h { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: var(--size-element-md); padding: 0 12px;
+    border-radius: var(--radius-element); border: 1px solid var(--color-border-emphasized);
+    background: var(--color-background-surface); color: var(--color-text-primary);
+    cursor: pointer; font-weight: 500; white-space: nowrap; transition: all .15s ease;
+  }
+  .btn:hover { background: var(--color-neutral); }
+  .btn.primary { background: var(--color-accent); color: var(--color-on-accent); border-color: transparent; }
+  .btn.primary:hover { opacity: .86; }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--color-text-secondary); }
+  .btn.ghost:hover { background: var(--color-neutral); color: var(--color-text-primary); }
+  .btn.sm { height: var(--size-element-sm); padding: 0 8px; font-size: 13px; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: var(--radius-inner); font-size: 12px; font-weight: 500; background: var(--color-neutral); color: var(--color-text-secondary); white-space: nowrap; }
+  .badge.info { background: var(--color-background-blue); color: var(--color-text-info); }
+  .badge.success { background: var(--color-background-green); color: var(--color-text-success); }
+  .badge.warning { background: var(--color-background-yellow); color: var(--color-text-warning); }
+  .badge.error { background: var(--color-background-red); color: var(--color-text-error); }
+  .kbd { font-family: var(--font-family-code); font-size: 11px; line-height: 16px; border: 1px solid var(--color-border-emphasized); border-radius: 4px; padding: 0 4px; color: var(--color-text-secondary); }
+
+  /* ---------- Flight-state strip ---------- */
+  .strip { position: relative; overflow: hidden; display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 24px; }
+  .st-icon { width: 32px; height: 32px; flex: none; border-radius: var(--radius-element); display: grid; place-items: center; background: var(--color-neutral); color: var(--color-text-secondary); }
+  .st-main { min-width: 0; flex: 1; }
+  .st-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .st-title { font-weight: 600; white-space: nowrap; }
+  .st-text { color: var(--color-text-secondary); }
+  .st-right { display: flex; align-items: center; gap: 12px; flex: none; }
+  .strip.alarm { border-color: var(--color-text-error); background: color-mix(in srgb, var(--color-background-red) 30%, var(--color-background-card)); }
+  .strip.alarm .st-icon { background: var(--color-background-red); color: var(--color-text-error); }
+  .strip.alarm .st-title { color: var(--color-text-error); }
+  .clockline { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--color-neutral); }
+  .clockline i { display: block; height: 100%; background: var(--color-text-disabled); transition: width .6s ease; }
+  /* hero version (variant B) */
+  .strip.hero { align-items: flex-start; padding: 20px; gap: 16px; }
+  .strip.hero .st-icon { width: 40px; height: 40px; }
+  .strip.hero .st-title { font-size: var(--text-heading); line-height: 28px; }
+  .track { margin-top: 12px; }
+  .track .bar { position: relative; height: 4px; border-radius: 2px; background: var(--color-neutral); }
+  .track .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--color-text-disabled); transition: width .6s ease; }
+  .track .bar b { position: absolute; top: -4px; width: 2px; height: 12px; background: var(--color-text-primary); border-radius: 1px; transition: left .6s ease; }
+  .track .ends { display: flex; justify-content: space-between; margin-top: 4px; }
+
+  /* ---------- Needs You list ---------- */
+  .nlist { list-style: none; margin: 0; padding: 0; }
+  .nrow { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border); transition: background .15s ease, opacity .2s ease; }
+  .nlist > .nrow:first-child { border-top: 0; }
+  .n-ic { color: var(--color-text-secondary); display: flex; }
+  .nrow.warning .n-ic { color: var(--color-text-warning); }
+  .nrow.error .n-ic { color: var(--color-text-error); }
+  .n-main { min-width: 0; flex: 1; }
+  .n-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .n-detail { font-size: 12px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .n-act { display: flex; gap: 4px; flex: none; }
+  .nrow.focus { background: var(--color-neutral); box-shadow: inset 2px 0 0 var(--color-accent); }
+  .nrow.leaving { opacity: 0; }
+  .quiet-empty { display: flex; align-items: center; gap: 8px; padding: 12px 16px; color: var(--color-text-secondary); }
+  .nrow.stacked { flex-wrap: wrap; }
+  .nrow.stacked .n-act { width: 100%; padding-left: 28px; }
+  @container (max-width: 760px) { .kbd-hints { display: none !important; } .strip.hero { flex-wrap: wrap; } .strip.hero .st-main { flex-basis: calc(100% - 56px); } .strip.hero .st-right { width: 100%; justify-content: flex-end; } .track .ends span { white-space: nowrap; } }
+  @container (max-width: 760px) { .nrow { flex-wrap: wrap; } .n-act { width: 100%; padding-left: 28px; } }
+
+  /* ---------- Flight board (variant A) ---------- */
+  .board { display: grid; grid-template-columns: repeat(5, minmax(184px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+  .col { display: flex; flex-direction: column; gap: 6px; min-width: 184px; }
+  .col-h { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 4px; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+  .col-h .count { color: var(--color-text-disabled); font-variant-numeric: tabular-nums; font-weight: 400; }
+  .col-h .end { margin-left: auto; font-weight: 400; }
+  .col-body { display: flex; flex-direction: column; gap: 6px; min-height: 96px; padding: 6px; border-radius: var(--radius-container); background: var(--color-neutral); }
+  .col-empty { padding: 8px 6px; font-size: 12px; color: var(--color-text-disabled); }
+  .col-empty.runway { color: var(--color-text-secondary); }
+  .bcard { background: var(--color-background-card); border: 1px solid var(--color-border); border-radius: var(--radius-element); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; transition: box-shadow .2s ease; }
+  .bcard .t { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .bcard .pn { font-family: var(--font-family-code); font-size: 12px; color: var(--color-text-secondary); flex: none; }
+  .bcard .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bcard.warning { box-shadow: inset 3px 0 0 var(--color-warning); }
+  .bcard.error { box-shadow: inset 3px 0 0 var(--color-error); }
+  .bcard.moved { animation: moved 1.6s ease; }
+  @keyframes moved { 0% { transform: translateY(-6px); box-shadow: 0 0 0 2px var(--color-text-disabled); } 100% { transform: none; box-shadow: 0 0 0 0 transparent; } }
+  .bcard .acts { gap: 2px; margin-left: -6px; }
+  .gates { display: flex; gap: 3px; }
+  .gate { flex: 1; height: 4px; border-radius: 2px; background: var(--color-border-emphasized); }
+  .gate.pass { background: var(--color-text-secondary); }
+  .gate.run { background: var(--color-text-secondary); animation: pulse .9s ease-in-out infinite alternate; }
+  .gate.fail { background: var(--color-error); }
+  @keyframes pulse { from { opacity: .25; } to { opacity: 1; } }
+  body.loud .gate.pass { background: var(--color-success); }
+  body.loud .gate.run { background: var(--color-info); }
+
+  /* ---------- Gate rows, logs, checklist ---------- */
+  .grows { list-style: none; margin: 0; padding: 0; }
+  .grow { display: flex; align-items: center; gap: 8px; height: 28px; }
+  .grow .g-ic { display: flex; color: var(--color-text-secondary); }
+  .grow.pend { color: var(--color-text-disabled); }
+  .grow.pend .g-ic { color: var(--color-text-disabled); }
+  .grow.fail .g-ic { color: var(--color-text-error); }
+  body.loud .grow.pass .g-ic { color: var(--color-text-success); }
+  .grow .g-end { margin-left: auto; font-size: 12px; color: var(--color-text-secondary); }
+  .log { margin: 8px 0 0; font-family: var(--font-family-code); font-size: 12px; line-height: 18px; background: var(--color-background-body); border: 1px solid var(--color-border); border-radius: var(--radius-element); padding: 8px 12px; white-space: pre-wrap; color: var(--color-text-secondary); overflow-x: auto; }
+  .disclosure { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0; color: var(--color-text-secondary); cursor: pointer; font-size: 12px; }
+  .disclosure:hover { color: var(--color-text-primary); }
+  .disclosure .ic { transition: transform .15s ease; }
+  .disclosure.open .ic { transform: rotate(180deg); }
+  .check { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border); cursor: pointer; transition: background .15s ease; }
+  .check:hover { background: var(--color-neutral); }
+  .check .c-ic { display: flex; color: var(--color-text-secondary); }
+  .check .go { margin-left: auto; font-size: 12px; font-weight: 600; letter-spacing: .06em; color: var(--color-text-secondary); }
+  .check.nogo .c-ic, .check.nogo .go { color: var(--color-text-error); }
+  body.loud .check:not(.nogo) .go, body.loud .check:not(.nogo) .c-ic { color: var(--color-text-success); }
+  .launchbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--color-border); }
+  .fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  @container (max-width: 760px) { .fields { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .select { height: 32px; border-radius: var(--radius-element); border: 1px solid var(--color-border-emphasized); background: var(--color-background-surface); padding: 0 8px; }
+  .cbx { width: 16px; height: 16px; accent-color: var(--color-accent); }
+  .calm-hero { padding: 8px 0 24px; }
+  .calm-hero .h2 { font-size: 24px; line-height: 32px; }
+  .summary { margin: 0 0 24px; color: var(--color-text-secondary); }
+  .steps { margin: 12px 0 16px; padding-left: 20px; }
+  .steps li { margin: 4px 0; }
+  .counter { display: flex; flex-direction: column; gap: 2px; padding: 10px 16px; border-top: 1px solid var(--color-border); }
+  .counter:first-child { border-top: 0; }
+
+  /* ---------- Synthesis D/E: C's modes + B's parts + flight path ---------- */
+  .hero { position: relative; padding: 20px 24px 16px; margin-bottom: 16px; overflow: hidden; transition: background .4s ease; }
+  .hero.alarm { border-color: var(--color-text-error); background: color-mix(in srgb, var(--color-background-red) 30%, var(--color-background-card)); }
+  .hero-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: start; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 8px; border-radius: var(--radius-full); background: var(--color-neutral); color: var(--color-text-secondary); font-size: 12px; font-weight: 600; }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; position: relative; }
+  .chip.live { color: var(--color-live); background: color-mix(in srgb, var(--color-live) 14%, transparent); }
+  .chip.live .dot::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; animation: halo 1.8s ease-out infinite; }
+  @keyframes halo { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
+  .chip.alarm { color: var(--color-text-error); background: var(--color-background-red); }
+  .greet { font-size: 28px; line-height: 36px; font-weight: 600; margin: 12px 0 4px; letter-spacing: -0.01em; }
+  .hero-sub { color: var(--color-text-secondary); max-width: 68ch; }
+  .hero-fig { text-align: right; }
+  .fig { font-size: 52px; line-height: 56px; font-weight: 400; letter-spacing: -0.02em; }
+  .fig-l { font-size: 12px; color: var(--color-text-secondary); }
+  .hero-act { margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px; }
+  .fp { margin-top: 20px; }
+  .fp-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .fp-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; }
+  .lg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-secondary); }
+  .lg i { width: 12px; height: 8px; border-radius: 2px; display: inline-block; }
+  .lg i.done, .seg.done { background: var(--color-seg-done); }
+  .lg i.live, .seg.live { background: var(--color-live); }
+  .lg i.est, .seg.est { background: color-mix(in srgb, var(--color-seg-done) 24%, transparent); }
+  .lg i.hold, .seg.hold { background: color-mix(in srgb, var(--color-seg-done) 48%, transparent); }
+  .lg i.parked, .seg.parked { background: var(--color-warning); }
+  .lg i.stopped, .seg.stopped { background: var(--color-error); }
+  .fp-track { position: relative; height: 28px; border-radius: 6px; background: var(--color-neutral); margin-top: 28px; }
+  .seg { position: absolute; top: 0; bottom: 0; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; overflow: visible; cursor: default; transition: filter .15s ease, left .6s ease, width .6s ease; }
+  .seg:hover, .seg:focus-visible { filter: brightness(1.1); }
+  .seg-l { font-size: 12px; font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+  .seg .short { display: none; }
+  .seg.use-short .full { display: none; }
+  .seg.use-short .short { display: flex; }
+  .seg.nolabel .seg-l { display: none !important; }
+  .seg.done, .seg.parked { color: #111; }
+  .seg.live { color: light-dark(#fff, #111); animation: breathe 2.4s ease-in-out infinite alternate; }
+  @keyframes breathe { from { opacity: .8; } to { opacity: 1; } }
+  .seg.est, .seg.hold { color: var(--color-text-secondary); }
+  .seg.est.ghost { opacity: .5; }
+  .seg.stopped { color: light-dark(#fff, #111); }
+  .seg.cut { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .needle { position: absolute; top: -6px; bottom: -6px; width: 2px; margin-left: -1px; background: var(--color-text-primary); border-radius: 1px; transition: left .6s ease; pointer-events: none; }
+  .needle span { position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .needle.r span { left: auto; right: 0; transform: none; }
+  .needle.l span { left: 0; transform: none; }
+  .fp-axis { position: relative; height: 20px; margin-top: 8px; }
+  .tick { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; color: var(--color-text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tick::before { content: ''; position: absolute; top: -6px; left: 50%; width: 1px; height: 4px; background: var(--color-border-emphasized); }
+  .tick.end { transform: translateX(-100%); }
+  .tick.end::before { left: 100%; }
+  .fp-cap { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+  .tbl { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  .tbl th { text-align: left; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); padding: 6px 8px; }
+  .tbl td { padding: 6px 8px; border-top: 1px solid var(--color-border); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .kpi-l { font-size: 12px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; }
+  .kpi-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+  .kpi-v { font-size: 24px; line-height: 32px; font-weight: 600; }
+  .kpi-u { font-size: 14px; font-weight: 400; color: var(--color-text-secondary); margin-left: 4px; }
+  .meter { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--color-live) 16%, transparent); overflow: hidden; margin-top: 8px; }
+  .meter i { display: block; height: 100%; border-radius: 3px; background: var(--color-live); transition: width .6s ease; }
+  .meter.hot i { background: var(--color-warning); }
+  .spark { overflow: visible; flex: none; cursor: crosshair; }
+  .spark .sp-line { fill: none; stroke: var(--color-seg-done); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .spark .sp-end { fill: var(--color-live); stroke: var(--color-background-card); stroke-width: 2; }
+  .spark .sp-cross { stroke: var(--color-border-emphasized); stroke-width: 1; display: none; }
+  .spark .sp-hov { fill: var(--color-text-primary); stroke: var(--color-background-card); stroke-width: 2; display: none; }
+  .spark.hover .sp-cross, .spark.hover .sp-hov { display: block; }
+  .av { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 600; letter-spacing: .02em; background: var(--color-neutral); color: var(--color-text-secondary); flex: none; }
+  body.vivid .av.pink { background: var(--color-background-pink); color: var(--color-text-pink); }
+  body.vivid .av.teal { background: var(--color-background-teal); color: var(--color-text-teal); }
+  body.vivid .av.orange { background: var(--color-background-orange); color: var(--color-text-orange); }
+  .feed { list-style: none; margin: 8px 0 0; padding: 8px 12px; font-family: var(--font-family-code); font-size: 12px; line-height: 20px; background: var(--color-background-body); border: 1px solid var(--color-border); border-radius: var(--radius-element); color: var(--color-text-secondary); }
+  .feed li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .feed li.fresh { animation: feedin .6s ease; color: var(--color-text-primary); }
+  @keyframes feedin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .now-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .synth .grow.run .g-ic { color: var(--color-live); }
+  #tip { position: fixed; z-index: 10001; pointer-events: none; display: none; background: var(--color-background-popover); color: var(--color-text-primary); box-shadow: var(--shadow-high); border-radius: var(--radius-element); padding: 8px 10px; min-width: 160px; max-width: 280px; }
+  #tip .tv { font-weight: 600; }
+  #tip .tn, #tip .td { font-size: 12px; color: var(--color-text-secondary); }
+  @container (max-width: 760px) {
+    .tick.odd { display: none; }
+    .hero-top { grid-template-columns: 1fr; }
+    .hero-fig { text-align: left; }
+    .hero-act { justify-content: flex-start; }
+    .now-grid { grid-template-columns: 1fr; }
+    .kpis { grid-template-columns: 1fr 1fr; }
+    .kpi .spark { display: none; }
+    .greet { font-size: 24px; line-height: 32px; }
+  }
+  /* E · vivid: same layout, more ambience (never status colors) */
+  body.vivid .hero:not(.alarm) { border-color: transparent; }
+  body.vivid .hero[data-amb="dusk"] { background: linear-gradient(115deg, color-mix(in srgb, var(--color-background-orange) 65%, var(--color-background-card)), color-mix(in srgb, var(--color-background-purple) 60%, var(--color-background-card))); }
+  body.vivid .hero[data-amb="night"] { background: linear-gradient(115deg, color-mix(in srgb, var(--color-background-purple) 70%, var(--color-background-card)), color-mix(in srgb, var(--color-background-blue) 55%, var(--color-background-card))); }
+  body.vivid .hero[data-amb="dawn"] { background: linear-gradient(115deg, color-mix(in srgb, var(--color-background-pink) 60%, var(--color-background-card)), color-mix(in srgb, var(--color-background-orange) 60%, var(--color-background-card))); }
+  body.vivid .fig { font-weight: 600; font-size: 60px; line-height: 64px; }
+  body.vivid .fp-track { background: color-mix(in srgb, var(--color-background-card) 55%, transparent); }
+  body.vivid .seg.live { box-shadow: 0 0 14px color-mix(in srgb, var(--color-live) 55%, transparent); }
+  body.vivid .kpi .kpi-l .ic { color: var(--color-live); }
+  body.vivid .chip.live { background: color-mix(in srgb, var(--color-background-card) 70%, transparent); }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+  /* ---------- Dialog + toasts ---------- */
+  dialog { border: 0; padding: 0; width: min(500px, 92vw); border-radius: var(--radius-container); background: var(--color-background-popover); color: var(--color-text-primary); box-shadow: var(--shadow-high); }
+  dialog::backdrop { background: rgb(0 0 0 / .35); }
+  .dlg-h { padding: 20px 20px 0; }
+  .dlg-b { padding: 12px 20px; }
+  .dlg-f { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 20px 20px; }
+  .codeline { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0 4px; padding: 6px 6px 6px 12px; font-family: var(--font-family-code); font-size: 13px; background: var(--color-background-body); border: 1px solid var(--color-border); border-radius: var(--radius-element); }
+  #toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 9999; pointer-events: none; }
+  .toast { background: var(--color-accent); color: var(--color-on-accent); padding: 8px 14px; border-radius: var(--radius-element); box-shadow: var(--shadow-high); font-size: 13px; animation: tin .18s ease; max-width: 80vw; }
+  @keyframes tin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- Sketch toolbar + annotation ---------- */
+  #sketch-tools { position: fixed; bottom: 12px; right: 12px; z-index: 9999; display: flex; gap: 6px; align-items: center; font: 12px system-ui, sans-serif; background: rgba(0,0,0,.78); color: #fff; padding: 8px 10px; border-radius: 8px; opacity: .45; transition: opacity .2s; }
+  #sketch-tools:hover { opacity: 1; }
+  #sketch-tools select, #sketch-tools button { background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 5px; padding: 3px 6px; font: 12px system-ui, sans-serif; cursor: pointer; }
+  #sketch-tools button.on { background: #fff; color: #111; }
+  #annot { position: fixed; z-index: 10000; pointer-events: none; display: none; background: #111; color: #eee; font: 11px/1.45 ui-monospace, monospace; padding: 6px 8px; border-radius: 6px; max-width: 320px; white-space: pre; }
+  body.annotating #frame * { outline: 1px dashed rgba(0,116,226,.25); }
+</style>
+</head>
+<body class="">
+
+<div id="variant-nav">
+  <span class="lbl">Variant</span>
+  <button data-variant="a">A · Flight board</button>
+  <button data-variant="b">B · No board</button>
+  <button data-variant="c">C · Launch / Debrief</button>
+  <button data-variant="d" title="C's modes + B's parts + flight path, calm">D · B+C synthesis</button>
+  <button data-variant="e" class="active" title="Same as D with time-of-day ambience">E · Synthesis, vivid ★ Selected</button>
+  <span class="sep"></span>
+  <span class="lbl">State</span>
+  <button data-flight="idle">Idle</button>
+  <button data-flight="inflight" class="active">In flight</button>
+  <button data-flight="holding">Holding</button>
+  <button data-flight="landed">Landed</button>
+  <button data-flight="alarm">Alarm</button>
+  <span class="sep"></span>
+  <button id="sim-btn" class="active" title="Advance the night: plans finish, gates run, cards move on their own">Simulate night</button>
+  <button id="quiet-btn" class="active" title="Dark cockpit: quiet when normal, color only for exceptions">Dark cockpit</button>
+</div>
+
+<div id="frame">
+  <div class="shell">
+    <header class="topnav">
+      <span class="wordmark">Counterpoint</span>
+      <button class="hostsw" data-act="toast" data-v="Host switcher: only Cena is registered">Cena <span class="sup">master</span><svg class="ic sm" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+      <div class="end">
+        <span class="live"><i></i>Live</span>
+        <button class="iconbtn" id="mode-btn" title="Theme"></button>
+      </div>
+    </header>
+    <nav class="sidenav" aria-label="Main">
+      <button class="navitem sel" data-act="toast" data-v="You're on Mission"><span data-ic="gauge"></span>Mission</button>
+      <button class="navitem" data-act="toast" data-v="Phases: the full GSD phase table"><span data-ic="list"></span>Phases</button>
+      <button class="navitem" data-act="toast" data-v="Needs You: the full inbox"><span data-ic="inbox"></span>Needs You<span class="navcount" id="nav-needs"></span></button>
+      <button class="navitem" data-act="toast" data-v="Trust: doctor checks, sandbox probe, keys"><span data-ic="shield"></span>Trust</button>
+    </nav>
+    <main id="content"></main>
+  </div>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="toasts"></div>
+<div id="annot"></div>
+<div id="tip" role="tooltip"></div>
+
+<div id="sketch-tools">
+  <select id="theme-sel" title="Theme file"><option value="default">Astryx neutral</option></select>
+  <select id="mode-sel" title="Mode"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+  <button data-vp="375">Phone</button>
+  <button data-vp="768">Tablet</button>
+  <button data-vp="1280">Desktop</button>
+  <button data-vp="" class="on">Full</button>
+  <button id="annot-btn">Annotate</button>
+</div>
+
+<script>
+/* ============ Icons (Lucide paths) ============ */
+const ICONS = {
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  circleCheck: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  circleX: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  circleDot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+  circle: '<circle cx="12" cy="12" r="10"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  square: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
+  pr: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
+  ext: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  question: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+  merge: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+  inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  list: '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  layers: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+};
+const ic = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+document.querySelectorAll('[data-ic]').forEach(el => { el.outerHTML = ic(el.dataset.ic); });
+
+/* ============ Helpers ============ */
+const GATES = ['Typecheck', 'Lint', 'Unit tests', 'E2E', 'Build'];
+const T = (h, m) => (h < 12 ? h + 24 : h) * 60 + m;            // minutes on the night's clock
+const fmt = min => { const m = ((min % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+const dur = min => { const h = Math.floor(min / 60), m = min % 60; return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`; };
+const plural = (n, s, p = s + 's') => `${n} ${n === 1 ? s : p}`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const btn = (label, act, variant = 'secondary', icon = '', id = '', extra = '') =>
+  `<button class="btn ${variant}" data-act="${act}" data-id="${id}" ${extra}>${icon ? ic(icon) : ''}${label}</button>`;
+const sbtn = (label, act, variant = 'ghost', id = '', v = '') =>
+  `<button class="btn sm ${variant}" data-act="${act}" data-id="${id}" data-v="${esc(v)}">${label}</button>`;
+
+/* ============ State ============ */
+const S = { variant: 'e', flight: 'inflight', sim: true, quiet: true, focus: 0, tele: false, fpTable: false, settingsOpen: false,
+  launch: {
+    stop: '07:00', model: 'opus', budget: 40,
+    checks: [
+      { id: 'sandbox', name: 'Sandbox probe', detail: 'Agents can’t read your keys or reach the console', go: true },
+      { id: 'gh', name: 'GitHub CLI signed in', detail: 'gh can open PRs on alex-profir/cena', go: true },
+      { id: 'runway', name: 'Runway signed and unchanged', detail: 'Every included phase matches what you signed', go: true },
+      { id: 'gates', name: 'Gate config approved', detail: 'Typecheck, lint, unit, e2e, build', go: true },
+      { id: 'awake', name: 'Mac stays awake', detail: 'Plugged in; caffeinate holds it awake until the stop time', go: true },
+      { id: 'usage', name: 'Usage window fresh', detail: '5-hour window just reset; weekly usage 31%', go: true },
+    ],
+    include: {},
+  },
+};
+let W; // the "world" for the current state
+
+function P(n, name, plans, extra) { return { n, name, plans, ...extra }; }
+const QUESTION = { id: 'q1', sev: 'neutral', icon: 'question', kind: 'question', seat: { i: 'DS', hue: 'pink', name: 'Design seat' },
+  title: 'Design seat: Bill split empty state, A or B?',
+  detail: 'Phase 7 · not blocking · A: illustration and “Split evenly” · B: plain list with totals',
+  actions: [['A', 'pick', 'A'], ['B', 'pick', 'B'], ['Later', 'later']] };
+
+function makeWorld(flight) {
+  const merged3 = P('3', 'QR menu browsing', 4, { stage: 'merged', pr: 38, when: 'merged yesterday' });
+  const planning = [P('7', 'Bill split', 4, { stage: 'planning', status: 'ready' }), P('8', 'Reservations', 3, { stage: 'planning', status: 'ready' }), P('9', 'Staff roles', 0, { stage: 'planning', status: 'notplanned' })];
+  const run = { start: T(22, 10), stop: T(7, 0), now: T(1, 58), resume: T(3, 12) };
+  const building5 = (extra = {}) => P('5', 'Kitchen display', 3, { stage: 'building', planDone: 2, gates: ['pend', 'pend', 'pend', 'pend', 'pend'], ...extra });
+  const review4 = P('4', 'Table ordering', 5, { stage: 'review', pr: 41, assumed: 2 });
+  let phases, needs = [], assumed = [], log = [];
+  switch (flight) {
+    case 'idle':
+      phases = [merged3,
+        P('4', 'Table ordering', 5, { stage: 'runway', signed: '21:40' }),
+        P('5', 'Kitchen display', 3, { stage: 'runway', signed: '21:44' }),
+        P('5.1', 'Allergen filters', 2, { stage: 'runway', signed: '21:46' }),
+        P('6', 'Waiter calls', 3, { stage: 'planning', status: 'changed' }), ...planning];
+      run.now = T(21, 58); run.launchAt = T(22, 10);
+      needs = [
+        { id: 'c6', sev: 'warning', icon: 'alert', kind: 'changed', title: 'Phase 6 · Waiter calls changed after you signed', detail: '06-CONTEXT.md edited at 21:58. It left the runway until you re-approve.', actions: [['See change', 'open-change', '6'], ['Re-approve…', 'approve', '6']] },
+        QUESTION];
+      break;
+    case 'inflight':
+    case 'holding':
+      phases = [merged3, review4, building5(), P('5.1', 'Allergen filters', 2, { stage: 'runway', signed: '21:46' }), P('6', 'Waiter calls', 3, { stage: 'runway', signed: '22:04' }), ...planning];
+      needs = [QUESTION];
+      run.now = flight === 'holding' ? T(2, 31) : T(1, 58);
+      log = ['01:56:12  plan 05-02 · task 3/4 · edit app/kitchen/ticket-list.tsx', '01:57:40  plan 05-02 · task 4/4 · vitest kitchen/ticket-list (12 passed)', '01:58:03  commit 9f2c1ab  feat(05-02): live ticket list over SSE', flight === 'holding' ? '02:31:00  usage limit (five_hour) · resets 03:10 · holding until 03:12' : '01:58:05  plan 05-03 · session started · budget 400k tokens'];
+      break;
+    case 'landed':
+      phases = [merged3, review4, P('5', 'Kitchen display', 3, { stage: 'review', pr: 42, assumed: 1 }), P('6', 'Waiter calls', 3, { stage: 'review', pr: 43, assumed: 1 }),
+        P('5.1', 'Allergen filters', 2, { stage: 'parked', reason: 'E2E failed 3×', tail: '✗ e2e  allergen-filters.spec.ts:42\n  expect(getByRole(\'checkbox\', { name: \'Gluten\' })).toBeChecked()\n  Timeout 5000ms exceeded · attempt 3 of 3' }), ...planning];
+      run.now = T(6, 40);
+      assumed = [
+        { id: 'd1', phase: '4', text: 'Order notes are capped at 140 characters' },
+        { id: 'd2', phase: '4', text: 'Orders from one table merge into a single kitchen ticket' },
+        { id: 'd3', phase: '5', text: 'Kitchen display updates over SSE, no polling' },
+        { id: 'd4', phase: '6', text: '“Call waiter” has a 60-second cooldown per table' }];
+      needs = [
+        { id: 'p51', sev: 'warning', icon: 'alert', kind: 'parked', title: 'Phase 5.1 · Allergen filters parked', detail: 'E2E gate failed 3 times: “Gluten” checkbox never checks', actions: [['Open log', 'log', '5.1'], ['Retry tonight', 'retry', '5.1'], ['Later', 'later']] },
+        { id: 'm', sev: 'neutral', icon: 'merge', kind: 'merge', title: '3 PRs waiting for your signed merge', detail: '#41 Table ordering · #42 Kitchen display · #43 Waiter calls', actions: [['Review', 'debrief']] },
+        { id: 'as', sev: 'neutral', icon: 'file', kind: 'assumed', title: '4 decisions the builder assumed', detail: 'Keep or change them before you merge', actions: [['Review', 'debrief']] },
+        QUESTION,
+        { id: 'bl', sev: 'neutral', icon: 'layers', kind: 'backlog', seat: { i: 'QA', hue: 'teal', name: 'QA seat' }, title: 'Council filed 2 backlog items', detail: 'QA: “Kitchen display has no empty state” · Cook: “Ticket text too small to read from 2 m”', actions: [['See', 'toast', 'Opens the two backlog items in .planning/'], ['Dismiss', 'dismiss']] },
+      ];
+      break;
+    case 'alarm':
+      phases = [merged3, review4, building5({ halted: true }), P('5.1', 'Allergen filters', 2, { stage: 'runway', signed: '21:46' }), P('6', 'Waiter calls', 3, { stage: 'runway', signed: '22:04' }), ...planning];
+      run.now = T(1, 14);
+      needs = [{ id: 'auth', sev: 'error', icon: 'circleX', kind: 'alarm', title: 'Run stopped: Claude Code isn’t signed in', detail: 'Auth errors don’t retry. Sign in, then resume; nothing was lost.', actions: [['How to fix', 'fix']] }, QUESTION];
+      log = ['01:13:58  plan 05-02 · handoff written · commit 4be01d9', '01:14:02  plan 05-03 · session start', '01:14:03  error: authentication_failed (401) · not retryable', '01:14:03  run stopped · builder idle at a clean handoff'];
+      break;
+  }
+  phases.forEach(p => { if (p.stage === 'runway' && !(p.n in S.launch.include)) S.launch.include[p.n] = true; });
+  const ctx = { inflight: 152, holding: 214, alarm: 31 }[flight] || 0;
+  return { phases, needs, assumed, run, log, nextPr: 44, stoppedByYou: false, segs: makeSegments(flight), ctx, fresh: false, estLand: null };
+}
+
+const by = stage => W.phases.filter(p => p.stage === stage);
+const runwayPlans = () => by('runway').reduce((a, p) => a + p.plans, 0);
+const building = () => by('building')[0];
+function stepText(p) {
+  if (p.planDone < p.plans) return `plan ${p.planDone + 1} of ${p.plans}`;
+  const i = p.gates.indexOf('run');
+  return i >= 0 ? `gates · ${GATES[i]}` : 'gates done';
+}
+
+/* ============ Flight-state strip ============ */
+function stripData() {
+  const b = building(), r = W.run;
+  switch (S.flight) {
+    case 'idle': {
+      const n = by('runway').length;
+      return { icon: 'circle', title: W.stoppedByYou ? 'Stopped by you' : 'Idle',
+        text: (W.stoppedByYou ? 'Stays stopped until you launch again. ' : 'Nothing running. ') + `${plural(n, 'phase')} on the runway.`,
+        meta: '', act: S.variant === 'c' ? '' : btn('Launch…', 'launch', 'primary', 'play') };
+    }
+    case 'inflight':
+      return { icon: 'loader', spin: true, title: 'In flight',
+        text: b ? `Building Phase ${b.n} · ${b.name}, ${stepText(b)}` : 'Landing…',
+        meta: `Stops at ${fmt(r.stop)} · ${dur(r.stop - r.now)} left · usage OK`,
+        act: btn('Stop', 'stop', 'secondary', 'square'), clock: true };
+    case 'holding':
+      return { icon: 'pause', title: 'Holding',
+        text: `Usage limit reached (5-hour window). Resumes on its own at ${fmt(r.resume)}, in ${dur(r.resume - r.now)}. Nothing lost.`,
+        meta: `Stops at ${fmt(r.stop)}`, act: btn('Stop', 'stop', 'secondary', 'square'), clock: true };
+    case 'landed':
+      return { icon: 'circleCheck', title: `Landed ${fmt(r.now)}`,
+        text: `Flew ${fmt(r.start)}–${fmt(r.now)}. Runway ran out. ${plural(by('review').length, 'PR')} ready, ${by('parked').length} parked.`,
+        meta: '', act: S.variant === 'c' ? '' : btn('Debrief', 'debrief', 'secondary'), clock: true };
+    case 'alarm':
+      return { cls: 'alarm', icon: 'circleX', title: 'Stopped, needs you',
+        text: `Claude Code isn’t signed in (${fmt(r.now)}). Phase ${b ? b.n : ''} stopped at a clean handoff; nothing lost.`,
+        meta: '', act: btn('How to fix', 'fix', 'primary'), clock: true };
+  }
+}
+const pct = () => Math.max(0, Math.min(100, (W.run.now - W.run.start) / (W.run.stop - W.run.start) * 100));
+function stripHTML(hero = false) {
+  const d = stripData();
+  const loudIcon = !S.quiet && (S.flight === 'inflight') ? 'style="background:var(--color-background-blue);color:var(--color-text-info)"'
+    : !S.quiet && S.flight === 'landed' ? 'style="background:var(--color-background-green);color:var(--color-text-success)"'
+    : !S.quiet && S.flight === 'holding' ? 'style="background:var(--color-background-yellow);color:var(--color-text-warning)"' : '';
+  const icon = `<div class="st-icon" ${loudIcon}>${ic(d.icon, (d.spin ? 'spin ' : '') + (hero ? 'lg' : ''))}</div>`;
+  if (!hero) {
+    return `<section class="card strip ${d.cls || ''}" aria-live="polite">${icon}
+      <div class="st-main"><div class="st-line"><span class="st-title">${d.title}</span><span class="st-text">${d.text}</span></div>${d.meta ? `<div class="sup">${d.meta}</div>` : ''}</div>
+      <div class="st-right">${d.act}</div>
+      ${d.clock ? `<div class="clockline"><i style="width:${pct()}%"></i></div>` : ''}</section>`;
+  }
+  const track = d.clock ? `<div class="track"><div class="bar"><i style="width:${pct()}%"></i><b style="left:calc(${pct()}% - 1px)"></b></div>
+      <div class="ends sup num"><span>${fmt(W.run.start)} launch</span><span>now ${fmt(W.run.now)}</span><span>${fmt(W.run.stop)} stop</span></div></div>` : '';
+  return `<section class="card strip hero ${d.cls || ''}" aria-live="polite">${icon}
+    <div class="st-main"><div class="st-title">${d.title}</div><div class="st-text">${d.text}</div>${d.meta ? `<div class="sup">${d.meta}</div>` : ''}${track}</div>
+    <div class="st-right">${d.act}</div></section>`;
+}
+
+/* ============ Needs You ============ */
+function needsHTML({ kbd = false, filter = null } = {}) {
+  const list = filter ? W.needs.filter(filter) : W.needs;
+  if (!list.length) return `<div class="quiet-empty">${ic('check')}Nothing needs you. Go do something else.</div>`;
+  return `<ul class="nlist">${list.map((n, i) => `
+    <li class="nrow ${n.sev} ${kbd && i === S.focus ? 'focus' : ''}" data-row="${n.id}">
+      ${synthNow() && n.seat ? `<span class="av ${n.seat.hue}" title="${n.seat.name}">${n.seat.i}</span>` : `<span class="n-ic">${ic(n.icon)}</span>`}
+      <div class="n-main"><div class="n-title">${n.title}</div><div class="n-detail">${n.detail}</div></div>
+      <div class="n-act">${n.actions.map(([l, a, v], j) => sbtn(l, a, j === 0 ? 'secondary' : 'ghost', n.id, v || l)).join('')}</div>
+    </li>`).join('')}</ul>`;
+}
+function needsCard({ kbd = false, title = 'Needs you' } = {}) {
+  const hints = kbd ? `<span class="end sup kbd-hints"><span class="kbd">J</span><span class="kbd">K</span> move <span class="kbd">↵</span> first action <span class="kbd">L</span> later <span class="kbd">A</span><span class="kbd">B</span> pick</span>` : '';
+  return `<section class="card" id="needs-card"><div class="card-h"><span class="label">${title}</span><span class="sup num">${W.needs.length || ''}</span>${hints}</div>${needsHTML({ kbd })}</section>`;
+}
+
+/* ============ Board (variant A) ============ */
+const COLS = [['planning', 'Planning'], ['runway', 'Runway'], ['building', 'Building'], ['review', 'Review'], ['merged', 'Merged']];
+const EMPTY = { planning: 'Nothing waiting', runway: 'Empty. Approve a phase to fill it.', building: 'Nothing building', review: 'No PRs yet', merged: 'Nothing merged yet' };
+function gatesBar(p) {
+  return `<div class="gates" title="${GATES.map((g, i) => `${g}: ${p.gates[i]}`).join(' · ')}">${p.gates.map(g => `<span class="gate ${g}"></span>`).join('')}</div>`;
+}
+function cardHTML(p) {
+  const head = `<div class="t"><span class="pn">${p.n}</span><span class="nm">${p.name}</span></div>`;
+  let body = '', cls = '';
+  switch (p.stage) {
+    case 'planning':
+      if (p.status === 'changed') { cls = 'warning'; body = `<div class="row"><span class="badge warning">${ic('alert', 'sm')}Changed since signed</span></div><div class="row acts">${sbtn('See change', 'open-change', 'ghost', p.n)}${sbtn('Re-approve…', 'approve', 'secondary', p.n)}</div>`; }
+      else if (p.status === 'ready') body = `<div class="row sup">${plural(p.plans, 'plan')} · ready to approve</div><div class="row acts">${sbtn('Approve…', 'approve', 'secondary', p.n)}</div>`;
+      else body = `<div class="row sup">Not planned yet</div>`;
+      break;
+    case 'runway':
+      body = `<div class="row sup">${S.quiet ? '' : `<span class="badge success">${ic('circleCheck', 'sm')}On runway</span>`}Signed ${p.signed} · ${plural(p.plans, 'plan')}</div>`;
+      break;
+    case 'building': {
+      const st = S.flight === 'holding' ? `<span class="badge">${ic('pause', 'sm')}Holding</span>` : p.halted ? `<span class="badge error">${ic('circleX', 'sm')}Stopped</span>` : '';
+      if (p.halted) cls = 'error';
+      body = `<div class="row sup">${stepText(p)} ${st}</div>${gatesBar(p)}`;
+      break;
+    }
+    case 'parked':
+      cls = 'warning';
+      body = `<div class="row"><span class="badge warning">${ic('alert', 'sm')}Parked</span><span class="sup">${p.reason}</span></div><div class="row acts">${sbtn('Log', 'log', 'ghost', p.n)}${sbtn('Retry tonight', 'retry', 'secondary', p.n)}</div>`;
+      break;
+    case 'review':
+      body = `<div class="row sup">${S.quiet ? '' : `<span class="badge success">${ic('check', 'sm')}Gates passed</span>`}PR #${p.pr} · ${plural(p.assumed, 'assumed decision')}</div>
+        <div class="row acts">${sbtn(`PR ${ic('ext', 'sm')}`, 'pr', 'ghost', p.pr)}${sbtn(`Preview ${ic('ext', 'sm')}`, 'preview', 'ghost', p.n)}${sbtn('Merge…', 'merge', 'secondary', p.pr)}</div>`;
+      break;
+    case 'merged':
+      body = `<div class="row sup">PR #${p.pr} · ${p.when}</div>`;
+      break;
+  }
+  return `<article class="bcard ${cls} ${p.moved ? 'moved' : ''}">${head}${body}</article>`;
+}
+function boardHTML() {
+  return `<div class="board">${COLS.map(([k, l]) => {
+    const items = k === 'building' ? [...by('building'), ...by('parked')] : by(k);
+    const end = k === 'runway' && items.length ? `<span class="end">${plural(runwayPlans(), 'plan')}</span>` : '';
+    return `<section class="col"><div class="col-h">${l}<span class="count">${items.length}</span>${end}</div>
+      <div class="col-body">${items.map(cardHTML).join('') || `<div class="col-empty ${k}">${EMPTY[k]}</div>`}</div></section>`;
+  }).join('')}</div>`;
+}
+
+/* ============ Shared pieces ============ */
+function gateRowsHTML(p) {
+  const planRows = Array.from({ length: p.plans }, (_, i) => {
+    const st = i < p.planDone ? 'pass' : i === p.planDone && p.planDone < p.plans ? (S.flight === 'inflight' ? 'run' : 'pend') : 'pend';
+    return { name: `Plan ${p.n}-0${i + 1}`, st };
+  });
+  const gateRows = GATES.map((g, i) => ({ name: g, st: p.gates[i] }));
+  const row = r => {
+    const icon = r.st === 'pass' ? ic('circleCheck') : r.st === 'run' ? ic('loader', 'spin') : r.st === 'fail' ? ic('circleX') : ic('circle');
+    return `<li class="grow ${r.st}"><span class="g-ic">${icon}</span>${r.name}<span class="g-end">${r.st === 'pass' ? 'done' : r.st === 'run' ? 'running' : ''}</span></li>`;
+  };
+  return `<div><div class="sup" style="margin-bottom:4px">Plans</div><ul class="grows">${planRows.map(row).join('')}</ul></div>
+    <div><div class="sup gates-l" style="margin:8px 0 4px">Gates (judged by exit code)</div><ul class="grows">${gateRows.map(row).join('')}</ul></div>`;
+}
+function liveCard(title = 'Live') {
+  const b = building();
+  if (!b) return '';
+  return `<section class="card"><div class="card-h"><span class="label">${title}</span><span class="sup">Phase ${b.n} · ${b.name}</span></div>
+    <div class="card-b">${gateRowsHTML(b)}
+      <div style="margin-top:12px"><button class="disclosure ${S.tele ? 'open' : ''}" data-act="tele">${S.tele ? 'Hide' : 'Show'} session log ${ic('chevron', 'sm')}</button>
+      ${S.tele ? `<pre class="log">${W.log.map(esc).join('\n')}</pre>` : ''}</div></div></section>`;
+}
+function runwayCard() {
+  const rw = by('runway');
+  const ready = by('planning').filter(p => p.status === 'ready');
+  return `<section class="card"><div class="card-h"><span class="label">Runway</span></div>
+    <div class="card-b"><div class="display">${rw.length}</div><div class="sup">${rw.length ? `${plural(rw.length, 'phase')} · ${plural(runwayPlans(), 'plan')} approved, ahead of the builder` : 'Empty. The builder has nothing for tonight.'}</div></div>
+    ${rw.length ? `<ul class="nlist" style="border-top:1px solid var(--color-border)">${rw.map(p => `<li class="nrow"><span class="mono muted">${p.n}</span><div class="n-main"><div class="n-title">${p.name}</div></div><span class="sup">signed ${p.signed}</span></li>`).join('')}</ul>` : ''}
+    ${ready.length ? `<div class="card-b row" style="border-top:1px solid var(--color-border)"><span class="sup">Ready to approve:</span>${ready.map(p => sbtn(`Phase ${p.n}…`, 'approve', 'ghost', p.n)).join('')}</div>` : ''}</section>`;
+}
+function reviewCard(title = 'Ready for review', narrow = false) {
+  const rv = by('review');
+  return `<section class="card"><div class="card-h"><span class="label">${title}</span><span class="sup num">${rv.length || ''}</span></div>
+    ${rv.length ? `<ul class="nlist">${rv.map(p => `<li class="nrow ${narrow ? 'stacked' : ''}"><span class="n-ic">${ic('pr')}</span><div class="n-main"><div class="n-title"><span class="mono muted">${p.n}</span> ${p.name}</div><div class="n-detail">PR #${p.pr} · gates ${GATES.length}/${GATES.length} · ${plural(p.assumed, 'assumed decision')}</div></div>
+      <div class="n-act">${sbtn(`PR ${ic('ext', 'sm')}`, 'pr', 'ghost', p.pr)}${sbtn(`Preview ${ic('ext', 'sm')}`, 'preview', 'ghost', p.n)}${sbtn('Merge…', 'merge', 'secondary', p.pr)}</div></li>`).join('')}</ul>`
+      : `<div class="quiet-empty">No PRs waiting.</div>`}</section>`;
+}
+
+/* ============ Variant A: flight board ============ */
+function variantA() {
+  const needs = W.needs.length ? needsCard() : `<section class="card">${needsHTML()}</section>`;
+  return `${stripHTML()}<div class="stack">${needs}${boardHTML()}</div>`;
+}
+
+/* ============ Variant B: no board ============ */
+function variantB() {
+  const live = ['inflight', 'holding', 'alarm'].includes(S.flight) ? liveCard() : '';
+  const merged = by('merged');
+  return `${stripHTML(true)}
+    <div class="cols">
+      <div class="stack">${needsCard({ kbd: true })}${live}</div>
+      <div class="stack">${runwayCard()}${reviewCard('Ready for review', true)}
+        <section class="card"><div class="card-h"><span class="label">Merged recently</span></div>
+          <ul class="nlist">${merged.map(p => `<li class="nrow"><span class="mono muted">${p.n}</span><div class="n-main"><div class="n-title">${p.name}</div></div><span class="sup">#${p.pr} · ${p.when}</span></li>`).join('')}</ul></section>
+      </div>
+    </div>`;
+}
+
+/* ============ Variant C: Launch / In flight / Debrief / Stopped ============ */
+function flightPlanCard() {
+  const L = S.launch, rw = by('runway'), inc = rw.filter(p => L.include[p.n]);
+  const changed = by('planning').filter(p => p.status === 'changed');
+  return `<section class="card"><div class="card-h"><span class="label">Flight plan</span><span class="end sup">${plural(inc.length, 'phase')} · ${plural(inc.reduce((a, p) => a + p.plans, 0), 'plan')}, in this order</span></div>
+    <ul class="nlist">${rw.map((p, i) => `<li class="nrow"><input type="checkbox" class="cbx" data-act="include" data-id="${p.n}" ${L.include[p.n] ? 'checked' : ''} aria-label="Include phase ${p.n}">
+      <span class="mono muted">${p.n}</span><div class="n-main"><div class="n-title">${p.name}</div><div class="n-detail">${plural(p.plans, 'plan')} · signed ${p.signed}</div></div><span class="sup">${synthNow() ? `≈${dur(p.plans * MIN_PER_PLAN + GATE_MIN)}` : i + 1}</span></li>`).join('')}</ul>
+    ${changed.map(p => `<div class="card-b row" style="border-top:1px solid var(--color-border)"><span class="sup">${ic('alert', 'sm')} Phase ${p.n} · ${p.name} isn’t included: it changed after you signed.</span>${sbtn('See change', 'open-change', 'ghost', p.n)}${sbtn('Re-approve…', 'approve', 'ghost', p.n)}</div>`).join('')}
+  </section>`;
+}
+function settingsCard(compact) {
+  const L = S.launch;
+  const fields = `<div class="card-b fields">
+      <label class="field"><span class="sup">Stop at</span><select class="select" data-set="stop">${['05:00', '06:00', '07:00', '08:00'].map(t => `<option ${t === L.stop ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="field"><span class="sup">Model</span><select class="select" data-set="model"><option value="opus" ${L.model === 'opus' ? 'selected' : ''}>Opus 5.5</option><option value="sonnet" ${L.model === 'sonnet' ? 'selected' : ''}>Sonnet 5.5</option></select></label>
+      <label class="field"><span class="sup">Context budget per session</span><select class="select" data-set="budget">${[30, 40, 50, 60].map(b => `<option value="${b}" ${b === L.budget ? 'selected' : ''}>${b}%</option>`).join('')}</select>
+        <span class="sup num">${L.budget}% of 1M = ${L.budget * 10}k tokens</span></label>
+    </div>`;
+  if (!compact) return `<section class="card"><div class="card-h"><span class="label">Settings</span></div>${fields}</section>`;
+  return `<section class="card"><div class="card-h"><span class="label">Settings</span><span class="sup">Stop ${L.stop} · ${L.model === 'opus' ? 'Opus 5.5' : 'Sonnet 5.5'} · ${L.budget}% context per session (${L.budget * 10}k tokens)</span><span class="end">${sbtn(S.settingsOpen ? 'Done' : 'Change', 'settings', 'ghost')}</span></div>${S.settingsOpen ? fields : ''}</section>`;
+}
+function goNoGoCard() {
+  const L = S.launch, inc = by('runway').filter(p => L.include[p.n]);
+  const nogo = L.checks.filter(c => !c.go);
+  return `<section class="card"><div class="card-h"><span class="label">Go / No-go</span><span class="end sup">click a check to flip it (sketch)</span></div>
+    <ul class="nlist">${L.checks.map(c => `<li class="check ${c.go ? '' : 'nogo'}" data-act="flip" data-id="${c.id}"><span class="c-ic">${c.go ? ic('circleCheck') : ic('circleX')}</span>
+      <div class="n-main"><div class="n-title">${c.name}</div><div class="n-detail">${c.go ? c.detail : noGoText(c.id)}</div></div><span class="go">${c.go ? 'GO' : 'NO-GO'}</span></li>`).join('')}</ul>
+    <div class="launchbar"><span class="sup">${nogo.length ? `${plural(nogo.length, 'No-go')}. Launch waits until every check is Go.` : inc.length ? `All Go. Lands by ${L.stop} or when the runway is empty.` : 'Pick at least one phase.'}</span>
+      ${btn('Launch', 'launch', 'primary', 'play', '', nogo.length || !inc.length ? 'disabled' : '')}</div>
+  </section>`;
+}
+function launchHTML() {
+  return `<div class="page-h"><div><h1 class="h2">Tonight’s flight</h1><div class="sup">Pick what flies, check Go/No-go, launch, walk away.</div></div></div>
+  <div class="cols"><div class="stack">${flightPlanCard()}${settingsCard(false)}</div>${goNoGoCard()}</div>`;
+}
+function noGoText(id) {
+  return { sandbox: 'Probe could read ~/.ssh. Fix the sandbox settings before launching.', gh: 'gh auth status failed. Run gh auth login.', runway: 'A phase changed after you signed it.', gates: 'Gate config changed since you approved it.', awake: 'On battery. Plug in, or the Mac may sleep mid-run.', usage: 'Only 12% of the 5-hour window left; the run would hold almost at once.' }[id];
+}
+function inflightHTML() {
+  const holding = S.flight === 'holding';
+  const rw = by('runway');
+  const qs = W.needs.length;
+  return `<div class="calm-hero"><h1 class="h2">${holding ? 'Holding. You can still walk away.' : 'You can walk away.'}</h1>
+      <div class="muted" style="margin-top:4px">${holding
+        ? `The 5-hour usage window ran out at ${fmt(W.run.now)}. Counterpoint resumes on its own at ${fmt(W.run.resume)} and still stops at ${fmt(W.run.stop)}.`
+        : `Counterpoint finishes Phase ${building() ? building().n : ''}${rw.length ? `, then builds ${plural(rw.length, 'more phase')}` : ''}, and lands by ${fmt(W.run.stop)}. Questions wait in Needs You; only irreversible work parks.`}</div></div>
+    <div class="cols even">
+      ${liveCard('Now')}
+      <div class="stack">
+        <section class="card"><div class="card-h"><span class="label">Up next</span></div>
+          <ul class="nlist">${rw.map((p, i) => `<li class="nrow"><span class="sup num">${i + 1}</span><span class="mono muted">${p.n}</span><div class="n-main"><div class="n-title">${p.name}</div></div><span class="sup">${plural(p.plans, 'plan')}</span></li>`).join('') || '<div class="quiet-empty">Nothing after this one. Lands when it’s done.</div>'}</ul>
+          <div class="card-b sup" style="border-top:1px solid var(--color-border)">Then: land at ${fmt(W.run.stop)} or when the runway is empty.</div></section>
+        <section class="card"><div class="card-h"><span class="label">Needs you</span><span class="sup num">${qs || ''}</span><span class="end sup">${qs ? 'nothing blocking' : ''}</span></div>${needsHTML()}</section>
+      </div>
+    </div>`;
+}
+function parkedCards() {
+  return by('parked').map(p => `<section class="card"><div class="card-h"><span class="label">Parked</span><span class="badge warning">${ic('alert', 'sm')}${p.reason}</span></div>
+    <div class="card-b"><div><span class="mono muted">${p.n}</span> ${p.name}</div><pre class="log">${esc(p.tail)}</pre>
+    <div class="row" style="margin-top:12px">${sbtn('Open full log', 'log', 'secondary', p.n)}${sbtn('Retry tonight', 'retry', 'ghost', p.n)}${sbtn('Later', 'later', 'ghost', 'p51')}</div></div></section>`).join('');
+}
+function assumedCard() {
+  return `<section class="card"><div class="card-h"><span class="label">Decisions the builder assumed</span><span class="sup num">${W.assumed.length || ''}</span><span class="end">${W.assumed.length ? sbtn('Keep all', 'keep-all', 'secondary') : ''}</span></div>
+    ${W.assumed.length ? `<ul class="nlist">${W.assumed.map(d => `<li class="nrow" data-row="${d.id}"><span class="mono muted">${d.phase}</span><div class="n-main"><div class="n-title">${d.text}</div></div><div class="n-act">${sbtn('Keep', 'keep', 'ghost', d.id)}${sbtn('Change…', 'change', 'ghost', d.id)}</div></li>`).join('')}</ul>` : '<div class="quiet-empty">All kept.</div>'}</section>`;
+}
+function questionsCard() {
+  return `<section class="card"><div class="card-h"><span class="label">Questions from the council</span></div>${needsHTML({ filter: n => n.kind === 'question' || n.kind === 'backlog' })}</section>`;
+}
+function debriefHTML() {
+  const rv = by('review'), pk = by('parked');
+  const qs = W.needs.filter(n => n.kind === 'question');
+  return `<div class="page-h"><div><h1 class="h2">While you were away</h1><div class="sup num">${fmt(W.run.start)} → ${fmt(W.run.now)} · ${dur(W.run.now - W.run.start)} · runway ran out</div></div></div>
+    <p class="summary">${plural(rv.length, 'phase')} ready for review, ${pk.length} parked, ${plural(W.assumed.length, 'decision')} assumed, ${plural(qs.length, 'question')}.</p>
+    <div class="cols">
+      <div class="stack">${reviewCard()}${parkedCards()}${assumedCard()}</div>
+      <div class="stack">${questionsCard()}${runwayCard()}
+        <section class="card"><div class="card-h"><span class="label">Honest counters</span><span class="end sup">last 7 days</span></div>
+          <div class="counter"><span>First-attempt gate pass <b class="num">3 of 4</b></span><span class="sup">paired with: test or gate edits by the builder, 0</span></div>
+          <div class="counter"><span>Merged without intervention <b class="num">2 of 3</b></span><span class="sup">paired with: reverted after merge, 0</span></div>
+          <div class="counter"><span>Questions asked <b class="num">2</b></span><span class="sup">paired with: decisions assumed then changed by you, 1</span></div>
+        </section>
+      </div>
+    </div>`;
+}
+function stoppedHTML() {
+  const b = building();
+  return `<div class="cols">
+      <section class="card"><div class="card-b">
+        <h1 class="h2">Stopped at ${fmt(W.run.now)}: Claude Code isn’t signed in</h1>
+        <p class="muted">Nothing was lost. Phase ${b.n} · ${b.name} stopped at a clean handoff after plan ${b.planDone} of ${b.plans} and picks up from there. Auth errors never retry on their own.</p>
+        <ol class="steps"><li>In a terminal, run <code>claude /login</code></li><li>Come back and resume. The run keeps its ${fmt(W.run.stop)} stop time.</li></ol>
+        <div class="row">${btn('Resume flight', 'resume', 'primary', 'play')}${btn('Stay stopped', 'stop', 'ghost')}</div>
+        <div style="margin-top:16px"><button class="disclosure ${S.tele ? 'open' : ''}" data-act="tele">${S.tele ? 'Hide' : 'Show'} session log ${ic('chevron', 'sm')}</button>${S.tele ? `<pre class="log">${W.log.map(esc).join('\n')}</pre>` : ''}</div>
+      </div></section>
+      <section class="card"><div class="card-h"><span class="label">Meanwhile</span></div>${needsHTML({ filter: n => n.kind !== 'alarm' })}</section>
+    </div>`;
+}
+function variantC() {
+  const body = { idle: launchHTML, inflight: inflightHTML, holding: inflightHTML, landed: debriefHTML, alarm: stoppedHTML }[S.flight]();
+  return `${stripHTML()}${body}`;
+}
+
+/* ============ Synthesis D/E: C's modes + B's parts + flight path ============ */
+function synthNow() { return S.variant === 'd' || S.variant === 'e'; }
+const MIN_PER_PLAN = 26, GATE_MIN = 20;   // estimates "from your last 7 nights" (mocked)
+const KIND = { done: 'Done', live: 'Building now', est: 'Estimate', hold: 'Holding', parked: 'Parked', stopped: 'Stopped' };
+
+function makeSegments(flight) {
+  const D = (n, name, start, end, kind, extra = {}) => ({ n, name, start, end, kind, ...extra });
+  if (flight === 'idle') return [];
+  const s = [D('4', 'Table ordering', T(22, 10), T(0, 20), 'done', { pr: 41 })];
+  if (flight === 'inflight') s.push(D('5', 'Kitchen display', T(0, 22), null, 'live'));
+  if (flight === 'holding') s.push(D('5', 'Kitchen display', T(0, 22), T(2, 31), 'live'), D('hold', 'Usage limit', T(2, 31), T(3, 12), 'hold'));
+  if (flight === 'alarm') s.push(D('5', 'Kitchen display', T(0, 22), T(1, 14), 'stopped'));
+  if (flight === 'landed') s.push(
+    D('5', 'Kitchen display', T(0, 22), T(2, 31), 'done', { pr: 42 }), D('hold', 'Usage limit', T(2, 31), T(3, 12), 'hold'),
+    D('5', 'Kitchen display', T(3, 12), T(3, 58), 'done', { pr: 42 }), D('5.1', 'Allergen filters', T(4, 0), T(5, 5), 'parked'),
+    D('6', 'Waiter calls', T(5, 7), T(6, 38), 'done', { pr: 43 }));
+  return s;
+}
+function flightSegments() {
+  const r = W.run;
+  const segs = W.segs.map(x => ({ ...x, end: x.end == null ? r.now : x.end }));
+  W.estLand = null;
+  if (S.flight === 'landed') return segs;
+  let cur = S.flight === 'idle' ? r.launchAt : Math.max(r.now, ...segs.map(x => x.end));
+  const ghost = S.flight === 'alarm';
+  const b = building();
+  if (b && S.flight !== 'idle') {
+    const rem = Math.max(6, Math.round((b.plans - b.planDone) * MIN_PER_PLAN + b.gates.filter(g => g !== 'pass').length / GATES.length * GATE_MIN));
+    segs.push({ n: b.n, name: b.name, start: cur, end: cur + rem, kind: 'est', ghost }); cur += rem;
+  }
+  const queue = S.flight === 'idle' ? by('runway').filter(p => S.launch.include[p.n]) : by('runway');
+  for (const p of queue) { const d = p.plans * MIN_PER_PLAN + GATE_MIN; segs.push({ n: p.n, name: p.name, start: cur, end: cur + d, kind: 'est', ghost }); cur += d; }
+  W.estLand = cur;
+  return segs;
+}
+function segLabel(x, short) {
+  switch (x.kind) {
+    case 'hold': return `${ic('pause', 'sm')}${short ? '' : 'hold'}`;
+    case 'parked': return `${ic('alert', 'sm')}${x.n}${short ? '' : ' parked'}`;
+    case 'stopped': return `${ic('circleX', 'sm')}${x.n}`;
+    default: return short ? x.n : `${x.n} ${esc(x.name)}`;
+  }
+}
+function segTip(x) {
+  const d = x.end - x.start, range = `${fmt(x.start)}–${fmt(x.end)}`, ph = `Phase ${x.n} · ${x.name}`;
+  switch (x.kind) {
+    case 'done': return [dur(d), ph, `${range}${x.pr ? ` · PR #${x.pr}` : ''}`];
+    case 'live': return [`${dur(d)} so far`, ph, `since ${fmt(x.start)} · building now`];
+    case 'hold': return [dur(d), 'Holding · usage limit', `${range} · resumes on its own`];
+    case 'parked': return [dur(d), ph, `${range} · parked: E2E failed 3×`];
+    case 'stopped': return [dur(d), ph, `${range} · stopped: not signed in`];
+    default: return [`≈ ${dur(d)}`, ph, `estimate ≈${range}${x.cut ? ' · runs past the stop time' : ''}`];
+  }
+}
+let FP = [];
+function flightPathHTML() {
+  const r = W.run, t0 = S.flight === 'idle' ? r.launchAt : r.start;
+  const span = r.stop - t0, x = t => (t - t0) / span * 100;
+  const all = flightSegments();
+  const vis = all.filter(z => z.start < r.stop).map(z => ({ ...z, cut: z.end > r.stop, end: Math.min(z.end, r.stop) }));
+  const nofit = all.filter(z => z.start >= r.stop);
+  FP = vis;
+  const ticks = []; for (let t = Math.ceil(t0 / 60) * 60; t <= r.stop; t += 60) ticks.push(t);
+  const kinds = Object.keys(KIND).filter(k => vis.some(z => z.kind === k));
+  const land = W.estLand;
+  const cap = {
+    idle: () => land ? `If you launch at ${fmt(t0)}, it lands ≈${fmt(Math.min(land, r.stop))}${land <= r.stop ? `, ${dur(r.stop - land)} before the ${fmt(r.stop)} stop` : ''}.` : 'Pick a phase to see the flight path.',
+    inflight: () => `Lands ≈${fmt(Math.min(land, r.stop))}${land <= r.stop ? `, before the ${fmt(r.stop)} stop` : ''}. Estimates come from your last 7 nights.`,
+    holding: () => `Resumes ${fmt(r.resume)}, lands ≈${fmt(Math.min(land, r.stop))}${land <= r.stop ? `, still before ${fmt(r.stop)}` : ''}.`,
+    landed: () => `Flew ${fmt(r.start)}–${fmt(r.now)} · ${dur(r.now - r.start)} · runway ran out.`,
+    alarm: () => `Stopped at ${fmt(r.now)}. Faded blocks show the rest of the night if you resume now.`,
+  }[S.flight]() + (nofit.length ? ` ${nofit.map(z => `Phase ${z.n}`).join(', ')} won’t fit before ${fmt(r.stop)}.` : '');
+  const nx = x(r.now), needleSide = nx > 88 ? 'r' : nx < 8 ? 'l' : '';
+  return `<div class="fp">
+    <div class="fp-head"><span class="label">Flight path</span><span class="fp-legend">${kinds.map(k => `<span class="lg"><i class="${k}"></i>${KIND[k]}</span>`).join('')}</span></div>
+    <div class="fp-track">
+      ${vis.map((z, i) => `<div class="seg ${z.kind} ${z.cut ? 'cut' : ''} ${z.ghost ? 'ghost' : ''}" data-seg="${i}" tabindex="0" role="img" aria-label="${esc(segTip(z).join(', '))}" style="left:${x(z.start)}%;width:max(2px, calc(${x(z.end) - x(z.start)}% - 2px))"><span class="seg-l full">${segLabel(z)}</span><span class="seg-l short">${segLabel(z, true)}</span></div>`).join('')}
+      ${S.flight !== 'idle' ? `<div class="needle ${needleSide}" style="left:${nx}%"><span>${S.flight === 'landed' ? 'landed' : S.flight === 'alarm' ? 'stopped' : 'now'} ${fmt(r.now)}</span></div>` : ''}
+    </div>
+    <div class="fp-axis">${ticks.map((t, i) => `<span class="tick ${i % 2 ? 'odd' : ''} ${t === r.stop ? 'end' : ''}" style="left:${x(t)}%">${fmt(t)}</span>`).join('')}</div>
+    <div class="fp-cap"><span class="sup">${cap}</span><button class="disclosure ${S.fpTable ? 'open' : ''}" data-act="fptable">${S.fpTable ? 'Hide' : 'Show as'} table ${ic('chevron', 'sm')}</button></div>
+    ${S.fpTable ? `<table class="tbl"><thead><tr><th>Phase</th><th>From</th><th>To</th><th>Duration</th><th>State</th></tr></thead><tbody>${vis.map(z => { const t = segTip(z); return `<tr><td>${esc(t[1])}</td><td class="num">${fmt(z.start)}</td><td class="num">${fmt(z.end)}</td><td class="num">${esc(t[0])}</td><td>${KIND[z.kind]}</td></tr>`; }).join('')}</tbody></table>` : ''}
+  </div>`;
+}
+function fitLabels() {
+  document.querySelectorAll('.seg').forEach(seg => {
+    seg.classList.remove('use-short', 'nolabel');
+    const room = seg.clientWidth - 16, full = seg.querySelector('.full');
+    if (full.scrollWidth <= room) return;
+    seg.classList.add('use-short');
+    if (seg.querySelector('.short').scrollWidth > room) seg.classList.add('nolabel');
+  });
+}
+
+function heroData() {
+  const r = W.run, b = building();
+  switch (S.flight) {
+    case 'idle': {
+      const inc = by('runway').filter(p => S.launch.include[p.n]);
+      return { amb: 'dusk', chip: ['', ic('circle', 'sm'), W.stoppedByYou ? 'Stopped by you' : 'Ready'], greet: W.stoppedByYou ? 'Stopped. It stays that way.' : 'Good evening.',
+        sub: W.stoppedByYou ? 'Nothing runs until you launch again.' : `${plural(inc.length, 'phase')} signed and ready to fly. Check Go/No-go below, then launch and walk away.`,
+        fig: String(by('runway').length), figL: `on the runway · ${plural(runwayPlans(), 'plan')}`, act: '' };
+    }
+    case 'inflight': return { amb: 'night', chip: ['live', '<span class="dot"></span>', 'In flight'], greet: 'You can walk away.',
+      sub: b ? `Building Phase ${b.n} · ${b.name}, ${stepText(b)}. Questions wait in Needs You; only irreversible work parks.` : 'Landing…',
+      fig: dur(r.stop - r.now), figL: `left until the ${fmt(r.stop)} stop`, act: btn('Stop', 'stop', 'secondary', 'square') };
+    case 'holding': return { amb: 'night', chip: ['', ic('pause', 'sm'), 'Holding'], greet: 'Holding. You can still walk away.',
+      sub: `The 5-hour usage window ran out at ${fmt(r.now)}. It resumes on its own and nothing is lost.`,
+      fig: dur(r.resume - r.now), figL: `until it resumes at ${fmt(r.resume)}`, act: btn('Stop', 'stop', 'secondary', 'square') };
+    case 'landed': return { amb: 'dawn', chip: ['', ic('circleCheck', 'sm'), `Landed ${fmt(r.now)}`], greet: 'Good morning.',
+      sub: `Here’s the night: ${plural(by('review').length, 'PR')} ready, ${by('parked').length} parked, ${plural(W.assumed.length, 'decision')} assumed. The runway is empty.`,
+      fig: String(by('review').length), figL: 'PRs ready for review', act: '' };
+    case 'alarm': return { amb: '', alarm: true, chip: ['alarm', ic('circleX', 'sm'), 'Stopped'], greet: 'Stopped. This one needs you.',
+      sub: `Claude Code isn’t signed in (${fmt(r.now)}). Phase ${b.n} stopped at a clean handoff; nothing is lost.`,
+      fig: '', figL: '', act: btn('How to fix', 'fix', 'primary') };
+  }
+}
+function heroHTML() {
+  const h = heroData();
+  return `<section class="card hero ${h.alarm ? 'alarm' : ''}" data-amb="${h.amb}" aria-live="polite">
+    <div class="hero-top"><div><span class="chip ${h.chip[0]}">${h.chip[1]}${h.chip[2]}</span><h1 class="greet">${h.greet}</h1><div class="hero-sub">${h.sub}</div></div>
+      <div class="hero-fig">${h.fig ? `<div class="fig">${h.fig}</div><div class="fig-l">${h.figL}</div>` : ''}${h.act ? `<div class="hero-act">${h.act}</div>` : ''}</div></div>
+    ${flightPathHTML()}</section>`;
+}
+
+const kpi = (label, value, sub, icon = '', unit = '', extra = '', side = '') =>
+  `<div class="card kpi"><div class="kpi-l">${icon ? ic(icon, 'sm') : ''}${label}</div><div class="kpi-row"><div class="kpi-v">${value}${unit ? `<span class="kpi-u">${unit}</span>` : ''}</div>${side}</div><div class="sup">${sub}</div>${extra}</div>`;
+const meter = f => `<div class="meter ${f > .8 ? 'hot' : ''}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(f * 100)}"><i style="width:${Math.round(f * 100)}%"></i></div>`;
+const NIGHTS = ['Mon 2 Nov', 'Tue 3 Nov', 'Wed 4 Nov', 'Thu 5 Nov', 'Fri 6 Nov', 'Sat 7 Nov', 'Sun 8 Nov'];
+const SPK = {};
+function spark(id, title, vals, fmtv) {
+  const w = 120, h = 36, p = 5;
+  const nums = vals.map(v => Array.isArray(v) ? v[0] / v[1] : v);
+  const lo = Math.min(...nums), hi = Math.max(...nums);
+  const X = i => p + i * (w - 2 * p) / (nums.length - 1), Y = v => hi === lo ? h / 2 : h - p - (v - lo) / (hi - lo) * (h - 2 * p);
+  const pts = nums.map((v, i) => [X(i), Y(v)]);
+  SPK[id] = { title, vals, fmtv, pts };
+  const d = pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)} ${py.toFixed(1)}`).join(' ');
+  const [lx, ly] = pts.at(-1);
+  return `<svg class="spark" data-spark="${id}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" tabindex="0" role="img" aria-label="${esc(title)}, last 7 nights: ${vals.map(fmtv).join(', ')}">
+    <line class="sp-cross" x1="0" x2="0" y1="0" y2="${h}"/><path class="sp-line" d="${d}"/><circle class="sp-hov" r="3.5"/><circle class="sp-end" cx="${lx}" cy="${ly}" r="4"/></svg>`;
+}
+function kpisHTML() {
+  const b = building();
+  const rows = {
+    idle: () => [
+      kpi('Estimated flight', W.estLand ? `≈${dur(W.estLand - W.run.launchAt)}` : '—', 'from your last 7 nights', 'clock'),
+      kpi('Usage window', 'Fresh', '5-hour window just reset · weekly 31% used', 'gauge'),
+      kpi('Last night', '2', '1 parked, retried today and passed', 'merge', 'merged')],
+    inflight: () => [
+      kpi('Runway ahead', String(by('runway').length), `${plural(runwayPlans(), 'plan')} approved, ahead of the builder`, 'layers', by('runway').length === 1 ? 'phase' : 'phases'),
+      kpi('Ready for review', String(by('review').length), by('review').map(p => `#${p.pr}`).join(' · ') || 'none yet', 'pr', by('review').length === 1 ? 'PR' : 'PRs'),
+      kpi('Needs you', String(W.needs.length), W.needs.length ? 'nothing blocking the build' : 'all clear', 'inbox'),
+      kpi('Context, this session', `${W.ctx}k`, `of a 400k budget · hands off cleanly at the limit`, 'gauge', '', meter(W.ctx / 400))],
+    landed: () => [
+      kpi('First-attempt gate pass', '3 of 4', 'paired with: test or gate edits by the builder, 0', 'check', '', '', spark('gp', 'First-attempt gate pass', [[1, 2], [2, 3], [3, 5], [3, 4], [1, 2], [4, 5], [3, 4]], v => `${v[0]} of ${v[1]}`)),
+      kpi('Merged without intervention', '2 of 3', 'paired with: reverted after merge, 0', 'merge', '', '', spark('mw', 'Merged without intervention', [[1, 3], [1, 2], [1, 2], [2, 3], [1, 2], [2, 3], [2, 3]], v => `${v[0]} of ${v[1]}`)),
+      kpi('Questions asked', '2', 'paired with: assumed decisions you changed, 1', 'question', '', '', spark('qa', 'Questions asked', [5, 4, 4, 3, 3, 2, 2], v => plural(v, 'question')))],
+  };
+  rows.holding = rows.inflight;
+  return rows[S.flight] ? `<div class="kpis">${rows[S.flight]().join('')}</div>` : '';
+}
+function feedHTML() {
+  return `<ul class="feed">${W.log.slice(-5).map((l, i, a) => `<li class="${W.fresh && i === a.length - 1 ? 'fresh' : ''}">${esc(l)}</li>`).join('')}</ul>`;
+}
+function nowCard() {
+  const b = building();
+  if (!b) return '';
+  return `<section class="card"><div class="card-h"><span class="label">Now</span><span class="sup">Phase ${b.n} · ${b.name}</span><span class="end sup">${S.flight === 'holding' ? 'holding' : stepText(b)}</span></div>
+    <div class="card-b"><div class="now-grid">${gateRowsHTML(b)}</div><div class="sup" style="margin-top:12px">Session log</div>${feedHTML()}</div></section>`;
+}
+function upNextCard() {
+  const rw = by('runway');
+  return `<section class="card"><div class="card-h"><span class="label">Up next</span><span class="end sup">${W.estLand ? `lands ≈${fmt(Math.min(W.estLand, W.run.stop))}` : ''}</span></div>
+    ${rw.length ? `<ul class="nlist">${rw.map((p, i) => `<li class="nrow"><span class="sup">${i + 1}</span><span class="mono muted">${p.n}</span><div class="n-main"><div class="n-title">${p.name}</div></div><span class="sup">${plural(p.plans, 'plan')} · ≈${dur(p.plans * MIN_PER_PLAN + GATE_MIN)}</span></li>`).join('')}</ul>` : '<div class="quiet-empty">Nothing after this one. It lands when this phase is done.</div>'}</section>`;
+}
+function fixCard() {
+  const b = building();
+  return `<section class="card"><div class="card-h"><span class="label">How to fix</span></div><div class="card-b">
+    <ol class="steps" style="margin-top:0"><li>In a terminal, run <code>claude /login</code></li><li>Come back and resume. The run keeps its ${fmt(W.run.stop)} stop time and continues Phase ${b.n} from plan ${b.planDone + 1}.</li></ol>
+    <div class="row">${btn('Resume flight', 'resume', 'primary', 'play')}${btn('Stay stopped', 'stop', 'ghost')}</div>
+    <div class="sup" style="margin-top:12px">Session log</div>${feedHTML()}</div></section>`;
+}
+function variantD() {
+  const hero = heroHTML();      // computes the flight path and the landing estimate first
+  const kpis = kpisHTML();
+  const body = {
+    idle: () => `<div class="cols"><div class="stack">${flightPlanCard()}${settingsCard(true)}</div><div class="stack">${goNoGoCard()}${W.needs.length ? needsCard({ kbd: false, title: 'Before you go' }) : ''}</div></div>`,
+    inflight: () => `<div class="cols"><div class="stack">${needsCard({ kbd: true })}${nowCard()}</div><div class="stack">${upNextCard()}${reviewCard('Ready for review', true)}</div></div>`,
+    landed: () => `<div class="cols"><div class="stack">${reviewCard()}${parkedCards()}${assumedCard()}</div><div class="stack">${questionsCard()}${runwayCard()}</div></div>`,
+    alarm: () => `<div class="cols"><div class="stack">${fixCard()}</div><div class="stack"><section class="card"><div class="card-h"><span class="label">Meanwhile</span></div>${needsHTML({ filter: n => n.kind !== 'alarm' })}</section>${upNextCard()}</div></div>`,
+  };
+  body.holding = body.inflight;
+  return hero + kpis + body[S.flight]();
+}
+
+/* Tooltips: flight-path segments and sparklines (labels set with textContent) */
+const tipEl = document.getElementById('tip');
+function showTip(lines, cx, cy) {
+  tipEl.replaceChildren(...lines.map((t, i) => { const d = document.createElement('div'); d.className = ['tv', 'tn', 'td'][i] || 'td'; d.textContent = t; return d; }));
+  tipEl.style.display = 'block';
+  const r = tipEl.getBoundingClientRect();
+  tipEl.style.left = Math.max(8, Math.min(cx + 12, innerWidth - r.width - 8)) + 'px';
+  tipEl.style.top = (cy - r.height - 12 < 56 ? cy + 18 : cy - r.height - 12) + 'px';
+}
+function hideTip() { tipEl.style.display = 'none'; document.querySelectorAll('.spark.hover').forEach(z => z.classList.remove('hover')); }
+function sparkAt(svg, i, cx, cy) {
+  const k = SPK[svg.dataset.spark]; if (!k) return;
+  const [px, py] = k.pts[i];
+  svg.classList.add('hover');
+  const cr = svg.querySelector('.sp-cross'); cr.setAttribute('x1', px); cr.setAttribute('x2', px);
+  const hv = svg.querySelector('.sp-hov'); hv.setAttribute('cx', px); hv.setAttribute('cy', py);
+  showTip([k.fmtv(k.vals[i]), k.title, NIGHTS[i] + (i === NIGHTS.length - 1 ? ' · last night' : '')], cx, cy);
+}
+document.addEventListener('pointermove', e => {
+  const seg = e.target.closest && e.target.closest('[data-seg]');
+  if (seg && FP[+seg.dataset.seg]) { showTip(segTip(FP[+seg.dataset.seg]), e.clientX, e.clientY); return; }
+  const sp = e.target.closest && e.target.closest('[data-spark]');
+  if (sp) {
+    const k = SPK[sp.dataset.spark], box = sp.getBoundingClientRect(), px = (e.clientX - box.left) / box.width * 120;
+    let best = 0; k.pts.forEach(([x], j) => { if (Math.abs(x - px) < Math.abs(k.pts[best][0] - px)) best = j; });
+    sparkAt(sp, best, e.clientX, e.clientY); return;
+  }
+  if (tipEl.style.display === 'block') hideTip();
+});
+document.addEventListener('focusin', e => {
+  const seg = e.target.closest && e.target.closest('[data-seg]');
+  const sp = e.target.closest && e.target.closest('[data-spark]');
+  if (seg && FP[+seg.dataset.seg]) { const r = seg.getBoundingClientRect(); showTip(segTip(FP[+seg.dataset.seg]), r.left + r.width / 2, r.top); }
+  else if (sp) { const r = sp.getBoundingClientRect(); sparkAt(sp, SPK[sp.dataset.spark].pts.length - 1, r.right, r.top); }
+});
+document.addEventListener('focusout', hideTip);
+
+/* ============ Render ============ */
+function render() {
+  const synth = synthNow();
+  document.body.classList.toggle('vivid', S.variant === 'e');
+  const content = document.getElementById('content');
+  content.className = synth ? 'synth' : '';
+  content.innerHTML = { a: variantA, b: variantB, c: variantC, d: variantD, e: variantD }[S.variant]();
+  document.getElementById('nav-needs').textContent = W.needs.length || '';
+  W.phases.forEach(p => { p.moved = false; });
+  W.fresh = false;
+  if (synth) fitLabels();
+  document.querySelectorAll('[data-variant]').forEach(b => b.classList.toggle('active', b.dataset.variant === S.variant));
+  document.querySelectorAll('[data-flight]').forEach(b => b.classList.toggle('active', b.dataset.flight === S.flight));
+}
+function setFlight(f, extra) {
+  S.flight = f; W = makeWorld(f); if (extra) Object.assign(W, extra); S.focus = 0; S.tele = false; render();
+}
+
+/* ============ Simulation: the night advances on its own ============ */
+function tick() {
+  if (!S.sim || S.flight !== 'inflight') return;
+  const b = building();
+  W.run.now = Math.min(W.run.now + 7, W.run.stop - 2);
+  if (!b) { toast('Runway empty. Landing.'); setFlight('landed'); return; }
+  if (b.planDone < b.plans) {
+    b.planDone++;
+    W.ctx = Math.min(390, W.ctx + 41);
+    W.fresh = true;
+    W.log.push(`${fmt(W.run.now)}:00  plan ${b.n}-0${b.planDone} · done · commit ${Math.random().toString(16).slice(2, 9)}`);
+    if (b.planDone === b.plans) b.gates[0] = 'run';
+  } else {
+    const i = b.gates.indexOf('run');
+    if (i >= 0) {
+      b.gates[i] = 'pass';
+      W.fresh = true;
+      W.log.push(`${fmt(W.run.now)}:00  gate ${GATES[i]} · exit 0`);
+      if (i + 1 < b.gates.length) b.gates[i + 1] = 'run';
+      else {
+        b.stage = 'review'; b.pr = W.nextPr++; b.assumed = 1; b.moved = true;
+        const live = W.segs.find(x => x.kind === 'live' && x.end == null);
+        if (live) { live.end = W.run.now; live.kind = 'done'; live.pr = b.pr; }
+        const next = by('runway')[0];
+        if (next) { next.stage = 'building'; next.planDone = 0; next.gates = GATES.map(() => 'pend'); next.moved = true; W.segs.push({ n: next.n, name: next.name, start: W.run.now, end: null, kind: 'live' }); W.ctx = 18; }
+        toast(`Phase ${b.n} is green. PR #${b.pr} opened with a preview link.`);
+      }
+    }
+  }
+  W.log = W.log.slice(-6);
+  render();
+}
+setInterval(tick, 1400);
+
+/* ============ Actions ============ */
+function toast(msg) {
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
+  document.getElementById('toasts').appendChild(t); setTimeout(() => t.remove(), 2600);
+}
+const dlg = document.getElementById('dlg');
+function openDlg(title, body, foot) {
+  dlg.innerHTML = `<div class="dlg-h"><h2 class="h2">${title}</h2></div><div class="dlg-b">${body}</div><div class="dlg-f">${foot || btn('Close', 'close', 'secondary')}</div>`;
+  dlg.showModal();
+}
+dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+function removeNeed(id, msg) {
+  const row = document.querySelector(`[data-row="${id}"]`);
+  const done = () => { W.needs = W.needs.filter(n => n.id !== id); S.focus = Math.max(0, Math.min(S.focus, W.needs.length - 1)); render(); if (msg) toast(msg); };
+  if (row) { row.classList.add('leaving'); setTimeout(done, 180); } else done();
+}
+function removeAssumed(id, msg) {
+  const row = document.querySelector(`[data-row="${id}"]`);
+  const done = () => { W.assumed = W.assumed.filter(d => d.id !== id); syncAssumedNeed(); render(); if (msg) toast(msg); };
+  if (row) { row.classList.add('leaving'); setTimeout(done, 180); } else done();
+}
+function syncAssumedNeed() {
+  const n = W.needs.find(x => x.kind === 'assumed');
+  if (!n) return;
+  if (!W.assumed.length) W.needs = W.needs.filter(x => x !== n);
+  else n.title = `${plural(W.assumed.length, 'decision')} the builder assumed`;
+}
+function act(a, id, v, el) {
+  switch (a) {
+    case 'toast': toast(v); break;
+    case 'launch':
+      if (S.variant === 'c') toast(`Launched. Lands by ${S.launch.stop}. You can walk away.`); else toast('Launched with tonight’s defaults (stop 07:00). You can walk away.');
+      setFlight('inflight'); break;
+    case 'stop': dlg.open && dlg.close(); setFlight('idle', { stoppedByYou: true }); toast('Stopped. It stays stopped until you launch again.'); break;
+    case 'fix': openDlg('Sign in to Claude Code', `<p class="muted" style="margin-top:0">The builder got an authentication error. Counterpoint never signs in for you.</p><div class="codeline"><span>claude /login</span>${sbtn('Copy', 'copy', 'ghost')}</div><p class="sup">Run it in your own terminal, then resume. Phase 5 continues from its last handoff.</p>`, btn('Cancel', 'close', 'ghost') + btn('Resume flight', 'resume', 'primary', 'play')); break;
+    case 'resume': dlg.open && dlg.close(); setFlight('inflight'); toast('Resumed from the last handoff.'); break;
+    case 'approve': openDlg(`Approve Phase ${id}`, `<p class="muted" style="margin-top:0">Approving signs this exact version of the phase onto the runway. Run this in your terminal; it asks for your passphrase.</p><div class="codeline"><span>counterpoint approve ${id}</span>${sbtn('Copy', 'copy', 'ghost')}</div><p class="sup">If the phase changes after you sign, it leaves the runway and shows up in Needs You.</p>`); break;
+    case 'merge': openDlg(`Merge PR #${id}`, `<p class="muted" style="margin-top:0">Only your signed merge commit lands it. Run this in your terminal; it asks for your passphrase.</p><div class="codeline"><span>counterpoint merge ${id}</span>${sbtn('Copy', 'copy', 'ghost')}</div><p class="sup">Gates re-run on the merge result before it lands.</p>`); break;
+    case 'copy': toast('Command copied'); break;
+    case 'close': dlg.close(); break;
+    case 'pr': toast(`Opens PR #${id} on GitHub`); break;
+    case 'preview': toast(`Opens the Vercel preview for Phase ${id}`); break;
+    case 'open-change': toast(`Opens the change view: what changed in Phase ${id} since you signed`); break;
+    case 'log': {
+      const p = W.phases.find(x => x.n === id);
+      openDlg(`Phase ${id} · last failing gate`, `<pre class="log" style="margin:0">${esc(p && p.tail || 'No log')}</pre><p class="sup">Attempt 1 failed at 02:12, attempt 2 at 02:40, attempt 3 at 03:05. Full log: runs/2026-11-09/5.1/e2e.log</p>`);
+      break;
+    }
+    case 'retry': removeNeed('p51', 'Phase 5.1 goes back on tonight’s runway with the failing output attached'); W.phases.filter(p => p.n === '5.1').forEach(p => { p.stage = 'runway'; p.signed = '21:46'; }); break;
+    case 'later': removeNeed(id, 'Snoozed until tomorrow morning'); break;
+    case 'pick': removeNeed(id, `Picked ${v}. Written to Phase 7 decisions as a signed-off choice.`); break;
+    case 'dismiss': removeNeed(id, 'Dismissed. Items stay in the backlog, tagged “council”.'); break;
+    case 'debrief': S.variant = 'c'; render(); break;
+    case 'keep': removeAssumed(id, 'Kept'); break;
+    case 'change': toast('Opens the decision with its context; your change goes back to the builder as a follow-up'); break;
+    case 'keep-all': W.assumed = []; syncAssumedNeed(); render(); toast('All assumed decisions kept'); break;
+    case 'tele': S.tele = !S.tele; render(); break;
+    case 'fptable': S.fpTable = !S.fpTable; render(); break;
+    case 'settings': S.settingsOpen = !S.settingsOpen; render(); break;
+    case 'flip': { const c = S.launch.checks.find(x => x.id === id); c.go = !c.go; render(); break; }
+  }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if (!b || b.disabled) return;
+  if (b.dataset.act === 'include') return; // handled by change
+  act(b.dataset.act, b.dataset.id, b.dataset.v, b);
+});
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.act === 'include') { S.launch.include[t.dataset.id] = t.checked; render(); }
+  if (t.dataset.set) { const k = t.dataset.set; S.launch[k] = k === 'budget' ? Number(t.value) : t.value; render(); }
+});
+
+/* Keyboard triage (variant B) */
+document.addEventListener('keydown', e => {
+  if (!['b', 'd', 'e'].includes(S.variant) || dlg.open || /input|select|textarea/i.test(e.target.tagName)) return;
+  const n = W.needs[S.focus];
+  if (e.key === 'j') { S.focus = Math.min(S.focus + 1, W.needs.length - 1); render(); }
+  else if (e.key === 'k') { S.focus = Math.max(S.focus - 1, 0); render(); }
+  else if (!n) return;
+  else if (e.key === 'Enter') { const [l, a, v] = n.actions[0]; act(a, n.id, v || l); }
+  else if (e.key === 'l') act('later', n.id);
+  else if ((e.key === 'a' || e.key === 'b') && n.kind === 'question') act('pick', n.id, e.key.toUpperCase());
+});
+
+/* ============ Sketch chrome wiring ============ */
+document.querySelectorAll('[data-variant]').forEach(b => b.addEventListener('click', () => { S.variant = b.dataset.variant; S.focus = 0; render(); }));
+document.querySelectorAll('[data-flight]').forEach(b => b.addEventListener('click', () => setFlight(b.dataset.flight)));
+document.getElementById('sim-btn').addEventListener('click', e => { S.sim = !S.sim; e.currentTarget.classList.toggle('active', S.sim); toast(S.sim ? 'Simulation on: watch the night advance' : 'Simulation paused'); });
+document.getElementById('quiet-btn').addEventListener('click', e => {
+  S.quiet = !S.quiet; e.currentTarget.classList.toggle('active', S.quiet); document.body.classList.toggle('loud', !S.quiet); render();
+  toast(S.quiet ? 'Dark cockpit on: color only for exceptions' : 'Dark cockpit off: everything colored by status');
+});
+const modeSel = document.getElementById('mode-sel'), modeBtn = document.getElementById('mode-btn');
+function setMode(m) {
+  document.documentElement.dataset.mode = m; modeSel.value = m;
+  const dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  modeBtn.innerHTML = ic(dark ? 'moon' : 'sun');
+}
+modeSel.addEventListener('change', () => setMode(modeSel.value));
+modeBtn.addEventListener('click', () => {
+  const dark = document.documentElement.dataset.mode === 'dark' || (document.documentElement.dataset.mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  setMode(dark ? 'light' : 'dark');
+});
+document.getElementById('theme-sel').addEventListener('change', e => { document.querySelector('link[href*=themes]').href = '../themes/' + e.target.value + '.css'; });
+document.querySelectorAll('[data-vp]').forEach(b => b.addEventListener('click', () => {
+  document.getElementById('frame').style.maxWidth = b.dataset.vp ? b.dataset.vp + 'px' : '';
+  document.querySelectorAll('[data-vp]').forEach(x => x.classList.toggle('on', x === b));
+  setTimeout(() => synthNow() && fitLabels(), 260);
+}));
+addEventListener('resize', () => synthNow() && fitLabels());
+const annot = document.getElementById('annot');
+document.getElementById('annot-btn').addEventListener('click', e => {
+  const on = document.body.classList.toggle('annotating'); e.currentTarget.classList.toggle('on', on); if (!on) annot.style.display = 'none';
+});
+document.addEventListener('mousemove', e => {
+  if (!document.body.classList.contains('annotating')) return;
+  const el = e.target.closest('#frame *');
+  if (!el) { annot.style.display = 'none'; return; }
+  const cs = getComputedStyle(el);
+  annot.textContent = `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : ''}\nfont   ${cs.fontSize} / ${cs.lineHeight} · ${cs.fontWeight}\ncolor  ${cs.color}\nbg     ${cs.backgroundColor}\npad    ${cs.padding}\nradius ${cs.borderRadius}`;
+  annot.style.display = 'block'; annot.style.left = Math.min(e.clientX + 14, innerWidth - 330) + 'px'; annot.style.top = (e.clientY + 14) + 'px';
+});
+
+/* ============ Boot ============ */
+setMode('system');
+W = makeWorld(S.flight);
+render();
+</script>
+</body>
+</html>
