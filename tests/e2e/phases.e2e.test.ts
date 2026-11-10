@@ -15,6 +15,11 @@ import { type Browser, chromium, type Locator, type Page } from 'playwright-core
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { controlRequest } from '../../src/cli/control-client.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
+import {
+  type AcceptedRisk,
+  revokeAcceptedRisk,
+  writeAcceptedRisk,
+} from '../../src/core/security/accepted-risks.ts';
 import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
 import { makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 
@@ -71,7 +76,31 @@ type ProbeFixtureRow = {
   mode: string;
   result: string;
   evidence: string;
+  /** 01-19 structured evidence (the schema defaults each when absent). */
+  steps?: unknown[];
+  leaks?: string[];
+  trusted?: boolean;
 };
+
+/**
+ * The gh row as the live probe records a Keychain-only reach (01-19): Bash cat, Read and Grep
+ * refused by a deny rule (control reached), the Keychain lookup reached in both sessions.
+ */
+const GH_KEYCHAIN_ONLY = {
+  result: 'reachable',
+  evidence: 'probe run: only the Keychain lookup reached',
+  steps: [
+    { index: 10, tool: 'Bash', operation: 'cat', treatment: 'denied-rule', control: 'reached' },
+    { index: 11, tool: 'Read', operation: 'read', treatment: 'denied-rule', control: 'reached' },
+    { index: 12, tool: 'Grep', operation: 'grep', treatment: 'denied-rule', control: 'reached' },
+    { index: 13, tool: 'Bash', operation: 'keychain', treatment: 'reached', control: 'reached' },
+  ],
+  leaks: ['keychain-canary'],
+  trusted: true,
+};
+
+const RISK_REASON = 'E2E: owner accepted the Keychain residual';
+const GH_COVERED_SUPPORTING = 'config files cannot be read · Keychain reachable (accepted risk)';
 
 const AGENT_MODE_PASS = "The probe's agent session ran in auto mode.";
 const AGENT_MODE_FAIL = "The probe's agent session ran in default mode, not auto.";
@@ -97,6 +126,8 @@ function doctorReport(
     sandboxIsolation?: 'pass' | 'fail' | 'absent';
     /** Replaces or drops probe rows (it receives the nine rows as built). */
     probe?: (rows: ProbeFixtureRow[]) => ProbeFixtureRow[];
+    /** 01-19: the accepted-risk record as doctor read it when it ran. */
+    acceptedRisks?: readonly AcceptedRisk[];
   } = {},
 ) {
   const check = (id: string, label: string, detail: string) => ({
@@ -132,6 +163,7 @@ function doctorReport(
     ],
     integrity: check('integrity', 'Repository integrity', 'Snapshot recorded.'),
     probe: options.probe === undefined ? rows : options.probe(rows),
+    ...(options.acceptedRisks === undefined ? {} : { acceptedRisks: options.acceptedRisks }),
     // 01-25: a report passes only with the Sandbox isolation settings check passing.
     ...(isolation === 'absent'
       ? {}
@@ -590,6 +622,80 @@ describe('phases and trust pages', () => {
     expect(await main.getByText('Blocked', { exact: true }).count()).toBe(0);
     expect(await main.getByText('10 checks did not pass', { exact: true }).count()).toBe(1);
     expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it("shows the owner's accepted risk on the gh row, then the failing verdict once it is revoked", async () => {
+    // 01-20: the record goes in through the library (as `accept-risk` would write it), and the
+    // stored report carries the same entry, as doctor stores it when the record was in force.
+    const entry = writeAcceptedRisk(home, { reason: RISK_REASON });
+    const report = doctorReport(hostId, {
+      probe: (rows) => rows.map((row) => (row.id === 'gh' ? { ...row, ...GH_KEYCHAIN_ONLY } : row)),
+      acceptedRisks: [entry],
+    });
+    try {
+      const main = await showTrust(report, 'Agents are boxed in, with one accepted risk');
+      expect(
+        await main
+          .getByText('Agents are boxed in, with one accepted risk', { exact: true })
+          .count(),
+      ).toBe(1);
+      expect(await main.getByText(RISK_REASON, { exact: false }).count()).toBeGreaterThan(0);
+      expect(
+        await main.getByText('counterpoint revoke-risk gh-keychain', { exact: false }).count(),
+      ).toBeGreaterThan(0);
+      expect(
+        await main.getByText('It could read your macOS Keychain', { exact: false }).count(),
+      ).toBeGreaterThan(0);
+      // Exactly one Accepted risk Badge and one Reachable, both on the gh credentials row.
+      expect(await main.getByText('Accepted risk', { exact: true }).count()).toBe(1);
+      expect(await main.getByText('Reachable', { exact: true }).count()).toBe(1);
+      const ghRow = trustRow('gh credentials');
+      expect(await ghRow.getByText('Accepted risk', { exact: true }).count()).toBe(1);
+      expect(await ghRow.getByText('Reachable', { exact: true }).count()).toBe(1);
+      expect(await ghRow.getByText(GH_COVERED_SUPPORTING, { exact: true }).count()).toBe(1);
+      expect(await ghRow.getByText('cannot read', { exact: true }).count()).toBe(0);
+      // Every other probe row renders as before.
+      expect(await main.getByText('Blocked', { exact: true }).count()).toBe(8);
+      expect(
+        await trustRow('Credentials in the shell environment')
+          .getByText('cannot read', { exact: true })
+          .count(),
+      ).toBe(1);
+      // Never the failing verdict, and never the all-pass verdict alone.
+      expect(await main.getByText('Agent sandbox is not confining sessions').count()).toBe(0);
+      expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+
+      // Revoking applies at once to the same stored report.
+      expect(revokeAcceptedRisk(home, 'gh-keychain')).toBe(true);
+      await nudgeUntil('Agent sandbox is not confining sessions');
+      expect(await main.getByText(/^1 target was reachable\./).count()).toBe(1);
+      expect(await main.getByText('Accepted risk', { exact: true }).count()).toBe(0);
+      expect(await main.getByText('Reachable', { exact: true }).count()).toBe(1);
+      expect(await main.getByText(GH_COVERED_SUPPORTING, { exact: true }).count()).toBe(0);
+      expect(
+        await trustRow('gh credentials').getByText('cannot read', { exact: true }).count(),
+      ).toBe(1);
+      expect(await main.getByText('with one accepted risk', { exact: false }).count()).toBe(0);
+    } finally {
+      revokeAcceptedRisk(home, 'gh-keychain');
+    }
+  });
+
+  it('keeps the failing verdict when the server applied no accepted risk', async () => {
+    // A Keychain-only gh row with no record in the home: the server says fail, and so does the
+    // console, even though the report carries an entry recorded at check time.
+    const entry = writeAcceptedRisk(home, { reason: RISK_REASON });
+    expect(revokeAcceptedRisk(home, 'gh-keychain')).toBe(true);
+    const main = await showTrust(
+      doctorReport(hostId, {
+        probe: (rows) =>
+          rows.map((row) => (row.id === 'gh' ? { ...row, ...GH_KEYCHAIN_ONLY } : row)),
+        acceptedRisks: [entry],
+      }),
+      'Agent sandbox is not confining sessions',
+    );
+    expect(await main.getByText('Accepted risk', { exact: true }).count()).toBe(0);
+    expect(await main.getByText('with one accepted risk', { exact: false }).count()).toBe(0);
   });
 
   it('raises no Content Security Policy violation or page error', () => {
