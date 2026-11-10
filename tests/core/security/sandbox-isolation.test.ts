@@ -363,3 +363,132 @@ describe('the rule matrix: each rule in each source kind', () => {
     });
   }
 });
+
+describe('several sources at once (01-25 Task 2)', () => {
+  it('names the first finding in source order and keeps each source its own findings', () => {
+    const check = judgeSandboxIsolation(
+      [
+        launch(),
+        user({}),
+        ofKind('server-managed-cache', {}),
+        ofKind('managed-file', { sandbox: { allowUnsandboxedCommands: true } }),
+        ofKind('managed-drop-in', { sandbox: { excludedCommands: ['gh *'] } }),
+        ofKind('managed-preferences', { sandbox: { autoAllowBashIfSandboxed: 'true' } }),
+      ],
+      HOME,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.detail).toBe(
+      'managed settings file sets sandbox.allowUnsandboxedCommands to true, which lets a failed command retry outside the sandbox. 2 more findings in the stored report.',
+    );
+    expect(check.sources.map((source) => [source.kind, source.findings])).toEqual([
+      ['launch', []],
+      ['user', []],
+      ['server-managed-cache', []],
+      ['managed-file', ['sandbox.allowUnsandboxedCommands']],
+      ['managed-drop-in', ['sandbox.excludedCommands']],
+      ['managed-preferences', ['sandbox.autoAllowBashIfSandboxed']],
+    ]);
+  });
+
+  it('lists every read source in the pass detail and skips absent ones', () => {
+    const check = judgeSandboxIsolation(
+      [
+        launch(),
+        user({ sandbox: { enabled: true } }),
+        {
+          kind: 'server-managed-cache',
+          label: 'server-managed settings cache',
+          path: null,
+          state: 'absent',
+        },
+        ofKind('managed-file', { sandbox: { failIfUnavailable: 'true' } }),
+        ofKind('managed-drop-in', {}),
+        ofKind('managed-preferences', {
+          sandbox: { enabled: true, allowUnsandboxedCommands: false },
+        }),
+      ],
+      HOME,
+    );
+    expect(check.result).toBe('pass');
+    expect(check.detail).toBe(
+      'No settings source Claude Code loads for agent sessions turns sandbox isolation off (5 checked: launch settings, user settings, managed settings file, managed settings drop-in 10-a.json, managed preferences).',
+    );
+  });
+
+  it('fails on an unreadable source before reporting any finding', () => {
+    const check = judgeSandboxIsolation(
+      [
+        launch(),
+        user({ sandbox: { filesystem: { disabled: true } } }),
+        {
+          kind: 'managed-preferences',
+          label: 'managed preferences',
+          path: '/Library/Managed Preferences/com.anthropic.claudecode.plist',
+          state: 'unreadable',
+          problem: 'not a valid property list',
+        },
+      ],
+      HOME,
+    );
+    expect(check.detail).toBe(
+      "Couldn't read managed preferences (/Library/Managed Preferences/com.anthropic.claudecode.plist): not a valid property list. Claude Code may apply settings Counterpoint cannot check.",
+    );
+    expect(check.sources[1]?.findings).toEqual(['sandbox.filesystem.disabled']);
+  });
+});
+
+describe('what the check may show', () => {
+  it('sanitises and caps a string value at 40 characters', () => {
+    const value = `on\u0000\u001b[31m\u2028${'x'.repeat(60)}`;
+    const check = judgeSandboxIsolation(
+      [launch(), user({ sandbox: { filesystem: { disabled: value } } })],
+      HOME,
+    );
+    const shown = /to (".*"), which/.exec(check.detail)?.[1] as string;
+    const inner = JSON.parse(shown) as string;
+    expect([...inner]).toHaveLength(40);
+    const control = [...inner].filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+    });
+    expect(control).toEqual([]);
+    expect(check.detail).not.toContain('x'.repeat(41));
+  });
+
+  it('never shows list entries, object contents or unrelated settings', () => {
+    const check = judgeSandboxIsolation(
+      [
+        launch(),
+        user({
+          apiKeyHelper: 'secret-helper',
+          sandbox: { excludedCommands: ['secret-cmd *'], filesystem: { disabled: { secret: 1 } } },
+        }),
+      ],
+      HOME,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.detail).toContain('to an object, which');
+    expect(JSON.stringify(check)).not.toContain('secret');
+  });
+
+  it('sanitises control characters in a source label and path', () => {
+    const check = judgeSandboxIsolation(
+      [
+        launch(),
+        {
+          kind: 'managed-drop-in',
+          label: 'managed settings drop-in a\u001b[2Jb.json',
+          path: '/etc/claude-code/managed-settings.d/a\u001b[2Jb.json',
+          state: 'read',
+          settings: { sandbox: { enabled: false } },
+        },
+      ],
+      HOME,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.detail).not.toContain('\u001b');
+    expect(check.fix).not.toContain('\u001b');
+    expect(JSON.stringify(check.sources)).not.toContain('\\u001b');
+  });
+});

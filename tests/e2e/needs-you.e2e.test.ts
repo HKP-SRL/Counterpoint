@@ -145,6 +145,17 @@ function allPassReport(hostId: string, checkedAt: Date) {
       result: 'blocked',
       evidence: 'probe run',
     })),
+    // 01-25: a report passes only with the Sandbox isolation settings check passing.
+    sandboxIsolation: {
+      id: 'sandbox-isolation',
+      label: 'Sandbox isolation settings',
+      result: 'pass',
+      detail:
+        'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
+      sources: [
+        { kind: 'launch', label: 'launch settings', path: null, state: 'read', findings: [] },
+      ],
+    },
   };
 }
 

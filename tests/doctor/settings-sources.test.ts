@@ -5,6 +5,7 @@
 // default-locations cases compare returned paths as values and never hand them to the reader.
 import {
   chmodSync,
+  type Dirent,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -301,65 +302,68 @@ const UNSANDBOXED_PLIST = plist(
   '<key>sandbox</key><dict><key>allowUnsandboxedCommands</key><true/></dict>',
 );
 
-describe.skipIf(process.platform !== 'darwin')('managed preferences plist (real /usr/bin/plutil)', () => {
-  it('reports a device-level plist that allows unsandboxed retries', async () => {
-    const s = scratch();
-    writeFileSync(join(s.home, 'prefs', 'com.anthropic.claudecode.plist'), UNSANDBOXED_PLIST);
-    const check = judgeSandboxIsolation(await read(s), s.home);
-    expect(check.result).toBe('fail');
-    expect(check.detail).toBe(
-      'managed preferences sets sandbox.allowUnsandboxedCommands to true, which lets a failed command retry outside the sandbox.',
-    );
-    expect(check.sources.filter((source) => source.kind === 'managed-preferences')).toEqual([
-      {
-        kind: 'managed-preferences',
-        label: 'managed preferences',
-        path: '~/prefs/com.anthropic.claudecode.plist',
-        state: 'read',
-        findings: ['sandbox.allowUnsandboxedCommands'],
-      },
-      {
-        kind: 'managed-preferences',
-        label: 'managed preferences for tester',
-        path: '~/prefs/tester/com.anthropic.claudecode.plist',
-        state: 'absent',
-        findings: [],
-      },
-    ]);
-  });
+describe.skipIf(process.platform !== 'darwin')(
+  'managed preferences plist (real /usr/bin/plutil)',
+  () => {
+    it('reports a device-level plist that allows unsandboxed retries', async () => {
+      const s = scratch();
+      writeFileSync(join(s.home, 'prefs', 'com.anthropic.claudecode.plist'), UNSANDBOXED_PLIST);
+      const check = judgeSandboxIsolation(await read(s), s.home);
+      expect(check.result).toBe('fail');
+      expect(check.detail).toBe(
+        'managed preferences sets sandbox.allowUnsandboxedCommands to true, which lets a failed command retry outside the sandbox.',
+      );
+      expect(check.sources.filter((source) => source.kind === 'managed-preferences')).toEqual([
+        {
+          kind: 'managed-preferences',
+          label: 'managed preferences',
+          path: '~/prefs/com.anthropic.claudecode.plist',
+          state: 'read',
+          findings: ['sandbox.allowUnsandboxedCommands'],
+        },
+        {
+          kind: 'managed-preferences',
+          label: 'managed preferences for tester',
+          path: '~/prefs/tester/com.anthropic.claudecode.plist',
+          state: 'absent',
+          findings: [],
+        },
+      ]);
+    });
 
-  it('reports a per-user plist under the user name', async () => {
-    const s = scratch();
-    mkdirSync(join(s.home, 'prefs', 'tester'));
-    writeFileSync(
-      join(s.home, 'prefs', 'tester', 'com.anthropic.claudecode.plist'),
-      UNSANDBOXED_PLIST,
-    );
-    const check = judgeSandboxIsolation(await read(s), s.home);
-    expect(check.result).toBe('fail');
-    expect(check.detail).toMatch(
-      /^managed preferences for tester sets sandbox\.allowUnsandboxedCommands to true, /,
-    );
-  });
+    it('reports a per-user plist under the user name', async () => {
+      const s = scratch();
+      mkdirSync(join(s.home, 'prefs', 'tester'));
+      writeFileSync(
+        join(s.home, 'prefs', 'tester', 'com.anthropic.claudecode.plist'),
+        UNSANDBOXED_PLIST,
+      );
+      const check = judgeSandboxIsolation(await read(s), s.home);
+      expect(check.result).toBe('fail');
+      expect(check.detail).toMatch(
+        /^managed preferences for tester sets sandbox\.allowUnsandboxedCommands to true, /,
+      );
+    });
 
-  it('reads a plist with a safe sandbox block as passing', async () => {
-    const s = scratch();
-    writeFileSync(
-      join(s.home, 'prefs', 'com.anthropic.claudecode.plist'),
-      plist('<key>sandbox</key><dict><key>enabled</key><true/></dict>'),
-    );
-    const sources = await read(s);
-    expect(sources.find((source) => source.label === 'managed preferences')?.state).toBe('read');
-    expect(judgeSandboxIsolation(sources, s.home).result).toBe('pass');
-  });
+    it('reads a plist with a safe sandbox block as passing', async () => {
+      const s = scratch();
+      writeFileSync(
+        join(s.home, 'prefs', 'com.anthropic.claudecode.plist'),
+        plist('<key>sandbox</key><dict><key>enabled</key><true/></dict>'),
+      );
+      const sources = await read(s);
+      expect(sources.find((source) => source.label === 'managed preferences')?.state).toBe('read');
+      expect(judgeSandboxIsolation(sources, s.home).result).toBe('pass');
+    });
 
-  it('fails closed on a malformed plist', async () => {
-    const s = scratch();
-    writeFileSync(join(s.home, 'prefs', 'com.anthropic.claudecode.plist'), '<plist><dict><key>');
-    const prefs = (await read(s)).find((source) => source.label === 'managed preferences');
-    expect(prefs).toMatchObject({ state: 'unreadable', problem: 'not a valid property list' });
-  });
-});
+    it('fails closed on a malformed plist', async () => {
+      const s = scratch();
+      writeFileSync(join(s.home, 'prefs', 'com.anthropic.claudecode.plist'), '<plist><dict><key>');
+      const prefs = (await read(s)).find((source) => source.label === 'managed preferences');
+      expect(prefs).toMatchObject({ state: 'unreadable', problem: 'not a valid property list' });
+    });
+  },
+);
 
 describe('defaultSettingsSourceLocations', () => {
   it('names the macOS managed locations', () => {
@@ -466,7 +470,7 @@ function scanCalls(
 }
 
 function testFiles(dir: string): string[] {
-  let entries: ReturnType<typeof readdirSync>;
+  let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
@@ -482,7 +486,10 @@ function testFiles(dir: string): string[] {
 }
 
 function scanTree(): { calls: number; offenders: string[] } {
-  const files = [...testFiles(join(REPO_ROOT, 'tests')), ...testFiles(join(REPO_ROOT, 'ui', 'tests'))];
+  const files = [
+    ...testFiles(join(REPO_ROOT, 'tests')),
+    ...testFiles(join(REPO_ROOT, 'ui', 'tests')),
+  ];
   const offenders: string[] = [];
   let calls = 0;
   for (const file of files) {

@@ -617,6 +617,7 @@ describe('counterpoint doctor', () => {
         [
           ['launch', 'read'],
           ['user', 'absent'],
+          ['server-managed-cache', 'absent'],
         ],
       );
       expect(run.out).toContain('Agents are boxed in');
