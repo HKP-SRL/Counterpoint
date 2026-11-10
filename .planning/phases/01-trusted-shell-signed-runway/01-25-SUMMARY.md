@@ -275,3 +275,9 @@ None.
 ---
 *Phase: 01-trusted-shell-signed-runway*
 *Completed: 2026-11-10*
+
+## Self-Check: PASSED
+
+- Files: the 4 created source and test files and this SUMMARY exist.
+- Commits on this branch: 3698df9, cd51e4f, 3e1abaf (code) and 5955cf4 (this SUMMARY).
+- The working tree was clean after the SUMMARY commit. STATE.md, ROADMAP.md and REQUIREMENTS.md were not touched: worktree mode, and FOUND-03 and FOUND-04 are still blocked in `requirements.ready-ids`.
