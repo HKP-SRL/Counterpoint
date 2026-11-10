@@ -4,15 +4,15 @@ current_phase: 01
 current_phase_name: Trusted Shell & Signed Runway
 status: executing
 stopped_at: Phase 1 UI-SPEC approved
-last_updated: "2026-11-10T12:43:21.171Z"
+last_updated: "2026-11-10T14:32:41.642Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 01 execution started
-state_head: 0ff81e2a4cbef33307a7adc4a2686d15ba65102a
+state_head: 9d58c3a9f8e8e0568c341195b1fba0a8e1f95f56
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 24
-  completed_plans: 18
+  completed_plans: 19
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 01 (Trusted Shell & Signed Runway) — EXECUTING
-Plan: 18 of 24
+Plan: 19 of 24
 Status: Ready to execute
 Last activity: 2026-11-10 — Phase 01 execution started
 
@@ -86,7 +86,7 @@ None yet.
 - [Phase 4]: Fixture-mode rendering of Cena screens and `data-cp-id` stability across redraws are unproven. Spike before the visual gate.
 - [Phase 1] 01-18 halted on claude 2.1.321 (CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forced dontAsk to default) and is superseded by gap plans 01-21..01-23 (auto mode + permissions.blockWritesOutsideWorkingDirectories + deterministic-only evaluator + doctor effective-mode check). Likely owner-decision gate: 01-21's live tracer stops if the scrub also forces auto to default; 01-22, 01-23, 01-19, 01-20 and 01-16 then wait for the owner's choice (layer-preserving launch variant / opt out of the scrub / default mode). Halted worktree .claude/worktrees/agent-a333676a91bb722f1 (branch worktree-agent-a333676a91bb722f1) stays until 01-23 merges (it reads c3f8034), then is removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0118/evidence-01-18-live/.
 - [Phase 1] 01-21 halted at Task 1 step 4(a) (2026-11-10): on claude 2.1.321 the scrub forced --permission-mode auto to default in every session and every layer-preserving variant (WINDOWS.md ledger #3). Outside Write/Edit were refused by permissions.blockWritesOutsideWorkingDirectories (reason_type `other`, not `rule`); git-hooks/git-info by the deny rule; control met the attribution rule. Owner chose option 2 (opt out of the scrub with replacement checks). Re-planned 2026-11-10 (8e79f41, ca8326d, 206d681, 5f823af): 01-21 superseded by 01-24 (SCRUB=0 + autoAllowBashIfSandboxed false, live auto proof first, then the deterministic-only evaluator), 01-25 (doctor sandbox-isolation settings check, by-effect reading confirmed by owner), 01-26 (ninth probe row credential-env); WINDOWS #3 closes in 01-23, scoped (replacement 2 proven on the launch source there, on the owner's real settings in 01-16); owner accepted the plan-size warnings. 01-24 cherry-picks e5e59f3. 01-21's launch-profile work (e5e59f3) and halted SUMMARY (f41c4a4) sit unmerged on worktree-agent-a1ce4d71c120d2428 (.claude/worktrees/agent-a1ce4d71c120d2428), kept for the re-plan. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0121/evidence-01-21-live/.
-- [Phase 1] 01-24 and 01-25 merged (2026-11-10; gates green: 885 unit, 44 e2e); 01-21's worktree removed. 01-26 halted at Task 1 step 2 under stop rule (e) (credential-shaped env in sandboxed Bash); owner decided the scoped fix above. Halted worktree .claude/worktrees/agent-aaa9c94172f5cec6c (branch worktree-agent-aaa9c94172f5cec6c: 1fc2492 listing script/parser/step/live test, aa34fe4 halted SUMMARY) stays until the revised 01-26 merges, then is removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0126/evidence-01-26-live/.
+- [Phase 1] 01-24 and 01-25 merged (2026-11-10; gates green: 885 unit, 44 e2e); 01-21's worktree removed. 01-26 halted at Task 1 step 2 under stop rule (e) (credential-shaped env in sandboxed Bash); owner decided the scoped fix above. 01-26 completed 2026-11-10 after two owner decisions (rerun2 clean: one deny entry, 13 excepted loopback proxy entries, ninth row, MATCHER_REVISION 4, WINDOWS #4 waived); its halted worktrees are removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0126/evidence-01-26-live/.
 
 ## Deferred Items
 
