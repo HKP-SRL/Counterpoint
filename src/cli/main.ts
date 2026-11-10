@@ -2,7 +2,9 @@
 // daemon, registers the current repository and prints a one-time sign-in link; `open` prints a
 // fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon. The CLI
 // re-enters itself as the daemon through the hidden `__daemon` command, so the daemon runs the
-// same code.
+// same code. The owner's setup commands (`init-key`, `trust-key`, `trust`, `approve`) and the
+// accepted-risk commands (`accept-risk gh-keychain`, which needs a terminal, and `revoke-risk`)
+// are the owner's act at a terminal; no console route or agent reaches them.
 import { spawn } from 'node:child_process';
 import {
   chmodSync,
@@ -35,6 +37,7 @@ import { packageRoot } from '../server/app.ts';
 import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { doctorCommand } from './doctor.ts';
+import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
 import {
   initKeyCommand,
   type TrustCommandOptions,
@@ -454,6 +457,16 @@ async function doctor(hostId: string | undefined): Promise<void> {
   exitWith(await doctorCommand(home, hostId));
 }
 
+async function acceptRisk(risk: string): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await acceptRiskCommand(home, risk, terminalPrompt()));
+}
+
+function revokeRisk(risk: string): void {
+  const { home } = homeOrExit();
+  exitWith(revokeRiskCommand(home, risk));
+}
+
 async function approve(hostId: string, phaseId: string): Promise<void> {
   const { home } = homeOrExit();
   exitWith(
@@ -510,6 +523,20 @@ export function buildProgram(): Command {
     .description('check tools, the approval key and the agent sandbox (live probe) for a project')
     .argument('[host]', 'the registered project id (default: the project you are in)')
     .action((hostId: string | undefined) => doctor(hostId));
+
+  program
+    .command('accept-risk')
+    .description(
+      'record that you accept a known sandbox risk (only gh-keychain; asks you to confirm)',
+    )
+    .argument('<risk>', 'the risk id: gh-keychain')
+    .action((risk: string) => acceptRisk(risk));
+
+  program
+    .command('revoke-risk')
+    .description('withdraw an accepted sandbox risk')
+    .argument('<risk>', 'the risk id: gh-keychain')
+    .action((risk: string) => revokeRisk(risk));
 
   program
     .command('init-key')

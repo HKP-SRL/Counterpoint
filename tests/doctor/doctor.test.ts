@@ -24,6 +24,11 @@ import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { type TrustResult, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import {
+  readAcceptedRisks,
+  revokeAcceptedRisk,
+  writeAcceptedRisk,
+} from '../../src/core/security/accepted-risks.ts';
+import {
   type Check,
   DoctorReport,
   judgeAgentMode,
@@ -121,6 +126,34 @@ interface ProbeCall {
   logDir: string;
 }
 
+type Evidence = Pick<ProbeTarget, 'steps' | 'leaks' | 'trusted'>;
+
+/**
+ * The gh row's structured evidence as the live probe records it (01-19): Bash cat, Read and Grep
+ * refused by a deny rule (control reached), the Keychain lookup reached in both sessions. A
+ * reachable row leaks only the Keychain canary; a blocked one leaks nothing and its lookup was
+ * refused too.
+ */
+function ghEvidence(result: ProbeResult): Evidence {
+  const reachable = result === 'reachable';
+  return {
+    steps: [
+      { index: 10, tool: 'Bash', operation: 'cat', treatment: 'denied-rule', control: 'reached' },
+      { index: 11, tool: 'Read', operation: 'read', treatment: 'denied-rule', control: 'reached' },
+      { index: 12, tool: 'Grep', operation: 'grep', treatment: 'denied-rule', control: 'reached' },
+      {
+        index: 13,
+        tool: 'Bash',
+        operation: 'keychain',
+        treatment: reachable ? 'reached' : 'denied-rule',
+        control: 'reached',
+      },
+    ],
+    leaks: reachable ? ['keychain-canary'] : [],
+    trusted: true,
+  };
+}
+
 function fakeProbe(
   results: Partial<Record<(typeof PROBE_TARGET_IDS)[number], ProbeResult>> = {},
   options: {
@@ -128,17 +161,27 @@ function fakeProbe(
     staleLeftovers?: (paths: ProtectedPaths) => string[];
     /** What the treatment reported about its permission mode (default: one init event, auto). */
     agentSession?: { modes: Array<string | null>; notices: string[] };
+    /** Overrides the gh row's structured evidence (default: ghEvidence(result)). */
+    gh?: Partial<Evidence>;
   } = {},
 ) {
   return async (input: ProbeCall) => {
     options.calls?.push(input);
-    const targets: ProbeTarget[] = PROBE_TARGET_IDS.map((id) => ({
-      id,
-      label: probeTargetLabel(id, 'Host'),
-      mode: probeTargetMode(id),
-      result: results[id] ?? 'blocked',
-      evidence: `evidence for ${id}`,
-    }));
+    const targets: ProbeTarget[] = PROBE_TARGET_IDS.map((id) => {
+      const result = results[id] ?? 'blocked';
+      const evidence: Evidence =
+        id === 'gh'
+          ? { ...ghEvidence(result), ...options.gh }
+          : { steps: [], leaks: [], trusted: true };
+      return {
+        id,
+        label: probeTargetLabel(id, 'Host'),
+        mode: probeTargetMode(id),
+        result,
+        evidence: `evidence for ${id}`,
+        ...evidence,
+      };
+    });
     return {
       targets,
       claudeVersion: '2.1.319 (Claude Code)',
@@ -1038,6 +1081,130 @@ describe('counterpoint doctor', () => {
     const lines = formatDoctorReport(readReport(host.home));
     const start = run.out.indexOf('Tools');
     expect(run.out.slice(start, start + lines.length)).toEqual(lines);
+  });
+});
+
+describe('the accepted risk gh-keychain (01-19)', () => {
+  const REASON = 'gh keyring entry; Keychain access is the accepted macOS residual';
+  const RECORDED = new Date('2026-11-10T12:00:00.000Z');
+  const ACCEPTED_LINE = `  ${' '.repeat('NOT CHECKED'.length)}  Accepted risk gh-keychain, recorded 2026-11-10: ${REASON}`;
+  const VERDICT =
+    'Agents are boxed in, with one accepted risk: gh credentials in your Keychain are reachable.';
+  const WITHDRAW = 'Withdraw it with: counterpoint revoke-risk gh-keychain';
+  const APPROVALS = 'Approvals still work, but builds will refuse to start until this passes.';
+
+  /** A scratch host whose home holds the owner's record (tests may call the writer). */
+  async function hostWithRisk(): Promise<Host> {
+    const host = await scratchHost();
+    writeAcceptedRisk(host.home, { reason: REASON, now: () => RECORDED });
+    return host;
+  }
+
+  it('exits 0 with the risk printed under the gh row when gh was reached only through the Keychain', async () => {
+    const host = await hostWithRisk();
+    const run = await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
+    expect(run.code).toBe(0);
+    const ghRow = run.out.findIndex((line) => /^ {2}REACHABLE {4}gh credentials: /.test(line));
+    expect(ghRow).toBeGreaterThan(0);
+    expect(run.out[ghRow + 1]).toBe(ACCEPTED_LINE);
+    const verdict = run.out.indexOf(VERDICT);
+    expect(verdict).toBeGreaterThan(ghRow);
+    expect(run.out[verdict + 1]).toBe(WITHDRAW);
+    expect(run.out).not.toContain(APPROVALS);
+    expect(run.out).not.toContain('Agents are boxed in');
+
+    const stored = readReport(host.home);
+    expect(stored.acceptedRisks).toEqual([
+      {
+        id: 'gh-keychain',
+        target: 'gh',
+        subStep: 'keychain',
+        reason: REASON,
+        recordedAt: RECORDED.toISOString(),
+      },
+    ]);
+    // The gh row keeps its measured result and evidence.
+    expect(stored.probe.find((row) => row.id === 'gh')?.result).toBe('reachable');
+    expect(reportVerdict(stored, stored.acceptedRisks)).toBe('accepted-risk');
+  });
+
+  it('fails a Keychain-only gh reach with no record (nothing applies the risk by default)', async () => {
+    const host = await scratchHost();
+    expect(readAcceptedRisks(host.home)).toEqual({ ok: true, risks: [] });
+    const run = await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
+    expect(run.code).toBe(1);
+    expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
+    expect(run.out).toContain(APPROVALS);
+    expect(run.out.some((line) => line.includes('Accepted risk'))).toBe(false);
+    expect(readReport(host.home).acceptedRisks).toEqual([]);
+  });
+
+  it('fails when a gh file canary leaked too, saying the risk covers only the Keychain lookup', async () => {
+    const host = await hostWithRisk();
+    const run = await runDoctorCommand(host, {
+      probe: fakeProbe({ gh: 'reachable' }, { gh: { leaks: ['file-canary', 'keychain-canary'] } }),
+    });
+    expect(run.code).toBe(1);
+    expect(run.out).toContain(
+      'Your accepted risk gh-keychain covers only the Keychain lookup, so it does not apply to this result.',
+    );
+    expect(run.out).not.toContain(ACCEPTED_LINE);
+    expect(run.out).toContain(APPROVALS);
+  });
+
+  it('fails when another target is reachable as well, even with the risk applying to gh', async () => {
+    const host = await hostWithRisk();
+    const run = await runDoctorCommand(host, {
+      probe: fakeProbe({ gh: 'reachable', ssh: 'reachable' }),
+    });
+    expect(run.code).toBe(1);
+    expect(run.out).toContain('Agent sandbox is not confining sessions: 2 targets were reachable.');
+    expect(run.out).toContain(APPROVALS);
+  });
+
+  it('passes with gh Blocked and says the risk was not needed', async () => {
+    const host = await hostWithRisk();
+    const run = await runDoctorCommand(host);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('Agents are boxed in');
+    expect(run.out).toContain(
+      'Your accepted risk gh-keychain was not needed: gh credentials were Blocked.',
+    );
+    expect(run.out).not.toContain(WITHDRAW);
+    const stored = readReport(host.home);
+    expect(reportVerdict(stored, stored.acceptedRisks)).toBe('pass');
+  });
+
+  it('fails again once the risk is revoked, for the same stored report, without a rerun', async () => {
+    const host = await hostWithRisk();
+    await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
+    const stored = readReport(host.home);
+    const before = readAcceptedRisks(host.home);
+    expect(before.ok && reportVerdict(stored, before.risks)).toBe('accepted-risk');
+
+    expect(revokeAcceptedRisk(host.home, 'gh-keychain')).toBe(true);
+    const after = readAcceptedRisks(host.home);
+    expect(after).toEqual({ ok: true, risks: [] });
+    expect(reportVerdict(stored, after.ok ? after.risks : [])).toBe('fail');
+    const lines = formatDoctorReport(stored, after.ok ? after.risks : []);
+    expect(lines).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
+    expect(lines).toContain(APPROVALS);
+    expect(lines).not.toContain(ACCEPTED_LINE);
+  });
+
+  it('ignores a corrupt record, says so, and fails', async () => {
+    const host = await scratchHost();
+    const trustDir = join(host.home, 'trust');
+    mkdirSync(trustDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(trustDir, 'accepted-risks.json'), '{ not json', { mode: 0o600 });
+    const run = await runDoctorCommand(host, { probe: fakeProbe({ gh: 'reachable' }) });
+    expect(run.code).toBe(1);
+    const problem = run.out.find((line) =>
+      line.startsWith("Couldn't read your accepted-risk record ("),
+    );
+    expect(problem).toBeDefined();
+    expect(problem).toMatch(/; it was ignored\.$/);
+    expect(readReport(host.home).acceptedRisks).toEqual([]);
   });
 });
 

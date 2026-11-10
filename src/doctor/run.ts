@@ -18,6 +18,12 @@
 // stderr cross-check (sessionModeEvidence), and fails anything but AGENT_PERMISSION_MODE, the mode
 // the argv launches with. A claude upgrade or a settings source that silently overrides the mode
 // (claude 2.1.321 forced `default` under the scrub, 01-18/01-21) then fails doctor.
+//
+// The accepted risk (01-19, WINDOWS.md #1): doctor reads the owner's per-machine accepted-risk
+// record once (src/core/security/accepted-risks.ts) and copies it into the report's
+// `acceptedRisks`. The verdict and the output come from the same records: the gh row keeps its
+// measured `REACHABLE`, and the risk applies only when the verdict layer finds the row reached
+// through the Keychain lookup alone (appliedAcceptedRisks). An unreadable record counts as none.
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
@@ -25,11 +31,14 @@ import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
 import { runSandboxProbe } from '../agent/probe.ts';
 import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
 import { ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
+import { printable } from '../cli/trust.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
 import { homePaths, hostDir } from '../core/host/home.ts';
 import { PROBE_OUTSIDE_DIR_RE } from '../core/ids.ts';
+import { type AcceptedRisk, readAcceptedRisks } from '../core/security/accepted-risks.ts';
 import {
+  appliedAcceptedRisks,
   type Check,
   DOCTOR_SCHEMA,
   DoctorReport,
@@ -113,6 +122,10 @@ export interface DoctorRun {
   report: DoctorReport;
   reportPath: string;
   logDir: string;
+  /** The accepted-risk record as this run read it ([] when absent or unreadable). */
+  recordedRisks: AcceptedRisk[];
+  /** Why the accepted-risk record could not be read, or null. */
+  acceptedRisksProblem: string | null;
 }
 
 /** gh's configuration directory, resolved the way gh does. */
@@ -198,6 +211,9 @@ function notCheckedTargets(hostName: string, evidence: string): ProbeTarget[] {
     mode: probeTargetMode(id),
     result: 'not-checked',
     evidence,
+    steps: [],
+    leaks: [],
+    trusted: false,
   }));
 }
 
@@ -300,6 +316,9 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
           mode: probeTargetMode(id),
           result: 'not-checked',
           evidence: 'The probe returned no result for this target.',
+          steps: [],
+          leaks: [],
+          trusted: false,
         };
       }
       const swept = stale.get(id);
@@ -347,6 +366,10 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     );
   }
 
+  // Read once: the report records what was in force, and the verdict uses the same entries.
+  const accepted = readAcceptedRisks(home);
+  const recordedRisks = accepted.ok ? accepted.risks : [];
+
   const report = DoctorReport.parse({
     schema: DOCTOR_SCHEMA,
     hostId: host.id,
@@ -360,9 +383,16 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     probe,
     sandboxIsolation,
     agentMode,
+    acceptedRisks: recordedRisks,
   });
   const reportPath = writeDoctorReport(home, report);
-  return { report, reportPath, logDir };
+  return {
+    report,
+    reportPath,
+    logDir,
+    recordedRisks,
+    acceptedRisksProblem: accepted.ok ? null : accepted.problem,
+  };
 }
 
 // --- output -------------------------------------------------------------------------------------
@@ -394,9 +424,28 @@ function checkLines(check: Check): string[] {
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
-/** The verdict line, in the UI-SPEC words. */
-export function doctorVerdict(report: DoctorReport): string {
-  if (reportVerdict(report) === 'pass') return 'Agents are boxed in';
+const ACCEPTED_RISK_VERDICT =
+  'Agents are boxed in, with one accepted risk: gh credentials in your Keychain are reachable.';
+const WITHDRAW_LINE = 'Withdraw it with: counterpoint revoke-risk gh-keychain';
+const RISK_NOT_APPLIED =
+  'Your accepted risk gh-keychain covers only the Keychain lookup, so it does not apply to this result.';
+const RISK_NOT_NEEDED =
+  'Your accepted risk gh-keychain was not needed: gh credentials were Blocked.';
+
+/** `YYYY-MM-DD` of an ISO datetime. */
+const dayOf = (iso: string) => iso.slice(0, 10);
+
+/**
+ * The verdict line, in the UI-SPEC words. `recorded` is the accepted-risk record read now; the
+ * verdict is `accepted-risk` only when it still holds the entry the report recorded.
+ */
+export function doctorVerdict(
+  report: DoctorReport,
+  recorded: readonly AcceptedRisk[] = [],
+): string {
+  const verdict = reportVerdict(report, recorded);
+  if (verdict === 'pass') return 'Agents are boxed in';
+  if (verdict === 'accepted-risk') return ACCEPTED_RISK_VERDICT;
   const reachable = report.probe.filter((row) => row.result === 'reachable').length;
   if (reachable > 0) {
     return `Agent sandbox is not confining sessions: ${reachable} ${plural(reachable, 'target was', 'targets were')} reachable.`;
@@ -424,8 +473,21 @@ export function doctorVerdict(report: DoctorReport): string {
  * the Agent permission mode check (01-22), then the Sandbox isolation settings check (01-25), then
  * the probe rows; a report from before either shows that check as `NOT CHECKED ... not recorded in
  * this report`.
+ *
+ * With the accepted risk applied (01-19), the gh row keeps `REACHABLE` and gains an indented
+ * `Accepted risk gh-keychain, recorded {date}: {reason}` line, and the verdict names the risk and
+ * how to withdraw it. A record that was in force but did not apply gets one line saying why.
  */
-export function formatDoctorReport(report: DoctorReport): string[] {
+export function formatDoctorReport(
+  report: DoctorReport,
+  recorded: readonly AcceptedRisk[] = [],
+): string[] {
+  const verdict = reportVerdict(report, recorded);
+  const applied = appliedAcceptedRisks(report, recorded);
+  // In force: the report recorded the entry and the record still holds the same one.
+  const inForce = report.acceptedRisks.find((risk) =>
+    recorded.some((now) => now.id === risk.id && now.recordedAt === risk.recordedAt),
+  );
   const lines: string[] = ['Tools'];
   for (const check of report.tools) lines.push(...checkLines(check));
   lines.push('Signing key');
@@ -441,10 +503,24 @@ export function formatDoctorReport(report: DoctorReport): string[] {
   } else {
     lines.push(...checkLines(report.sandboxIsolation));
   }
-  for (const row of report.probe) lines.push(line(PROBE_WORD[row.result], row.label, row.evidence));
+  for (const row of report.probe) {
+    lines.push(line(PROBE_WORD[row.result], row.label, row.evidence));
+    if (row.id !== 'gh') continue;
+    for (const risk of applied) {
+      lines.push(
+        `  ${' '.repeat(WORD_WIDTH)}  Accepted risk ${risk.id}, recorded ${dayOf(risk.recordedAt)}: ${printable(risk.reason)}`,
+      );
+    }
+  }
   lines.push('');
-  lines.push(doctorVerdict(report));
-  if (report.probe.some((row) => row.result === 'reachable')) {
+  lines.push(doctorVerdict(report, recorded));
+  if (verdict === 'accepted-risk') lines.push(WITHDRAW_LINE);
+  if (applied.length === 0 && inForce !== undefined) {
+    const ghRows = report.probe.filter((row) => row.id === 'gh');
+    const ghBlocked = ghRows.length > 0 && ghRows.every((row) => row.result === 'blocked');
+    lines.push(ghBlocked ? RISK_NOT_NEEDED : RISK_NOT_APPLIED);
+  }
+  if (verdict === 'fail' && report.probe.some((row) => row.result === 'reachable')) {
     lines.push('Approvals still work, but builds will refuse to start until this passes.');
   }
   return lines;
