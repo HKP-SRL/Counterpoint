@@ -1,11 +1,14 @@
 // Trust (`/h/{hostId}/trust`, FOUND-03 display, UI-SPEC "Trust" and E8): the last
 // `counterpoint doctor` report. The verdict Banner comes first (the page's focal point), then the
-// Tools, Signing key and Sandbox probe tables. Read-only: the console never runs the probe, so
-// this page has no privileged action; re-running is the terminal command it shows.
+// Tools, Signing key and Sandbox probe tables. The Sandbox probe card starts with the two session
+// checks, Agent permission mode (01-22) and Sandbox isolation settings (01-25), then lists the nine
+// probe targets (01-17's outside-workdir and 01-26's credential-env last). Read-only: the console
+// never runs the probe, so this page has no privileged action; re-running is the terminal command
+// it shows.
 //
 // The verdict is never all-pass unless every check passed and every probe target was blocked:
-// anything `Not checked`, failed, reachable or missing counts against it. The page renders the
-// stored report truthfully, whatever it says.
+// anything `Not checked`, failed, reachable or missing (a session check included) counts against
+// it. The page renders the stored report truthfully, whatever it says.
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -46,6 +49,10 @@ export type Report = {
   signingKey: CheckRow[];
   integrity: CheckRow | null;
   probe: ProbeRow[];
+  /** The Agent permission mode check (01-22); null when the report does not carry it. */
+  agentMode: CheckRow | null;
+  /** The Sandbox isolation settings check (01-25); null when the report does not carry it. */
+  sandboxIsolation: CheckRow | null;
 };
 
 export type DoctorAnswer = {
@@ -56,7 +63,11 @@ export type DoctorAnswer = {
   unreadable: boolean;
 };
 
-/** The seven probe targets, in the Trust page's order (src/core/security/doctor-report.ts). */
+/**
+ * The nine probe targets, in the Trust page's order (src/core/security/doctor-report.ts):
+ * `outside-workdir` since 01-17 and `credential-env` since 01-26. A report without one of them
+ * shows that row `Not checked`.
+ */
 const PROBE_TARGETS: readonly { id: string; label: string; mode: 'read' | 'write' }[] = [
   { id: 'signing-key', label: 'Signing key', mode: 'read' },
   { id: 'ssh', label: '~/.ssh', mode: 'read' },
@@ -65,6 +76,8 @@ const PROBE_TARGETS: readonly { id: string; label: string; mode: 'read' | 'write
   { id: 'git-config', label: '{host} .git/config', mode: 'write' },
   { id: 'git-hooks', label: '.git/hooks', mode: 'write' },
   { id: 'git-info', label: '.git/info', mode: 'write' },
+  { id: 'outside-workdir', label: 'Files outside the working folder', mode: 'write' },
+  { id: 'credential-env', label: 'Credentials in the shell environment', mode: 'read' },
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -113,6 +126,9 @@ function parseReport(value: unknown): Report | null {
     probe: Array.isArray(value.probe)
       ? value.probe.map(parseProbe).filter((row): row is ProbeRow => row !== null)
       : [],
+    // Extra fields (expected, effective, sources) are ignored; only the check row is shown.
+    agentMode: parseCheck(value.agentMode),
+    sandboxIsolation: parseCheck(value.sandboxIsolation),
   };
 }
 
@@ -183,7 +199,35 @@ function probeRows(report: Report, hostName: string): ProbeRow[] {
 }
 
 function allChecks(report: Report): CheckRow[] {
-  return [...report.tools, ...report.signingKey, ...(report.integrity ? [report.integrity] : [])];
+  return [
+    ...report.tools,
+    ...report.signingKey,
+    ...(report.integrity ? [report.integrity] : []),
+    ...(report.agentMode ? [report.agentMode] : []),
+    ...(report.sandboxIsolation ? [report.sandboxIsolation] : []),
+  ];
+}
+
+const NOT_RECORDED = 'Not recorded in this report. Run "counterpoint doctor" again.';
+
+/** The Sandbox probe card's two session checks; one a report does not carry reads Not checked. */
+function sessionCheckRows(report: Report): CheckRow[] {
+  return [
+    report.agentMode ?? {
+      id: 'agent-mode',
+      label: 'Agent permission mode',
+      result: 'not-checked',
+      detail: NOT_RECORDED,
+      fix: null,
+    },
+    report.sandboxIsolation ?? {
+      id: 'sandbox-isolation',
+      label: 'Sandbox isolation settings',
+      result: 'not-checked',
+      detail: NOT_RECORDED,
+      fix: null,
+    },
+  ];
 }
 
 /** How old a stale report is, in whole hours (under two days) or days. */
@@ -216,7 +260,10 @@ export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: str
     checks.filter((check) => check.result !== 'pass').length +
     probes.filter((row) => row.result !== 'blocked').length +
     (report.tools.length === 0 ? 1 : 0) +
-    (report.signingKey.length === 0 ? 1 : 0);
+    (report.signingKey.length === 0 ? 1 : 0) +
+    // A session check the report does not carry never reads as passing (01-22, 01-25).
+    (report.agentMode === null ? 1 : 0) +
+    (report.sandboxIsolation === null ? 1 : 0);
 
   if (reachable > 0) {
     return {
@@ -263,8 +310,9 @@ function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: s
         description={
           <>
             Checked {checked}. A headless claude session could not read your signing key, ~/.ssh, gh
-            credentials or Counterpoint's state, and could not write {hostName}'s .git/config, hooks
-            or info.
+            credentials or Counterpoint's state, could not write {hostName}'s .git/config, hooks or
+            info, or files outside its working folder, and found no credentials in its shell
+            environment other than the sandbox's own local proxy login.
           </>
         }
       />
@@ -434,6 +482,11 @@ export function TrustPage({ hostId }: { hostId: string }) {
           />
         </TableCard>
         <TableCard title="Sandbox probe">
+          <Table<CheckRow>
+            data={sessionCheckRows(report)}
+            columns={checkColumns('Check', 'Detail')}
+            idKey="id"
+          />
           <Table<ProbeRow> data={probeRows(report, hostName)} columns={probeColumns} idKey="id" />
         </TableCard>
         <VStack gap={2}>

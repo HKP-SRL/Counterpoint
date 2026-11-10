@@ -59,15 +59,45 @@ const PROBE = [
   ['git-config', 'host .git/config', 'write'],
   ['git-hooks', '.git/hooks', 'write'],
   ['git-info', '.git/info', 'write'],
-  // 01-17: the eighth target. The Trust page lists it from 01-18; until then 7 rows show Blocked.
+  // 01-17: the eighth target, and 01-26: the ninth (replacement 3 for the scrub opt-out). The
+  // Trust page lists all nine since 01-22, so an all-pass report shows Blocked 9 times.
   ['outside-workdir', 'Files outside the working folder', 'write'],
-  // 01-26: the ninth target (replacement 3 for the scrub opt-out). The Trust page lists it in 01-22.
   ['credential-env', 'Credentials in the shell environment', 'read'],
 ] as const;
 
+type ProbeFixtureRow = {
+  id: string;
+  label: string;
+  mode: string;
+  result: string;
+  evidence: string;
+};
+
+const AGENT_MODE_PASS = "The probe's agent session ran in auto mode.";
+const AGENT_MODE_FAIL = "The probe's agent session ran in default mode, not auto.";
+const AGENT_MODE_FIX =
+  'Counterpoint launches agent sessions with --permission-mode auto. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.';
+const ISOLATION_PASS =
+  'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).';
+const ISOLATION_FAIL =
+  'user settings sets sandbox.filesystem.disabled to true, which turns filesystem isolation off.';
+const ISOLATION_FIX =
+  'Remove sandbox.filesystem.disabled from ~/.claude/settings.json, then run "counterpoint doctor" again.';
+const NOT_COUNTED =
+  'Not counted as Blocked while the Sandbox isolation settings check does not pass. Measured: ';
+
 function doctorReport(
   hostId: string,
-  options: { checkedAt?: Date; reachable?: readonly string[] } = {},
+  options: {
+    checkedAt?: Date;
+    reachable?: readonly string[];
+    /** 01-22: the Agent permission mode check (pass by default). */
+    agentMode?: 'pass' | 'fail' | 'absent';
+    /** 01-25: the Sandbox isolation settings check (pass by default). */
+    sandboxIsolation?: 'pass' | 'fail' | 'absent';
+    /** Replaces or drops probe rows (it receives the nine rows as built). */
+    probe?: (rows: ProbeFixtureRow[]) => ProbeFixtureRow[];
+  } = {},
 ) {
   const check = (id: string, label: string, detail: string) => ({
     id,
@@ -75,6 +105,15 @@ function doctorReport(
     result: 'pass',
     detail,
   });
+  const rows: ProbeFixtureRow[] = PROBE.map(([id, label, mode]) => ({
+    id,
+    label,
+    mode,
+    result: options.reachable?.includes(id) ? 'reachable' : 'blocked',
+    evidence: 'probe run',
+  }));
+  const isolation = options.sandboxIsolation ?? 'pass';
+  const mode = options.agentMode ?? 'pass';
   return {
     schema: 'counterpoint/doctor/v1',
     hostId,
@@ -92,24 +131,76 @@ function doctorReport(
       check('keychain', 'Not loadable via Keychain', 'No Keychain entry.'),
     ],
     integrity: check('integrity', 'Repository integrity', 'Snapshot recorded.'),
-    probe: PROBE.map(([id, label, mode]) => ({
-      id,
-      label,
-      mode,
-      result: options.reachable?.includes(id) ? 'reachable' : 'blocked',
-      evidence: 'probe run',
-    })),
+    probe: options.probe === undefined ? rows : options.probe(rows),
     // 01-25: a report passes only with the Sandbox isolation settings check passing.
-    sandboxIsolation: {
-      id: 'sandbox-isolation',
-      label: 'Sandbox isolation settings',
-      result: 'pass',
-      detail:
-        'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
-      sources: [
-        { kind: 'launch', label: 'launch settings', path: null, state: 'read', findings: [] },
-      ],
-    },
+    ...(isolation === 'absent'
+      ? {}
+      : {
+          sandboxIsolation:
+            isolation === 'pass'
+              ? {
+                  id: 'sandbox-isolation',
+                  label: 'Sandbox isolation settings',
+                  result: 'pass',
+                  detail: ISOLATION_PASS,
+                  sources: [
+                    {
+                      kind: 'launch',
+                      label: 'launch settings',
+                      path: null,
+                      state: 'read',
+                      findings: [],
+                    },
+                  ],
+                }
+              : {
+                  id: 'sandbox-isolation',
+                  label: 'Sandbox isolation settings',
+                  result: 'fail',
+                  detail: ISOLATION_FAIL,
+                  fix: ISOLATION_FIX,
+                  sources: [
+                    {
+                      kind: 'launch',
+                      label: 'launch settings',
+                      path: null,
+                      state: 'read',
+                      findings: [],
+                    },
+                    {
+                      kind: 'user',
+                      label: 'user settings',
+                      path: '~/.claude/settings.json',
+                      state: 'read',
+                      findings: ['sandbox.filesystem.disabled'],
+                    },
+                  ],
+                },
+        }),
+    // 01-22: a report passes only with the Agent permission mode check passing.
+    ...(mode === 'absent'
+      ? {}
+      : {
+          agentMode:
+            mode === 'pass'
+              ? {
+                  id: 'agent-mode',
+                  label: 'Agent permission mode',
+                  result: 'pass',
+                  detail: AGENT_MODE_PASS,
+                  expected: 'auto',
+                  effective: 'auto',
+                }
+              : {
+                  id: 'agent-mode',
+                  label: 'Agent permission mode',
+                  result: 'fail',
+                  detail: AGENT_MODE_FAIL,
+                  fix: AGENT_MODE_FIX,
+                  expected: 'auto',
+                  effective: 'default',
+                },
+        }),
   };
 }
 
@@ -164,6 +255,47 @@ describe('phases and trust pages', () => {
     await page.goto(link as string);
     expect(new URL(page.url()).pathname).toBe(`/h/${hostId}`);
   });
+
+  /** Writes the stored doctor report for the host (as `counterpoint doctor` would). */
+  const writeReport = (report: unknown) => {
+    const dir = join(home, 'hosts', hostId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'doctor.json'), `${JSON.stringify(report)}\n`, { mode: 0o600 });
+  };
+
+  /** Nudges the daemon with a doctor event until `text` shows on the page. */
+  const nudgeUntil = async (text: string | RegExp) => {
+    const target = page.getByRole('main').getByText(text).first();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const res = await controlRequest(home, 'POST', '/control/notify', {
+        hostId,
+        family: 'doctor',
+      });
+      expect(res.status).toBe(202);
+      try {
+        await target.waitFor({ timeout: 2_500 });
+        return;
+      } catch {
+        // the stream may have subscribed a moment late; nudge again
+      }
+    }
+    await target.waitFor({ timeout: 5_000 });
+  };
+
+  /** Writes `report`, opens Trust and waits until the verdict title `title` shows. */
+  const showTrust = async (report: unknown, title: string) => {
+    writeReport(report);
+    await page.goto(`${origin}/h/${hostId}/trust`);
+    await page.getByRole('main').getByRole('heading', { name: 'Trust' }).waitFor({
+      timeout: 15_000,
+    });
+    await nudgeUntil(title);
+    return page.getByRole('main');
+  };
+
+  /** The table row whose text includes `label`. */
+  const trustRow = (label: string) =>
+    page.getByRole('main').getByRole('row').filter({ hasText: label });
 
   afterAll(async () => {
     await browser?.close();
@@ -296,42 +428,167 @@ describe('phases and trust pages', () => {
     await main.getByText('Not checked yet', { exact: true }).first().waitFor({ timeout: 15_000 });
     expect(await main.getByText('counterpoint doctor', { exact: true }).count()).toBeGreaterThan(0);
 
-    const dir = join(home, 'hosts', hostId);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const write = (report: unknown) =>
-      writeFileSync(join(dir, 'doctor.json'), `${JSON.stringify(report)}\n`, { mode: 0o600 });
-
-    const nudgeUntil = async (text: string | RegExp) => {
-      const target = main.getByText(text).first();
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        const res = await controlRequest(home, 'POST', '/control/notify', {
-          hostId,
-          family: 'doctor',
-        });
-        expect(res.status).toBe(202);
-        try {
-          await target.waitFor({ timeout: 2_500 });
-          return;
-        } catch {
-          // the stream may have subscribed a moment late; nudge again
-        }
-      }
-      await target.waitFor({ timeout: 5_000 });
-    };
-
-    write(doctorReport(hostId));
+    writeReport(doctorReport(hostId));
     await nudgeUntil('Agents are boxed in');
-    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(7);
-    expect(await main.getByText('Pass', { exact: true }).count()).toBeGreaterThanOrEqual(6);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(9);
+    // 3 tools, 4 signing-key rows and the 2 session checks.
+    expect(await main.getByText('Pass', { exact: true }).count()).toBe(9);
     expect(await main.getByText('This check is', { exact: false }).count()).toBe(0);
+    for (const label of [
+      'Files outside the working folder',
+      'Credentials in the shell environment',
+    ]) {
+      expect(await trustRow(label).getByText('Blocked', { exact: true }).count(), label).toBe(1);
+    }
+    expect(
+      await trustRow('Files outside the working folder')
+        .getByText('cannot write', { exact: true })
+        .count(),
+    ).toBe(1);
+    expect(
+      await trustRow('Credentials in the shell environment')
+        .getByText('cannot read', { exact: true })
+        .count(),
+    ).toBe(1);
+    expect(
+      await main
+        .getByText(
+          "and found no credentials in its shell environment other than the sandbox's own local proxy login.",
+        )
+        .count(),
+    ).toBe(1);
+    const modeRow = trustRow('Agent permission mode');
+    expect(await modeRow.getByText(AGENT_MODE_PASS, { exact: true }).count()).toBe(1);
+    expect(await modeRow.getByText('Pass', { exact: true }).count()).toBe(1);
+    const isolationRow = trustRow('Sandbox isolation settings');
+    expect(await isolationRow.getByText(ISOLATION_PASS, { exact: true }).count()).toBe(1);
+    expect(await isolationRow.getByText('Pass', { exact: true }).count()).toBe(1);
+    // The two session checks come first in the Sandbox probe card, in the CLI's order.
+    const card = main.getByLabel('Sandbox probe');
+    const labels = await card
+      .getByRole('row')
+      .evaluateAll((rows) => rows.map((row) => (row.textContent ?? '').trim()));
+    const firstLabels = labels.filter((text) => text !== '' && !/^Check|^Target/.test(text));
+    expect(firstLabels[0]).toContain('Agent permission mode');
+    expect(firstLabels[1]).toContain('Sandbox isolation settings');
+    expect(firstLabels[2]).toContain('Signing key');
+    expect(firstLabels.at(-1)).toContain('Credentials in the shell environment');
 
-    write(doctorReport(hostId, { checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }));
+    writeReport(doctorReport(hostId, { checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }));
     await nudgeUntil(/^This check is 25 hours old$/);
 
-    write(doctorReport(hostId, { reachable: ['ssh'] }));
+    writeReport(doctorReport(hostId, { reachable: ['ssh'] }));
     await nudgeUntil('Agent sandbox is not confining sessions');
     expect(await main.getByText(/^1 target was reachable\./).count()).toBe(1);
     expect(await main.getByText('Reachable', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows a reachable outside-workdir row as not confining', async () => {
+    const main = await showTrust(
+      doctorReport(hostId, { reachable: ['outside-workdir'] }),
+      'Agent sandbox is not confining sessions',
+    );
+    await main.getByText(/^1 target was reachable\./).waitFor({ timeout: 15_000 });
+    expect(
+      await trustRow('Files outside the working folder')
+        .getByText('Reachable', { exact: true })
+        .count(),
+    ).toBe(1);
+    expect(await main.getByText('Reachable', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows a reachable credential-env row as not confining', async () => {
+    const main = await showTrust(
+      doctorReport(hostId, { reachable: ['credential-env'] }),
+      'Agent sandbox is not confining sessions',
+    );
+    await main.getByText(/^1 target was reachable\./).waitFor({ timeout: 15_000 });
+    expect(
+      await trustRow('Credentials in the shell environment')
+        .getByText('Reachable', { exact: true })
+        .count(),
+    ).toBe(1);
+    expect(await main.getByText('Reachable', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it("shows an eight-row report's missing credential-env row as Not checked", async () => {
+    // A report written before 01-26: both session checks pass, eight rows, all blocked.
+    const main = await showTrust(
+      doctorReport(hostId, { probe: (rows) => rows.filter((row) => row.id !== 'credential-env') }),
+      '1 check did not pass',
+    );
+    expect(
+      await trustRow('Credentials in the shell environment')
+        .getByText('Not checked', { exact: true })
+        .count(),
+    ).toBe(1);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(8);
+    expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows a report without the agent permission mode as not passing', async () => {
+    const main = await showTrust(
+      doctorReport(hostId, { agentMode: 'absent' }),
+      '1 check did not pass',
+    );
+    const modeRow = trustRow('Agent permission mode');
+    expect(await modeRow.getByText('Not checked', { exact: true }).count()).toBe(1);
+    expect(await modeRow.getByText(/Not recorded in this report/).count()).toBe(1);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(9);
+    expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows a report without the sandbox isolation check as not passing', async () => {
+    const main = await showTrust(
+      doctorReport(hostId, { sandboxIsolation: 'absent' }),
+      '1 check did not pass',
+    );
+    const isolationRow = trustRow('Sandbox isolation settings');
+    expect(await isolationRow.getByText('Not checked', { exact: true }).count()).toBe(1);
+    expect(await isolationRow.getByText(/Not recorded in this report/).count()).toBe(1);
+    expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows an agent session that ran in default mode as failing', async () => {
+    const main = await showTrust(
+      doctorReport(hostId, { agentMode: 'fail' }),
+      '1 check did not pass',
+    );
+    const modeRow = trustRow('Agent permission mode');
+    expect(await modeRow.getByText('Fail', { exact: true }).count()).toBe(1);
+    expect(await modeRow.getByText(AGENT_MODE_FAIL, { exact: true }).count()).toBe(1);
+    expect(await modeRow.getByText(`Fix: ${AGENT_MODE_FIX}`, { exact: true }).count()).toBe(1);
+    expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
+  });
+
+  it('shows a settings source that turns isolation off as failing', async () => {
+    // The report as doctor stores it since 01-25: the check fails and every measured Blocked
+    // row is stored Not checked.
+    const main = await showTrust(
+      doctorReport(hostId, {
+        sandboxIsolation: 'fail',
+        probe: (rows) =>
+          rows.map((row) => ({
+            ...row,
+            result: 'not-checked',
+            evidence: `${NOT_COUNTED}${row.evidence}`,
+          })),
+      }),
+      '10 checks did not pass',
+    );
+    const isolationRow = trustRow('Sandbox isolation settings');
+    expect(await isolationRow.getByText('Fail', { exact: true }).count()).toBe(1);
+    expect(await isolationRow.getByText(ISOLATION_FAIL, { exact: true }).count()).toBe(1);
+    expect(await isolationRow.getByText(`Fix: ${ISOLATION_FIX}`, { exact: true }).count()).toBe(1);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(0);
+    expect(await main.getByText('10 checks did not pass', { exact: true }).count()).toBe(1);
     expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
   });
 

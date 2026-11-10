@@ -158,6 +158,15 @@ function allPassReport(hostId: string, checkedAt: Date) {
         { kind: 'launch', label: 'launch settings', path: null, state: 'read', findings: [] },
       ],
     },
+    // 01-22: and with the Agent permission mode check passing.
+    agentMode: {
+      id: 'agent-mode',
+      label: 'Agent permission mode',
+      result: 'pass',
+      detail: "The probe's agent session ran in auto mode.",
+      expected: 'auto',
+      effective: 'auto',
+    },
   };
 }
 
