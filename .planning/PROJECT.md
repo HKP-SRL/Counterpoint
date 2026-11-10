@@ -4,7 +4,7 @@
 
 Counterpoint is a local mission-control tool for **fully autonomous spec-driven development with Claude Code**, led by its owner. The owner plans, decides and signs off designs well ahead of time in a planning lane; an autonomous build lane turns approved work into gated, per-feature pull requests with preview links, during the day or overnight. A council of role "seats" (product, design, tech, QA, and customer personas like a restaurant's Cook) works alongside both lanes: it meets at key steps, debates among itself, and turns what it finds into cards, backlog items and review notes for the owner — without ever blocking the lane.
 
-It reads planning truth from the host project's SDD framework through adapters (GSD first), runs as its own local server (`npx counterpoint`), and is built for the owner's own use on **Cena** first, as an open-source project to publish later as `@hkp/counterpoint`.
+It reads planning truth from the host project's SDD framework through adapters (GSD first), runs as its own local server (`counterpoint`; `npx @hkp/counterpoint` once published), and is built for the owner's own use on **Cena** first, as an open-source project to publish later as `@hkp/counterpoint`.
 
 ## Core Value
 
@@ -14,7 +14,13 @@ It reads planning truth from the host project's SDD framework through adapters (
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Human approval is a signed git commit in the **host repo's normal history**, by a key agents cannot use (passphrase-only, never in ssh-agent/Keychain; startup self-check) — Phase 1 (APPR-01, FOUND-03; `counterpoint doctor` is the self-check)
+- ✓ Runway approval = owner-signed commit on the base branch adding `.counterpoint/approvals/<item>.json` (statement binding hashes of spec, signed-off draft and gate config); touches only that file, never the owner's uncommitted work — Phase 1 (APPR-01, APPR-02; the draft binding reads `state none` until drafts exist in Phase 4)
+- ✓ UI prepares the approval and shows a one-line command the owner runs in a terminal; signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment (never via git's config-driven signing or repo hooks); the owner's public key lives outside the repo — Phase 1 (APPR-04)
+- ✓ Approval is recomputed, never stored: if the spec/draft/config changes after signing, hashes stop matching and the item drops off the runway into Needs You — Phase 1 (APPR-02; proven live on Cena)
+- ✓ Agents are sandboxed away from the shared `.git/config`, `.git/hooks`, `.git/info`; an integrity check refuses to sign if they changed unexpectedly — Phase 1 (FOUND-04, APPR-04; one accepted risk: gh's Keychain credential; review findings CR-01 and WR-05 are Phase 2's first work)
+- ✓ Runway shown as the headline metric (empty = builder starves, long = owner can step away) — Phase 1 (MISN-01)
+- ✓ Framework-agnostic core with an adapter interface; GSD adapter reads `.planning/` natively (ROADMAP, phases, CONTEXT, PLANs; frozen Cena fixtures as the contract) — Phase 1 (ADPT-01, ADPT-02; a Biome import rule enforces the boundary)
 
 ### Active
 
@@ -31,7 +37,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 - [ ] On conflict with the owner's latest pushes, the builder rebases onto the base branch, resolves, re-runs gates, and parks if it can't
 - [ ] Each finished feature opens its own PR with a preview link — the host's own preview deploy (e.g. Vercel) when one exists, a Counterpoint-served local preview otherwise
 - [ ] Run report at the end of a run (what merged-ready, what parked, what's waiting on the owner)
-- [ ] Start/Stop protected by a local token agents cannot read
+- [ ] Start/Stop protected by a local token agents cannot read (the owner credential and request guard shipped in Phase 1, FOUND-02; the run controls it protects arrive in Phase 2)
 
 **Design sign-off (part of the build lane)**
 - [ ] Screen drafts are local, standalone mocks (HTML) with fixture data, rendered in the **host's own design system** (tokens/components), reviewable before implementation
@@ -43,12 +49,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 - [ ] A signed-off draft becomes the reference the visual gate checks the build against
 
 **Approval & signing**
-- [ ] Human approval is a signed git commit in the **host repo's normal history**, by a key agents cannot use (passphrase-only, never in ssh-agent/Keychain; startup self-check)
-- [ ] Runway approval = owner-signed commit on the base branch adding `.counterpoint/approvals/<item>.json` (statement binding hashes of spec, signed-off draft and gate config); touches only that file, never the owner's uncommitted work
 - [ ] Merge approval = the owner's signed merge commit (`--no-ff`) of the exact PR head; the summary shown before signing lists the assumptions the builder proceeded on
-- [ ] UI prepares the approval and shows a one-line command the owner runs in a terminal; signing and verification call `ssh-keygen -Y sign/verify` directly with a clean environment (never via git's config-driven signing or repo hooks); the owner's public key lives outside the repo
-- [ ] Approval is recomputed, never stored: if the spec/draft/config changes after signing, hashes stop matching and the item drops off the runway into Needs You
-- [ ] Agents are sandboxed away from the shared `.git/config`, `.git/hooks`, `.git/info`; an integrity check refuses to sign if they changed unexpectedly
 
 **Council**
 - [ ] Seats defined per host in a Counterpoint config file, with defaults, and easy to add more
@@ -66,13 +67,12 @@ It reads planning truth from the host project's SDD framework through adapters (
 - [ ] When the council meets automatically (phase kickoff, design review, post-build, conflict escalation) is still open — to be settled in discussion/planning, with the rule that meetings run alongside, never in front of, the work
 
 **Mission view & inbox**
-- [ ] Runway shown as the headline metric (empty = builder starves, long = owner can step away)
-- [ ] One "Needs You" inbox: council cards, parked work, seat conflicts, persona findings, PRs awaiting signed approval
+- [ ] One "Needs You" inbox: council cards, parked work, seat conflicts, persona findings, PRs awaiting signed approval (the inbox and its "approved version changed" source shipped in Phase 1; the other sources arrive with their phases)
 - [ ] A few honest counters beside runway (e.g. first-attempt gate pass rate, items merged without intervention), each paired with a counter-metric so it can't reward failure modes
 - [ ] One quota governor in front of every agent spawn: builder has priority, council spend capped to a share, all lanes pause together on a usage limit
 
 **Adapters**
-- [ ] Framework-agnostic core with an adapter interface; GSD adapter parses `.planning/` natively (ROADMAP, phases, CONTEXT, PLANs, backlog; frozen Cena fixtures as the contract) and writes decisions/backlog back through it
+- [ ] GSD adapter reads the host's backlog and writes decisions and backlog items back through the adapter (the read side for ROADMAP, phases, CONTEXT and PLANs is validated)
 - [ ] Builds never write planning files; all planning writes (decisions, backlog, approvals, bookkeeping) go through one serialized path
 
 ### Out of Scope
@@ -125,7 +125,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Personas test by seat: some drive the app, some review artifacts (post-v1) | Customer personas need hands-on use; tech/compliance read artifacts | — Pending |
 | Preview: host's deploy preview when available, local fallback | Works with Vercel-style hosts and any stack | — Pending |
 | Merge only after owner's signed approval | "The owner approves, agents satisfy" | — Pending |
-| Signing via prepared command run in terminal | Simplest path that keeps the key out of agents' reach; Touch ID / FIDO2 could come later | — Pending |
+| Signing via prepared command run in terminal | Simplest path that keeps the key out of agents' reach; Touch ID / FIDO2 could come later | ✓ Good — Phase 1: the owner signed Cena approvals from the printed command |
 | Conflicts: builder rebases, re-gates, parks on failure | Keeps day runs moving while owner works on master | — Pending |
 | Drafts are standalone local mocks; signed-off draft drives a visual gate | Easy to comment on elements; binding on the builder | — Pending |
 | Council planning cards ship in v1 (full rounds/breadcrumbs/reframe) | Signature interaction | — Pending |
@@ -133,16 +133,24 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Council files backlog items straight into the host backlog | Catch root issues (even from past phases) without owner triage overhead | — Pending |
 | Seats in per-host config; relevant-few or all seats per activity, owner's choice | Control cost and noise | — Pending |
 | Defer public npm release and no-framework adapter | Prove on Cena first | — Pending |
-| Package name `@hkp/counterpoint` | Owner's npm org | — Pending |
-| Console UI on Astryx, no shadcn/Tailwind | Owner's design-system choice; Cena migrating to Astryx too | — Pending |
+| Package name `@hkp/counterpoint` | Owner's npm org | ✓ Good — Phase 1; until the public release (PLAT-V2-02) the start command is the installed `counterpoint` (npm 12's npx does not resolve an unpublished scoped package) |
+| Console UI on Astryx, no shadcn/Tailwind | Owner's design-system choice; Cena migrating to Astryx too | ✓ Good — Phase 1: console in light and dark, reviewed by the owner on Cena |
 | Drafts rendered in the host's own design system | Visual gate compares like with like | — Pending |
 | Explore low-fi "wire", sign off hi-fi "full" render | Only a hi-fi render with host tokens + fixtures can drive a visual gate | — Pending |
-| Approvals in host repo history: signed commit adding `.counterpoint/approvals/<item>.json`; merge approval = owner's signed merge commit | No extra repo; visible in normal history; signing via `ssh-keygen` directly avoids repo hooks/config | — Pending |
+| Approvals in host repo history: signed commit adding `.counterpoint/approvals/<item>.json`; merge approval = owner's signed merge commit | No extra repo; visible in normal history; signing via `ssh-keygen` directly avoids repo hooks/config | ✓ Good (runway half) — Phase 1: Cena approval commits add only the approval file and verify with `ssh-keygen -Y`; merge approval comes in Phase 3 |
 | Cards classified by reversibility; irreversible ones park the item instead of proceeding | Prevent silent wrong decisions on schema/auth/data/privacy | — Pending |
-| Spawn `claude` CLI + stream-json behind an AgentRunner port | Typed limit/usage fields; SDK is 0.x and churns; avoids third-party-login terms issue | — Pending |
-| GSD adapter parses `.planning/` natively | gsd-tools JSON verbs aren't a published contract | — Pending |
+| Spawn `claude` CLI + stream-json behind an AgentRunner port | Typed limit/usage fields; SDK is 0.x and churns; avoids third-party-login terms issue | ✓ Good — Phase 1: the live sandbox probe runs headless `claude -p` through the runner |
+| GSD adapter parses `.planning/` natively | gsd-tools JSON verbs aren't a published contract | ✓ Good — Phase 1: Cena's phases read from committed `.planning/` against frozen fixtures |
 | Builds never write planning files; one serialized planning-write path | Parallel PRs would all conflict on STATE/ROADMAP | — Pending |
 | v1 keeps variants + "More like B"; defers live watch/interject, post-build persona review, full gamification | Prove an overnight run before widening | — Pending |
+| Approval statement format `counterpoint/approval/v1` (RESEARCH Item 4, sorted keys, no prepared block) | Owner picked the minimal format; a hand-edited statement is invalid, not misleading | ✓ Good — Phase 1 |
+| Agent sessions run in Claude Code auto permission mode, not dontAsk; no deterministic guarantee rests on the classifier | Owner runs auto daily; headless default denies every unlisted call, so builders would stall | ✓ Good — Phase 1: live proof in auto mode; the probe evaluator counts only deterministic refusals |
+| Opt out of the subprocess env scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0`) with three Counterpoint-owned replacements: `autoAllowBashIfSandboxed: false`, doctor fails if any settings source turns isolation off, a credential-env probe row | On claude 2.1.321 the scrub forced auto to default mode | ⚠️ Revisit — Phase 2 first work: WR-01 (bare `Bash` in `--allowedTools` may make replacement 1 inert) and CR-01 (settings check misses `allowWrite` / `additionalDirectories` widenings) |
+| Agent Write/Edit confined to the session folder (allow-only-workdir grant plus `blockWritesOutsideWorkingDirectories`) | `allowWrite: []` confines only Bash | ✓ Good — Phase 1; a Bash outside-write probe step is still missing (CR-01) |
+| gh's Keychain reachability is a recorded per-machine accepted risk (`counterpoint accept-risk gh-keychain`), printed on every doctor run | Sandboxed Bash can read the macOS Keychain; every gh config-file step is blocked | ✓ Accepted — Phase 1: verdict reads "boxed in, with one accepted risk", never a plain pass |
+| Credential-env row: deny `CLAUDE_CODE_MESSAGING_TOKEN`; the sandbox's own loopback proxy login (proxy URLs, `CLOUDSDK_PROXY_PASSWORD` with a loopback address) is a named exception | None is a protected target; Claude Code sets the proxy login after deny entries apply; a non-loopback host is a real finding | ✓ Good — Phase 1 (01-26 rerun clean) |
+| Live-plan stop rules narrowed: only a protected-target failure stops a plan; other live surprises become recorded findings | Three sandbox re-plans in one phase ("going in circles") | ✓ Adopted — Phase 1 |
+| Phase 1 closes with the code review open; CR-01, WR-02, WR-04, WR-05, WR-06 (and verifying WR-01) are Phase 2's first work, before any unattended builder runs | Trust fixes belong before the first overnight run, not behind it | — Pending |
 
 ## Evolution
 
@@ -162,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-09 after research and owner decisions*
+*Last updated: 2026-11-10 after Phase 1*

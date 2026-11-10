@@ -20,10 +20,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-09)
+See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** The owner can approve work and walk away, and come back to green, reviewable per-feature PRs with preview links, plus only the questions that genuinely need them.
-**Current focus:** Phase 01 — Trusted Shell & Signed Runway
+**Current focus:** Phase 02 — First Unattended Run
 
 ## Current Position
 
@@ -82,13 +82,10 @@ Recent decisions affecting current work:
 
 ### Blockers/Concerns
 
-- [Phase 1]: Unverified whether Claude Code's sandbox confines headless `claude -p` (Bash and Read/Edit). This is the first spike, and the trust model depends on it.
 - [Phase 2]: Unverified context-window denominator on 1M models and `rate_limit_event` shape and reset unit. Spike before the budget and limit handling.
 - [Phase 3]: Branch-protection recipe for Cena's `master` not yet verified.
 - [Phase 4]: Fixture-mode rendering of Cena screens and `data-cp-id` stability across redraws are unproven. Spike before the visual gate.
-- [Phase 1] 01-18 halted on claude 2.1.321 (CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 forced dontAsk to default) and is superseded by gap plans 01-21..01-23 (auto mode + permissions.blockWritesOutsideWorkingDirectories + deterministic-only evaluator + doctor effective-mode check). Likely owner-decision gate: 01-21's live tracer stops if the scrub also forces auto to default; 01-22, 01-23, 01-19, 01-20 and 01-16 then wait for the owner's choice (layer-preserving launch variant / opt out of the scrub / default mode). 01-23 merged 2026-11-10 (nine-row live proof in auto mode, WINDOWS #2/#3 fixed); the 01-18 worktree is removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0118/evidence-01-18-live/.
-- [Phase 1] 01-21 halted at Task 1 step 4(a) (2026-11-10): on claude 2.1.321 the scrub forced --permission-mode auto to default in every session and every layer-preserving variant (WINDOWS.md ledger #3). Outside Write/Edit were refused by permissions.blockWritesOutsideWorkingDirectories (reason_type `other`, not `rule`); git-hooks/git-info by the deny rule; control met the attribution rule. Owner chose option 2 (opt out of the scrub with replacement checks). Re-planned 2026-11-10 (8e79f41, ca8326d, 206d681, 5f823af): 01-21 superseded by 01-24 (SCRUB=0 + autoAllowBashIfSandboxed false, live auto proof first, then the deterministic-only evaluator), 01-25 (doctor sandbox-isolation settings check, by-effect reading confirmed by owner), 01-26 (ninth probe row credential-env); WINDOWS #3 closes in 01-23, scoped (replacement 2 proven on the launch source there, on the owner's real settings in 01-16); owner accepted the plan-size warnings. 01-24 cherry-picks e5e59f3. 01-21's launch-profile work (e5e59f3) and halted SUMMARY (f41c4a4) sit unmerged on worktree-agent-a1ce4d71c120d2428 (.claude/worktrees/agent-a1ce4d71c120d2428), kept for the re-plan. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0121/evidence-01-21-live/.
-- [Phase 1] 01-24 and 01-25 merged (2026-11-10; gates green: 885 unit, 44 e2e); 01-21's worktree removed. 01-26 halted at Task 1 step 2 under stop rule (e) (credential-shaped env in sandboxed Bash); owner decided the scoped fix above. 01-26 completed 2026-11-10 after two owner decisions (rerun2 clean: one deny entry, 13 excepted loopback proxy entries, ninth row, MATCHER_REVISION 4, WINDOWS #4 waived); its halted worktrees are removed. Evidence: /Volumes/Dock/Dev/Caches/cp-test-0126/evidence-01-26-live/.
+- [Phase 2]: The probe evaluator's refusal texts are pinned to one Claude Code version (MATCHER_CLAUDE_VERSION 2.1.321; the owner's verifying run was on 2.1.322). A Claude Code update that changes those texts turns probe rows Not checked (fail closed), so doctor stops passing until the fixtures are refrozen. Plan for this before unattended runs depend on a passing doctor.
 
 ## Deferred Items
 
@@ -100,6 +97,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T13:21:22.361Z
-Stopped at: Phase 01 complete, ready to plan Phase 2
-Resume file: .planning/phases/01-trusted-shell-signed-runway/01-UI-SPEC.md
+Last session: 2026-11-10T20:45:43.044Z
+Stopped at: Phase 1 complete, ready to plan Phase 2
+Resume file: None
