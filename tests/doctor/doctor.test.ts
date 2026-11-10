@@ -1,11 +1,19 @@
 // `counterpoint doctor` with an injected probe (no live claude), fake tool and key checks, a
 // throwaway trusted key and scratch hosts. The live probe path is proven in 01-04/01-05 and
 // exercised by the owner in 01-16.
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
-import { MATCHER_CLAUDE_VERSION } from '../../src/agent/probe-evaluator.ts';
+import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../../src/agent/probe-evaluator.ts';
 import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
@@ -207,10 +215,13 @@ describe('counterpoint doctor', () => {
     const probeGroup = group(run.out, 'Sandbox probe');
     expect(probeGroup[0]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
     const probeRows = probeGroup.slice(1);
-    expect(probeRows).toHaveLength(8);
+    expect(probeRows).toHaveLength(9);
     for (const row of probeRows) expect(row).toMatch(/^ {2}BLOCKED {5}/);
-    expect(probeRows.at(-1)).toBe(
+    expect(probeRows.at(-2)).toBe(
       '  BLOCKED      Files outside the working folder: evidence for outside-workdir',
+    );
+    expect(probeRows.at(-1)).toBe(
+      '  BLOCKED      Credentials in the shell environment: evidence for credential-env',
     );
     expect(run.out).toContain('Agents are boxed in');
   });
@@ -231,9 +242,9 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     await runDoctorCommand(host);
     const { matcherVersion } = readReport(host.home);
-    // Revision 3 (01-24): only deterministic refusals count.
-    expect(matcherVersion).toBe(`${MATCHER_CLAUDE_VERSION}+r3`);
-    expect(matcherVersion.endsWith('+r3')).toBe(true);
+    // Revision 4 (01-26): the credential-env row, on top of 3's deterministic refusals only.
+    expect(matcherVersion).toBe(`${MATCHER_CLAUDE_VERSION}+r${MATCHER_REVISION}`);
+    expect(matcherVersion.endsWith('+r4')).toBe(true);
   });
 
   it('names a stale outside-workdir canary in the Files outside the working folder row', async () => {
@@ -344,7 +355,7 @@ describe('counterpoint doctor', () => {
     });
     expect(run.code).toBe(1);
     const rows = group(run.out, 'Sandbox probe').slice(1);
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
     }
@@ -522,6 +533,187 @@ describe('counterpoint doctor', () => {
     expect(run.code).toBe(1);
   });
 
+  describe('the credential-env row through the real probe pipeline (01-26, fake claude)', () => {
+    /**
+     * A fake claude that makes only two kinds of call: the env-shape step, answered with the
+     * session's planted listing (names, lengths, shapes and host classes; no value exists), and
+     * the unprotected control canary in the probe folder (a plain file, never a symlink), read
+     * from disk so the baseline holds. Every protected step is left unattempted, so those rows
+     * read Not checked; the tests below take only the real credential-env row from the pipeline.
+     */
+    class EnvLister implements AgentRunner {
+      private runs = 0;
+      private readonly listing: { treatment: string; control: string };
+      constructor(listing: { treatment: string; control: string }) {
+        this.listing = listing;
+      }
+
+      async run(request: AgentRunRequest): Promise<AgentRun> {
+        this.runs += 1;
+        const prompt = request.argv[request.argv.indexOf('-p') + 1] as string;
+        const session = /\/cp-mirror-[0-9a-f]{32}\//.test(prompt) ? 'control' : 'treatment';
+        const events: Array<Record<string, unknown>> = [];
+        const answer = (tool: string, input: Record<string, unknown>, content: string) => {
+          const id = `toolu_fake_${this.runs}_${events.length}`;
+          events.push({
+            type: 'assistant',
+            message: { content: [{ type: 'tool_use', id, name: tool, input }] },
+          });
+          events.push({
+            type: 'user',
+            message: {
+              content: [{ type: 'tool_result', tool_use_id: id, content, is_error: false }],
+            },
+            tool_result_meta: [
+              {
+                id,
+                permission_decision: {
+                  decision: 'accept',
+                  source: 'config',
+                  reason_type: 'classifier',
+                },
+              },
+            ],
+          });
+        };
+        const isControlCanary = (path: string) =>
+          dirname(path) === request.cwd && existsSync(path) && lstatSync(path).isFile();
+        for (const line of prompt.split('\n')) {
+          const command = /^\d+\. Bash tool, command: (.*)$/.exec(line)?.[1];
+          const readPath = /^\d+\. Read tool, file_path: (.*)$/.exec(line)?.[1];
+          const catPath = command === undefined ? undefined : /^cat '(.*)'$/.exec(command)?.[1];
+          if (command?.startsWith("awk -f '") && command.includes('/cp-env-')) {
+            answer('Bash', { command }, this.listing[session]);
+          } else if (command !== undefined && catPath !== undefined && isControlCanary(catPath)) {
+            answer('Bash', { command }, readFileSync(catPath, 'utf8'));
+          } else if (readPath !== undefined && isControlCanary(readPath)) {
+            answer('Read', { file_path: readPath }, `     1\t${readFileSync(readPath, 'utf8')}`);
+          }
+        }
+        events.push({ type: 'result', subtype: 'success', permission_denials: [] });
+        const raw = `${events.map((e) => JSON.stringify(e)).join('\n')}\n`;
+        writeFileSync(request.rawLogPath, raw, { flag: 'a' });
+        return {
+          events: events as AgentRun['events'],
+          raw,
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+          result: { type: 'result', subtype: 'success' },
+        };
+      }
+
+      async version(): Promise<string | null> {
+        return '2.1.319 (Claude Code)';
+      }
+    }
+
+    const keychain: KeychainPort = {
+      async add() {
+        return true;
+      },
+      async remove() {},
+    };
+
+    const CLEAN = ['PATH 61 plain', 'HOME 30 plain', 'USER 10 plain', 'SHELL 8 plain'];
+    const PROXY_URLS = [
+      'HTTP_PROXY',
+      'http_proxy',
+      'HTTPS_PROXY',
+      'https_proxy',
+      'ALL_PROXY',
+      'all_proxy',
+      'GRPC_PROXY',
+      'grpc_proxy',
+      'FTP_PROXY',
+      'ftp_proxy',
+      'DOCKER_HTTP_PROXY',
+      'DOCKER_HTTPS_PROXY',
+    ].map((name) => `${name} 100 url-userinfo loopback`);
+
+    /**
+     * Runs doctor with the real pipeline's credential-env row and fakeProbe's Blocked rows for the
+     * other eight (the fake claude cannot produce deterministic denials), so the command's exit
+     * code and summary follow the credential-env row alone.
+     */
+    async function runWithListings(listing: { treatment: string; control: string }) {
+      const runner = new EnvLister(listing);
+      const tmpRoot = makeScratchDir('detmp');
+      const host = await scratchHost();
+      const run = await runDoctorCommand(host, {
+        probe: async (input) => {
+          const outcome = await runSandboxProbe({
+            protectedPaths: input.protectedPaths,
+            runner,
+            logDir: input.logDir,
+            keychain,
+            tmpRoot,
+          });
+          const real = outcome.targets.find((t) => t.id === 'credential-env') as ProbeTarget;
+          const others = (await fakeProbe()(input)).targets;
+          return {
+            targets: others.map((t) => (t.id === 'credential-env' ? real : t)),
+            claudeVersion: outcome.claudeVersion,
+            staleLeftovers: outcome.staleLeftovers,
+          };
+        },
+      });
+      const line = group(run.out, 'Sandbox probe').find((l) =>
+        l.includes('Credentials in the shell environment'),
+      );
+      const row = readReport(host.home).probe.find((t) => t.id === 'credential-env');
+      return { run, line, row };
+    }
+
+    it('prints every row BLOCKED on clean listings in both sessions, and exits 0', async () => {
+      const text = CLEAN.join('\n');
+      const { run, line, row } = await runWithListings({ treatment: text, control: text });
+      for (const r of group(run.out, 'Sandbox probe').slice(1)) {
+        expect(r).toMatch(/^ {2}BLOCKED {5}/);
+      }
+      expect(line).toBe(
+        '  BLOCKED      Credentials in the shell environment: listed 4 variables, none credential-shaped; denied and absent: CLAUDE_CODE_MESSAGING_TOKEN; control listed 4',
+      );
+      expect(row?.exceptions).toBeUndefined();
+      expect(run.code).toBe(0);
+    });
+
+    it('prints every row BLOCKED with the twelve loopback proxy URLs, naming the owner exception', async () => {
+      const text = [...CLEAN, ...PROXY_URLS].join('\n');
+      const { run, line, row } = await runWithListings({ treatment: text, control: text });
+      for (const r of group(run.out, 'Sandbox probe').slice(1)) {
+        expect(r).toMatch(/^ {2}BLOCKED {5}/);
+      }
+      expect(line).toMatch(/^ {2}BLOCKED {6}Credentials in the shell environment: /);
+      expect(line).toContain('owner exception sandbox-proxy-login');
+      expect(row?.exceptions?.[0]?.id).toBe('sandbox-proxy-login');
+      expect(row?.exceptions?.[0]?.names).toHaveLength(12);
+      expect(run.code).toBe(0);
+    });
+
+    it('prints REACHABLE when the denied CLAUDE_CODE_MESSAGING_TOKEN is in the treatment listing', async () => {
+      const clean = CLEAN.join('\n');
+      const { run, line } = await runWithListings({
+        treatment: [...CLEAN, 'CLAUDE_CODE_MESSAGING_TOKEN 32 opaque'].join('\n'),
+        control: clean,
+      });
+      expect(line).toMatch(/^ {2}REACHABLE {4}Credentials in the shell environment: /);
+      expect(line).toContain('CLAUDE_CODE_MESSAGING_TOKEN (name) (treatment)');
+      expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
+      expect(run.code).toBe(1);
+    });
+
+    it('prints REACHABLE when a proxy URL in the treatment listing has host class other', async () => {
+      const { run, line } = await runWithListings({
+        treatment: [...CLEAN, 'HTTP_PROXY 100 url-userinfo other'].join('\n'),
+        control: CLEAN.join('\n'),
+      });
+      expect(line).toMatch(/^ {2}REACHABLE {4}Credentials in the shell environment: /);
+      expect(line).toContain('HTTP_PROXY (value: url-userinfo, 100 chars, host other) (treatment)');
+      expect(run.code).toBe(1);
+    });
+  });
+
   describe('the Sandbox isolation settings check (01-25)', () => {
     /** A scratch user home whose `.claude/settings.json` holds `settings`, or nothing. */
     function settingsHome(settings?: unknown) {
@@ -558,12 +750,12 @@ describe('counterpoint doctor', () => {
         '               Fix: Remove sandbox.filesystem.disabled from ~/.claude/settings.json, then run "counterpoint doctor" again.',
       );
       const probeRows = rows.slice(2);
-      expect(probeRows).toHaveLength(8);
+      expect(probeRows).toHaveLength(9);
       for (const row of probeRows) {
         expect(row).toMatch(/^ {2}NOT CHECKED {2}/);
         expect(row).toContain(`: ${NOT_COUNTED}evidence for `);
       }
-      expect(run.out).toContain('9 checks did not pass.');
+      expect(run.out).toContain('10 checks did not pass.');
 
       const report = readReport(host.home);
       expect(report.sandboxIsolation?.result).toBe('fail');
@@ -595,7 +787,7 @@ describe('counterpoint doctor', () => {
       expect(run.code).toBe(1);
       const rows = group(run.out, 'Sandbox probe').slice(2);
       expect(rows).toContain('  REACHABLE    ~/.ssh: evidence for ssh');
-      expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(7);
+      expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(8);
       expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
       const ssh = readReport(host.home).probe.find((row) => row.id === 'ssh');
       expect(ssh).toMatchObject({ result: 'reachable', evidence: 'evidence for ssh' });
@@ -609,7 +801,7 @@ describe('counterpoint doctor', () => {
       expect(rows[0]).toBe(
         '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
       );
-      expect(rows.slice(1)).toHaveLength(8);
+      expect(rows.slice(1)).toHaveLength(9);
       for (const row of rows.slice(1)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
       const report = readReport(host.home);
       expect(report.sandboxIsolation?.result).toBe('pass');

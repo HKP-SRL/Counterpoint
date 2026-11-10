@@ -15,6 +15,7 @@ import {
 import {
   AGENT_TOOLS,
   buildAgentSandboxSettings,
+  CREDENTIAL_ENV_DENY,
   FILE_EDIT_TOOLS,
   fileEditGrants,
   type ProtectedPaths,
@@ -127,6 +128,16 @@ describe('buildAgentSandboxSettings', () => {
     expect(buildAgentSandboxSettings(rest).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
   });
 
+  it('denies the credential env vars, with and without a workdir (scrub replacement 3, 01-26)', () => {
+    const { workdir: _omit, ...rest } = paths;
+    // CLOUDSDK_PROXY_PASSWORD left the list: the rerun showed the deny does not reach it, and it
+    // joined the sandbox-proxy-login exception (STATE.md [Owner] 2026-11-10).
+    const expected = { envVars: [{ name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' }] };
+    expect(CREDENTIAL_ENV_DENY).toEqual(['CLAUDE_CODE_MESSAGING_TOKEN']);
+    expect(buildAgentSandboxSettings(paths).settings.sandbox.credentials).toEqual(expected);
+    expect(buildAgentSandboxSettings(rest).settings.sandbox.credentials).toEqual(expected);
+  });
+
   it('lists the read-protected directories as plain absolute denyRead paths', () => {
     const { settings } = buildAgentSandboxSettings(paths);
     expect([...settings.sandbox.filesystem.denyRead].sort()).toEqual(
@@ -167,6 +178,7 @@ describe('buildAgentSandboxSettings', () => {
     expect(Object.keys(settings.sandbox).sort()).toEqual([
       'allowUnsandboxedCommands',
       'autoAllowBashIfSandboxed',
+      'credentials',
       'enabled',
       'failIfUnavailable',
       'filesystem',
@@ -197,6 +209,7 @@ describe('buildAgentSandboxSettings', () => {
     expect(Object.keys(profile.settings.sandbox).sort()).toEqual([
       'allowUnsandboxedCommands',
       'autoAllowBashIfSandboxed',
+      'credentials',
       'enabled',
       'failIfUnavailable',
       'filesystem',
@@ -572,19 +585,75 @@ describe('DoctorReport', () => {
   });
 
   it('fails a report that holds only the seven pre-gap probe rows', () => {
-    // A report written before 01-17 has no outside-workdir row: it still parses as schema v1,
-    // and it can never pass.
+    // A report written before 01-17 has no outside-workdir row (nor 01-26's credential-env row):
+    // it still parses as schema v1, and it can never pass.
     const report = validReport();
-    report.probe = report.probe.filter((row) => row.id !== 'outside-workdir');
+    report.probe = report.probe.filter(
+      (row) => row.id !== 'outside-workdir' && row.id !== 'credential-env',
+    );
     expect(report.probe).toHaveLength(7);
     const parsed = DoctorReport.parse(report);
     expect(parsed.schema).toBe('counterpoint/doctor/v1');
     expect(reportVerdict(parsed)).toBe('fail');
   });
 
-  it('lists eight probe targets, outside-workdir last, with their modes', () => {
-    expect(PROBE_TARGET_IDS).toHaveLength(8);
-    expect(PROBE_TARGET_IDS.at(-1)).toBe('outside-workdir');
+  it('fails a report that holds only the eight pre-01-26 probe rows', () => {
+    // A report written before 01-26 has no credential-env row: it still parses as schema v1,
+    // and it can never pass.
+    const report = validReport();
+    report.probe = report.probe.filter((row) => row.id !== 'credential-env');
+    expect(report.probe).toHaveLength(8);
+    const parsed = DoctorReport.parse(report);
+    expect(parsed.schema).toBe('counterpoint/doctor/v1');
+    expect(reportVerdict(parsed)).toBe('fail');
+  });
+
+  it('keeps a credential-env row with one sandbox-proxy-login exception', () => {
+    const report = validReport();
+    const exception = {
+      id: 'sandbox-proxy-login' as const,
+      reason: "the sandbox's own proxy login, local only",
+      recordedAt: '2026-11-10',
+      names: ['CLOUDSDK_PROXY_PASSWORD', 'HTTP_PROXY'],
+    };
+    const probe = report.probe.map((row) =>
+      row.id === 'credential-env' ? { ...row, exceptions: [exception] } : row,
+    );
+    const parsed = DoctorReport.parse({ ...report, probe });
+    expect(parsed.probe.find((row) => row.id === 'credential-env')?.exceptions).toEqual([
+      exception,
+    ]);
+    expect(reportVerdict(parsed)).toBe('pass');
+  });
+
+  it('rejects an exception with another id, an extra key, a bad date or no names', () => {
+    const good = {
+      id: 'sandbox-proxy-login',
+      reason: "the sandbox's own proxy login, local only",
+      recordedAt: '2026-11-10',
+      names: ['HTTP_PROXY'],
+    };
+    for (const exception of [
+      { ...good, id: 'gh-keychain' },
+      { ...good, extra: true },
+      { ...good, recordedAt: '10 Nov 2026' },
+      { ...good, names: [] },
+    ]) {
+      const report = validReport();
+      const probe = report.probe.map((row) =>
+        row.id === 'credential-env' ? { ...row, exceptions: [exception] } : row,
+      );
+      expect(DoctorReport.safeParse({ ...report, probe }).success, JSON.stringify(exception)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('lists nine probe targets, credential-env last, with their modes', () => {
+    expect(PROBE_TARGET_IDS).toHaveLength(9);
+    expect(PROBE_TARGET_IDS.at(-2)).toBe('outside-workdir');
+    expect(PROBE_TARGET_IDS.at(-1)).toBe('credential-env');
+    expect(probeTargetMode('credential-env')).toBe('read');
     expect(PROBE_TARGET_IDS.filter((id) => probeTargetMode(id) === 'write')).toEqual([
       'git-config',
       'git-hooks',

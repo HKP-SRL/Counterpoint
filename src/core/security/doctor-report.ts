@@ -1,6 +1,6 @@
 // The doctor report: schema `counterpoint/doctor/v1`, written by `counterpoint doctor` and
 // rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check (the
-// Sandbox isolation settings check included) passes and every one of the eight probe targets is
+// Sandbox isolation settings check included) passes and every one of the nine probe targets is
 // `blocked`; anything missing, failed, reachable or not checked is a fail (never a silent pass).
 //
 // `outside-workdir` (01-17) was added to schema v1 as an additive row: a report written before it
@@ -10,6 +10,11 @@
 // `sandboxIsolation` (01-25) is an additive v1 field: the Sandbox isolation settings check
 // (replacement 2 for the scrub opt-out, src/core/security/sandbox-isolation.ts). A report written
 // before it still parses, and its verdict is `fail`, because the check is required to pass.
+//
+// `credential-env` (01-26, replacement 3 for the scrub opt-out) is an additive v1 row, like
+// `outside-workdir`: a report without it still parses, and its verdict is `fail`. A row's optional
+// `exceptions` field records an owner exception the row applied (`sandbox-proxy-login`, STATE.md
+// [Owner] 2026-11-10), so a row that needed one is never a silent pass.
 import { z } from 'zod';
 
 export const PROBE_TARGET_IDS = [
@@ -21,6 +26,7 @@ export const PROBE_TARGET_IDS = [
   'git-hooks',
   'git-info',
   'outside-workdir',
+  'credential-env',
 ] as const;
 
 export const ProbeTargetId = z.enum(PROBE_TARGET_IDS);
@@ -36,6 +42,7 @@ export const PROBE_TARGET_LABELS: Readonly<Record<ProbeTargetId, string>> = {
   'git-hooks': '.git/hooks',
   'git-info': '.git/info',
   'outside-workdir': 'Files outside the working folder',
+  'credential-env': 'Credentials in the shell environment',
 };
 
 export function probeTargetLabel(id: ProbeTargetId, hostName: string): string {
@@ -69,12 +76,23 @@ export type Check = z.infer<typeof Check>;
 export const ProbeResult = z.enum(['blocked', 'reachable', 'not-checked']);
 export type ProbeResult = z.infer<typeof ProbeResult>;
 
+/** An owner exception a probe row applied (01-26): named, reasoned and dated. */
+export const ProbeException = z.strictObject({
+  id: z.literal('sandbox-proxy-login'),
+  reason: z.string().min(1),
+  recordedAt: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/),
+  names: z.array(z.string().min(1)).min(1),
+});
+export type ProbeException = z.infer<typeof ProbeException>;
+
 export const ProbeTarget = z.object({
   id: ProbeTargetId,
   label: z.string().min(1),
   mode: z.enum(['read', 'write']),
   result: ProbeResult,
   evidence: z.string(),
+  /** Additive (01-26): the owner exceptions this row applied; only credential-env carries one. */
+  exceptions: z.array(ProbeException).optional(),
 });
 export type ProbeTarget = z.infer<typeof ProbeTarget>;
 
