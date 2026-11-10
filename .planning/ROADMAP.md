@@ -75,7 +75,7 @@ Plans:
 - [ ] 01-24-PLAN.md — Gap (scrub opt-out, WINDOWS.md #3) 1/3: cherry-pick 01-21's launch work (e5e59f3: auto mode, outside-write block, control rules); `agentEnv` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` (owner decision 2026-11-10); replacement 1 `sandbox.autoAllowBashIfSandboxed: false`; live tracer proves auto mode first; deterministic-only evaluator (MATCHER_REVISION 3) *(wave 11)*
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 01-25-PLAN.md — Gap (scrub opt-out) 2/3: replacement 2, doctor's `Sandbox isolation settings` check (`sandboxIsolation`, additive v1 field): fails if any settings source turns filesystem isolation off; read-only, fail-closed reader of every source an agent session loads *(wave 12)*
+- [ ] 01-25-PLAN.md — Gap (scrub opt-out) 2/3: replacement 2, doctor's `Sandbox isolation settings` check (`sandboxIsolation`, additive v1 field): doctor and its probe rows fail if any settings source turns filesystem isolation off; read-only, fail-closed reader of every source an agent session loads *(wave 12)*
 
 **Wave 13** *(blocked on Wave 12 completion)*
 - [ ] 01-26-PLAN.md — Gap (scrub opt-out) 3/3: replacement 3, ninth probe row `Credentials in the shell environment` (names and value shapes, never values); one live listing first; MATCHER_REVISION 4 *(wave 13)*
