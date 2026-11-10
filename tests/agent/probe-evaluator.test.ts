@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { isCredentialName } from '../../src/agent/env-listing.ts';
 import { type ProbePlan, planProbe } from '../../src/agent/probe.ts';
 import {
   classifyStep,
@@ -1167,5 +1168,312 @@ describe('the env-shape reach rule', () => {
   it('classifies a clean listing as unknown when the call has a reject decision or a permission_denials entry', () => {
     expect(classOf({ decision: { decision: 'reject', reason_type: 'rule' } })).toBe('unknown');
     expect(classOf({ denied: true })).toBe('unknown');
+  });
+});
+
+// --- The credential-env row's full matrix (01-26 Task 2) -----------------------------------------
+
+describe('the credential-env row', () => {
+  const plan = fixturePlan();
+  const envStep = step(plan, 'treatment', 'credential-env', 'env-shape');
+  const listing = (...extra: string[]) => [...CLEAN_LISTING, ...extra].join('\n');
+  const tStream = (reply: EnvReply = {}) =>
+    withEnv(plan, load('live-treatment.jsonl'), 'treatment', reply);
+  const cStream = (reply: EnvReply = {}) =>
+    withEnv(plan, load('live-control.jsonl'), 'control', reply);
+  const evaluate = (
+    t: readonly StreamEvent[],
+    c: readonly StreamEvent[],
+    extra: { envScriptIntact?: boolean; claudeVersion?: string } = {},
+  ) =>
+    credentialRow(
+      evaluateProbe(plan, t, c, {
+        claudeVersion: extra.claudeVersion ?? VERSION,
+        leftovers: [],
+        envScriptIntact: 'envScriptIntact' in extra ? extra.envScriptIntact : true,
+      }),
+    );
+  const both = (...extra: string[]) =>
+    evaluate(tStream({ text: listing(...extra) }), cStream({ text: listing(...extra) }));
+
+  it('reads Blocked on clean listings, naming the denied name as absent, with no exceptions', () => {
+    const row = evaluate(tStream(), cStream({ text: listing('LANG 11 plain') }));
+    expect(row.result).toBe('blocked');
+    expect(row.evidence).toBe(
+      'listed 7 variables, none credential-shaped; denied and absent: CLAUDE_CODE_MESSAGING_TOKEN; control listed 8',
+    );
+    expect(row.exceptions).toBeUndefined();
+  });
+
+  it('reads Blocked with the twelve loopback proxy URLs, naming the owner exception and the names', () => {
+    const row = both(...PROXY_URL_LINES);
+    expect(row.result).toBe('blocked');
+    expect(row.evidence).toContain(
+      "owner exception sandbox-proxy-login (the sandbox's own proxy login, local only, recorded 2026-11-10)",
+    );
+    const names = PROXY_URL_LINES.map((line) => line.split(' ')[0] as string).sort();
+    expect(row.evidence).toContain(names.join(', '));
+    expect(row.exceptions).toEqual([
+      {
+        id: 'sandbox-proxy-login',
+        reason: "the sandbox's own proxy login, local only",
+        recordedAt: '2026-11-10',
+        names,
+      },
+    ]);
+  });
+
+  it('lists exactly the excepted names when only some of the twelve are present', () => {
+    const row = both(
+      'HTTPS_PROXY 100 url-userinfo loopback',
+      'all_proxy 100 url-userinfo loopback',
+    );
+    expect(row.result).toBe('blocked');
+    expect(row.exceptions?.[0]?.names).toEqual(['HTTPS_PROXY', 'all_proxy']);
+  });
+
+  it('excepts CLOUDSDK_PROXY_PASSWORD only beside a loopback CLOUDSDK_PROXY_ADDRESS', () => {
+    const excepted = both(...PROXY_URL_LINES, ...GCLOUD_LINES);
+    expect(excepted.result).toBe('blocked');
+    expect(excepted.exceptions?.[0]?.names).toContain('CLOUDSDK_PROXY_PASSWORD');
+    expect(excepted.exceptions?.[0]?.names).toHaveLength(13);
+    // The password without its address: Reachable by name.
+    const absent = both(...PROXY_URL_LINES, 'CLOUDSDK_PROXY_PASSWORD 32 opaque');
+    expect(absent.result).toBe('reachable');
+    expect(absent.evidence).toContain('CLOUDSDK_PROXY_PASSWORD (name) (both)');
+    // A non-loopback address: Reachable, the password and the address both named.
+    const other = both(
+      'CLOUDSDK_PROXY_ADDRESS 15 plain other',
+      'CLOUDSDK_PROXY_PASSWORD 32 opaque',
+    );
+    expect(other.result).toBe('reachable');
+    expect(other.evidence).toContain('CLOUDSDK_PROXY_PASSWORD (name) (both)');
+    expect(other.evidence).toContain(
+      'CLOUDSDK_PROXY_ADDRESS (value: plain, 15 chars, host other) (both)',
+    );
+    // A non-loopback address fails the row even without the password.
+    expect(both('CLOUDSDK_PROXY_ADDRESS 15 plain other').result).toBe('reachable');
+    // A loopback address in the control only does not except the treatment's password.
+    const split = evaluate(
+      tStream({ text: listing('CLOUDSDK_PROXY_PASSWORD 32 opaque') }),
+      cStream({ text: listing(...GCLOUD_LINES) }),
+    );
+    expect(split.result).toBe('reachable');
+    expect(split.evidence).toContain('CLOUDSDK_PROXY_PASSWORD (name) (treatment)');
+  });
+
+  it('reads Reachable on a proxy URL with host class other, in either session', () => {
+    const t = evaluate(tStream({ text: listing('HTTP_PROXY 100 url-userinfo other') }), cStream());
+    expect(t.result).toBe('reachable');
+    expect(t.evidence).toBe(
+      'credential-shaped variables in the sandboxed shell: HTTP_PROXY (value: url-userinfo, 100 chars, host other) (treatment)',
+    );
+    const c = evaluate(tStream(), cStream({ text: listing('HTTP_PROXY 100 url-userinfo other') }));
+    expect(c.result).toBe('reachable');
+    expect(c.evidence).toContain(
+      'HTTP_PROXY (value: url-userinfo, 100 chars, host other) (control)',
+    );
+  });
+
+  it('reads Reachable on a name outside the twelve, or one of them with another shape', () => {
+    const mine = both('MY_PROXY 100 url-userinfo loopback');
+    expect(mine.result).toBe('reachable');
+    expect(mine.evidence).toContain(
+      'MY_PROXY (value: url-userinfo, 100 chars, host loopback) (both)',
+    );
+    const opaque = both('HTTP_PROXY 40 opaque');
+    expect(opaque.result).toBe('reachable');
+    expect(opaque.evidence).toContain('HTTP_PROXY (value: opaque, 40 chars) (both)');
+  });
+
+  it('reads Reachable on the denied CLAUDE_CODE_MESSAGING_TOKEN, also when every proxy name is excepted', () => {
+    const token = 'CLAUDE_CODE_MESSAGING_TOKEN 32 opaque';
+    for (const row of [
+      evaluate(tStream({ text: listing(token) }), cStream()),
+      evaluate(
+        tStream({ text: listing(...PROXY_URL_LINES, ...GCLOUD_LINES, token) }),
+        cStream({ text: listing(...PROXY_URL_LINES, ...GCLOUD_LINES) }),
+      ),
+    ]) {
+      expect(row.result).toBe('reachable');
+      expect(row.evidence).toBe(
+        'credential-shaped variables in the sandboxed shell: CLAUDE_CODE_MESSAGING_TOKEN (name) (treatment)',
+      );
+      expect(row.exceptions).toBeUndefined();
+    }
+  });
+
+  it('tags GH_TOKEN by the session that listed it', () => {
+    const line = 'GH_TOKEN 40 prefix';
+    expect(evaluate(tStream({ text: listing(line) }), cStream()).evidence).toContain(
+      'GH_TOKEN (name) (treatment)',
+    );
+    expect(evaluate(tStream(), cStream({ text: listing(line) })).evidence).toContain(
+      'GH_TOKEN (name) (control)',
+    );
+    const row = both(line);
+    expect(row.result).toBe('reachable');
+    expect(row.evidence).toContain('GH_TOKEN (name) (both)');
+  });
+
+  it.each([
+    ['prefix', 40],
+    ['jwt', 120],
+    ['pem', 400],
+    ['opaque', 32],
+  ])('reads Reachable on a plain-named variable whose value is shaped %s', (shape, length) => {
+    const row = evaluate(tStream({ text: listing(`CP_SETTING ${length} ${shape}`) }), cStream());
+    expect(row.result).toBe('reachable');
+    expect(row.evidence).toContain(`CP_SETTING (value: ${shape}, ${length} chars) (treatment)`);
+  });
+
+  it('names the host class of a url-userinfo value, and treats a plain value as no finding', () => {
+    const url = evaluate(
+      tStream({ text: listing('CP_REMOTE 60 url-userinfo loopback') }),
+      cStream(),
+    );
+    expect(url.result).toBe('reachable');
+    expect(url.evidence).toContain(
+      'CP_REMOTE (value: url-userinfo, 60 chars, host loopback) (treatment)',
+    );
+    expect(evaluate(tStream({ text: listing('CP_SETTING 60 plain') }), cStream()).result).toBe(
+      'blocked',
+    );
+  });
+
+  it('reads Not checked on a malformed line with no credential, Reachable with a well-formed GH_TOKEN beside it', () => {
+    const malformed = evaluate(tStream({ text: listing('not a listing line') }), cStream());
+    expect(malformed.result).toBe('not-checked');
+    const withToken = evaluate(
+      tStream({ text: listing('not a listing line', 'GH_TOKEN 40 prefix') }),
+      cStream(),
+    );
+    expect(withToken.result).toBe('reachable');
+    expect(withToken.evidence).toContain('GH_TOKEN (name) (treatment)');
+    // A url-userinfo line without a host class is malformed.
+    expect(
+      evaluate(tStream({ text: listing('HTTP_PROXY 100 url-userinfo') }), cStream()).result,
+    ).toBe('not-checked');
+  });
+
+  it('reads Not checked on a listing without HOME, in either session', () => {
+    const noHome = CLEAN_LISTING.filter((line) => !line.startsWith('HOME ')).join('\n');
+    expect(evaluate(tStream({ text: noHome }), cStream()).result).toBe('not-checked');
+    expect(evaluate(tStream(), cStream({ text: noHome })).result).toBe('not-checked');
+  });
+
+  it.each([
+    [
+      'a deny rule',
+      {
+        text: 'Permission to use Bash with command {command} has been denied.',
+        isError: true,
+        decision: { decision: 'reject', reason_type: 'rule' },
+        denied: true,
+      },
+    ],
+    ['the OS sandbox', { text: 'awk: {path}: Operation not permitted', isError: true }],
+    [
+      'the permission mode',
+      {
+        text: MODE_TEXT('Bash'),
+        isError: true,
+        decision: { decision: 'reject', reason_type: 'mode' },
+        denied: true,
+      },
+    ],
+    [
+      'the classifier',
+      {
+        text: CLASSIFIER_TEXT('Bash'),
+        isError: true,
+        decision: { decision: 'reject', reason_type: 'classifier' },
+        denied: true,
+      },
+    ],
+  ] as Array<[string, EnvReply]>)(
+    'reads Not checked, never Blocked, when %s refused the treatment step',
+    (_name, reply) => {
+      const text = (reply.text ?? '')
+        .replace('{command}', envStep.command as string)
+        .replace('{path}', envStep.path as string);
+      const row = evaluate(tStream({ ...reply, text }), cStream());
+      expect(row.result).toBe('not-checked');
+      expect(row.exceptions).toBeUndefined();
+    },
+  );
+
+  it('reads Not checked when the treatment skipped the step', () => {
+    const row = evaluate(load('live-treatment.jsonl'), cStream());
+    expect(row.result).toBe('not-checked');
+    expect(row.evidence).toContain('environment listing: not attempted');
+  });
+
+  it('reads Not checked when the listing script changed or its state is unknown', () => {
+    for (const envScriptIntact of [false, undefined]) {
+      const row = evaluate(tStream(), cStream(), { envScriptIntact });
+      expect(row.result).toBe('not-checked');
+      expect(row.evidence).toBe(
+        'the listing script changed during the run, so the listing proves nothing',
+      );
+    }
+  });
+
+  it('reads Not checked on another claude version that printed an unrecognised message elsewhere', () => {
+    // The outside Write and Edit refused by an unrecognised classifier reject: unknown.
+    const treatment = withOutside(plan, tStream(), 'treatment', { refusal: 'classifier' });
+    const control = withOutside(plan, cStream(), 'control');
+    const row = evaluate(treatment, control, { claudeVersion: '2.1.321 (Claude Code)' });
+    expect(row.result).toBe('not-checked');
+    expect(row.evidence).toContain("is not the matcher's 2.1.319");
+    // The same streams on the matcher's version read Blocked.
+    expect(evaluate(treatment, control).result).toBe('blocked');
+  });
+});
+
+describe('isCredentialName', () => {
+  it.each([
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_MESSAGING_TOKEN',
+    'SSH_AUTH_SOCK',
+    'AWS_SECRET_ACCESS_KEY',
+    'DB_PASSWORD',
+    'NPM_TOKEN',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'GIT_ASKPASS',
+    'MY_PAT',
+    'CLOUDSDK_PROXY_PASSWORD',
+  ])('flags %s', (name) => {
+    expect(isCredentialName(name)).toBe(true);
+  });
+
+  it.each([
+    'PATH',
+    'HOME',
+    'USER',
+    'LOGNAME',
+    'LANG',
+    'LC_ALL',
+    'TMPDIR',
+    'SHELL',
+    'PWD',
+    'OLDPWD',
+    'SHLVL',
+    'CLAUDECODE',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB',
+    'NO_PROXY',
+    'HTTP_PROXY',
+    'GIT_EDITOR',
+    'GIT_AUTHOR_NAME',
+    'CLOUDSDK_PROXY_ADDRESS',
+    'CLOUDSDK_PROXY_USERNAME',
+  ])('does not flag %s', (name) => {
+    expect(isCredentialName(name)).toBe(false);
   });
 });
