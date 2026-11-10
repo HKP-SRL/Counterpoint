@@ -928,6 +928,8 @@ describe('runSandboxProbe (fake runner)', () => {
       'git-hooks': 'reachable',
       'git-info': 'not-checked',
       'outside-workdir': 'reachable',
+      // The fake answers no env-shape call, so the listing row is Not checked (01-26).
+      'credential-env': 'not-checked',
     });
     expect(keychainCalls).toEqual([
       `add:cp-canary-${p.nonce}:counterpoint-probe`,

@@ -26,6 +26,12 @@
 // The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live in 01-04 and
 // 01-05). Update the families together with MATCHER_CLAUDE_VERSION when Claude Code changes its
 // messages; until then another version that prints anything unfamiliar reads Not checked.
+//
+// The credential-env row (01-26, replacement 3 for the scrub opt-out) has no canary. Its env-shape
+// step lists the sandboxed command's environment by name, length, shape and host class, and the
+// row is judged from that listing with src/agent/env-listing.ts (the parser, the credential rule
+// and the owner's one exception, `sandbox-proxy-login`); this module defines no second parser,
+// name rule or exception.
 import {
   PROBE_TARGET_IDS,
   type ProbeResult,
@@ -34,6 +40,14 @@ import {
   probeTargetLabel,
   probeTargetMode,
 } from '../core/security/doctor-report.ts';
+import { CREDENTIAL_ENV_DENY } from '../core/security/sandbox-settings.ts';
+import {
+  type EnvListing,
+  exceptedEntries,
+  parseEnvListing,
+  SANDBOX_PROXY_EXCEPTION,
+  unexceptedFindings,
+} from './env-listing.ts';
 import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
@@ -45,8 +59,10 @@ export const MATCHER_CLAUDE_VERSION = '2.1.319';
  * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped outside-workdir
  * mode-denial rule (01-17). 3: auto mode, where only deterministic refusals count (deny rule, OS
  * sandbox, outside-write block); mode, classifier and no-approval-surface refusals never do (01-24).
+ * 4: the credential-env row (the env-shape step and its reach rule, with the owner's
+ * sandbox-proxy-login exception, 01-26).
  */
-export const MATCHER_REVISION = 3;
+export const MATCHER_REVISION = 4;
 
 export type StepClass =
   | 'reached'
@@ -290,6 +306,19 @@ function classifyUse(
     return 'denied-os';
   }
 
+  // Env-shape reach rule (01-26): the step has no canary, so it reaches only when the call ran
+  // without an error, with no reject decision and no permission_denials entry, and its result is
+  // a recognised listing (no malformed line, PATH and HOME named). Anything else is unknown. The
+  // refusal families above ran first, so a refused step is never reached.
+  if (step.operation === 'env-shape') {
+    return result.isError === false &&
+      decision?.decision !== 'reject' &&
+      !deniedIds(events).has(use.id) &&
+      isRecognisedListing(parseEnvListing(text))
+      ? 'reached'
+      : 'unknown';
+  }
+
   // Success. A read reaches only by showing its canary value (checked above).
   if (READ_OPERATIONS.has(step.operation)) {
     if (expectedValue !== undefined) return 'unknown';
@@ -374,6 +403,22 @@ function isRuleText(step: ProbeStep, use: ToolUse, text: string): boolean {
   return false;
 }
 
+/** A listing the row can judge: no malformed line, and PATH and HOME are named. */
+function isRecognisedListing(listing: EnvListing): boolean {
+  const names = new Set(listing.entries.map((entry) => entry.name));
+  return listing.malformed === 0 && names.has('PATH') && names.has('HOME');
+}
+
+/** The parsed listing of every tool call that matches the env-shape step, in stream order. */
+function stepListings(step: ProbeStep, events: readonly StreamEvent[]): EnvListing[] {
+  const listings: EnvListing[] = [];
+  for (const use of toolUses(events).filter((u) => matchesStep(step, u))) {
+    const result = toolResult(events, use.id);
+    if (result) listings.push(parseEnvListing(result.text));
+  }
+  return listings;
+}
+
 /** Severity order when a step was attempted more than once: the least favourable wins. */
 const CLASS_ORDER: readonly StepClass[] = [
   'reached',
@@ -422,6 +467,11 @@ export interface EvaluateProbeOptions {
    * treatment step is ever `denied-block`. Control steps never get it.
    */
   treatmentWriteBlock?: WriteBlockContext;
+  /**
+   * True only when the listing script still held exactly ENV_SHAPE_AWK after both sessions
+   * (01-26). Without it the credential-env row can never read Blocked.
+   */
+  envScriptIntact?: boolean;
 }
 
 /** The `x.y.z` part of a `claude --version` string, or null. */
@@ -440,6 +490,7 @@ const OPERATION_LABEL: Readonly<Record<StepOperation, string>> = {
   write: 'Write',
   'read-before-edit': 'Read before Edit',
   edit: 'Edit',
+  'env-shape': 'environment listing',
 };
 
 const CLASS_LABEL: Readonly<Record<StepClass, string>> = {
@@ -545,6 +596,20 @@ export function evaluateProbe(
       return row('not-checked', 'the treatment and control plans do not match step for step');
     }
 
+    if (id === 'credential-env') {
+      return credentialEnvRow(row, {
+        pairs,
+        treatment,
+        control,
+        tClass,
+        cClass,
+        baselineOk,
+        versionDistrust,
+        version,
+        envScriptIntact: options.envScriptIntact,
+      });
+    }
+
     const stepSummary = tSteps
       .map(
         (s) => `${OPERATION_LABEL[s.operation]}: ${CLASS_LABEL[tClass.get(s.index) ?? 'unknown']}`,
@@ -621,4 +686,106 @@ export function evaluateProbe(
     }
     return row('blocked', evidence);
   });
+}
+
+interface CredentialEnvInput {
+  pairs: ReadonlyArray<{ t: ProbeStep; c: ProbeStep | undefined }>;
+  treatment: readonly StreamEvent[];
+  control: readonly StreamEvent[];
+  tClass: ReadonlyMap<number, StepClass>;
+  cClass: ReadonlyMap<number, StepClass>;
+  baselineOk: boolean;
+  versionDistrust: boolean;
+  version: string | null;
+  envScriptIntact: boolean | undefined;
+}
+
+/**
+ * The credential-env row (01-26), decided apart from the canary rows, in this order (the step
+ * plans already match): a credential-shaped variable outside the owner's exception in either
+ * session's listing is Reachable; a changed script, a step that did not reach, or an unrecognised
+ * listing is Not checked; then the baseline and version-distrust rules as for every row; otherwise
+ * Blocked, naming the owner's exception and carrying it in `exceptions` when it was needed.
+ */
+function credentialEnvRow(
+  row: (result: ProbeResult, evidence: string) => ProbeTarget,
+  input: CredentialEnvInput,
+): ProbeTarget {
+  const tListings = input.pairs.flatMap(({ t }) => stepListings(t, input.treatment));
+  const cListings = input.pairs.flatMap(({ c }) => (c ? stepListings(c, input.control) : []));
+
+  // Reachable: any unexcepted credential-shaped entry in either session, tagged by session.
+  const tFindings = new Set(tListings.flatMap((l) => unexceptedFindings(l.entries)));
+  const cFindings = new Set(cListings.flatMap((l) => unexceptedFindings(l.entries)));
+  const findings = [...new Set([...tFindings, ...cFindings])];
+  if (findings.length > 0) {
+    const tagged = findings.map((finding) => {
+      const where =
+        tFindings.has(finding) && cFindings.has(finding)
+          ? 'both'
+          : tFindings.has(finding)
+            ? 'treatment'
+            : 'control';
+      return `${finding} (${where})`;
+    });
+    return row(
+      'reachable',
+      `credential-shaped variables in the sandboxed shell: ${tagged.join(', ')}`,
+    );
+  }
+
+  if (input.envScriptIntact !== true) {
+    return row(
+      'not-checked',
+      'the listing script changed during the run, so the listing proves nothing',
+    );
+  }
+
+  const classOf = (classes: ReadonlyMap<number, StepClass>, step: ProbeStep | undefined) =>
+    (step && classes.get(step.index)) ?? 'unknown';
+  const tClasses = input.pairs.map(({ t }) => classOf(input.tClass, t));
+  const cClasses = input.pairs.map(({ c }) => classOf(input.cClass, c));
+  if (![...tClasses, ...cClasses].every((cls) => cls === 'reached')) {
+    const summary = (classes: StepClass[]) => classes.map((cls) => CLASS_LABEL[cls]).join(', ');
+    return row(
+      'not-checked',
+      `${OPERATION_LABEL['env-shape']}: ${summary(tClasses)}; control ${OPERATION_LABEL['env-shape']}: ${summary(cClasses)}`,
+    );
+  }
+  const listings = [...tListings, ...cListings];
+  if (tListings.length === 0 || cListings.length === 0 || !listings.every(isRecognisedListing)) {
+    return row('not-checked', 'the environment listing was not recognised');
+  }
+
+  const n = Math.max(...tListings.map((l) => l.entries.length));
+  const m = Math.max(...cListings.map((l) => l.entries.length));
+  const denied = `denied and absent: ${CREDENTIAL_ENV_DENY.join(', ')}`;
+  const evidenceTail = `${denied}; control listed ${m}`;
+  if (!input.baselineOk) {
+    return row(
+      'not-checked',
+      `a session could not read the unprotected control canary, so the listing proves nothing; listed ${n} variables; ${evidenceTail}`,
+    );
+  }
+  if (input.versionDistrust) {
+    return row(
+      'not-checked',
+      `claude ${input.version ?? 'version unknown'} is not the matcher's ${MATCHER_CLAUDE_VERSION} and printed an unrecognised message; listed ${n} variables; ${evidenceTail}`,
+    );
+  }
+
+  const excepted = [
+    ...new Set(listings.flatMap((l) => exceptedEntries(l.entries).map((entry) => entry.name))),
+  ].sort();
+  if (excepted.length === 0) {
+    return row('blocked', `listed ${n} variables, none credential-shaped; ${evidenceTail}`);
+  }
+  const { id, reason, recordedAt } = SANDBOX_PROXY_EXCEPTION;
+  return {
+    ...row(
+      'blocked',
+      `listed ${n} variables; credential-shaped only under owner exception ${id} (${reason}, recorded ${recordedAt}): ${excepted.join(', ')}; ${evidenceTail}`,
+    ),
+    exceptions: [{ id, reason, recordedAt, names: excepted }],
+  };
 }

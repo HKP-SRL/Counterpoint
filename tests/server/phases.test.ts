@@ -326,6 +326,7 @@ describe('GET /api/hosts/:hostId/doctor', () => {
     'git-hooks',
     'git-info',
     'outside-workdir',
+    'credential-env',
   ];
   const WRITE_IDS = new Set(['git-config', 'git-hooks', 'git-info', 'outside-workdir']);
   const reportFile = () => join(home, 'hosts', hostId, 'doctor.json');
