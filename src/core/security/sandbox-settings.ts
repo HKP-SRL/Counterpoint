@@ -41,20 +41,25 @@
 // command sees what Claude Code itself exports to it. 01-26's first live listing on claude
 // 2.1.321 found two credential-named variables there: `CLAUDE_CODE_MESSAGING_TOKEN` (the
 // per-session messaging token the env-vars docs name) and `CLOUDSDK_PROXY_PASSWORD`. The profile
-// denies exactly these two through `sandbox.credentials.envVars` entries with `mode: "deny"`, with
-// or without a workdir (STATE.md [Owner] 2026-11-10, "Credential-env row scoped to the real
-// requirement"). The sandboxing docs (https://code.claude.com/docs/en/sandboxing, section
-// `sandbox.credentials`, read 2026-11-10): for deny entries "environment variables are unset
-// before each sandboxed command runs"; the variable protection holds even when filesystem
+// denies `CLAUDE_CODE_MESSAGING_TOKEN` through a `sandbox.credentials.envVars` entry with
+// `mode: "deny"`, with or without a workdir (STATE.md [Owner] 2026-11-10, "Credential-env row
+// scoped to the real requirement"). The sandboxing docs (https://code.claude.com/docs/en/sandboxing,
+// section `sandbox.credentials`, read 2026-11-10): for deny entries "environment variables are
+// unset before each sandboxed command runs"; the variable protection holds even when filesystem
 // isolation is off; "There is no built-in credential deny list, so only the files and variables
 // you list are restricted"; and Claude Code ignores `credentials` entries from project and local
-// settings only, so this `--settings` profile's entries apply. Only these two names are denied:
-// the sandbox proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and related) are how
-// sandboxed commands reach the network ("Claude Code runs the sandbox proxy on your machine,
-// outside the sandbox, and directs commands to it with ..."), so denying them would cut that
-// access; the probe's credential-env row accepts them only as the owner's loopback exception
-// (src/agent/env-listing.ts SANDBOX_PROXY_EXCEPTION). 01-26's rerun listing proves the entries
-// take effect on the owner's claude, and the row fails if either name reappears.
+// settings only, so this `--settings` profile's entries apply. 01-26's rerun showed the entry
+// take effect for `CLAUDE_CODE_MESSAGING_TOKEN`, but not for `CLOUDSDK_PROXY_PASSWORD`: Claude Code
+// sets the `CLOUDSDK_PROXY_*` gcloud proxy config (ADDRESS, PORT, TYPE, USERNAME, PASSWORD) after
+// deny entries apply, like the proxy URLs. So `CLOUDSDK_PROXY_PASSWORD` is no longer denied; it
+// joined the owner's `sandbox-proxy-login` exception, conditioned on `CLOUDSDK_PROXY_ADDRESS`
+// being a loopback host (STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the
+// sandbox-proxy-login exception"). The sandbox proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
+// `ALL_PROXY` and related) are how sandboxed commands reach the network ("Claude Code runs the
+// sandbox proxy on your machine, outside the sandbox, and directs commands to it with ..."), so
+// they are not denied either; the probe's credential-env row accepts them only as that loopback
+// exception (src/agent/env-listing.ts SANDBOX_PROXY_EXCEPTION), and fails if the denied name
+// reappears.
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -106,13 +111,12 @@ export interface AgentSettings {
 }
 
 /**
- * The credential env vars the launch profile denies to sandboxed commands (01-26): the two
- * variables 01-26's first live listing flagged by name. Order is the emitted order.
+ * The credential env vars the launch profile denies to sandboxed commands (01-26). The first
+ * listing flagged two by name; `CLOUDSDK_PROXY_PASSWORD` left this list after the rerun showed
+ * the deny does not reach it (STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the
+ * sandbox-proxy-login exception"). Order is the emitted order.
  */
-export const CREDENTIAL_ENV_DENY = [
-  'CLAUDE_CODE_MESSAGING_TOKEN',
-  'CLOUDSDK_PROXY_PASSWORD',
-] as const;
+export const CREDENTIAL_ENV_DENY = ['CLAUDE_CODE_MESSAGING_TOKEN'] as const;
 
 export type ReadTargetId = 'signing-key' | 'ssh' | 'gh' | 'state';
 export type WriteTargetId = 'git-config' | 'git-hooks' | 'git-info';

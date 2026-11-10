@@ -130,13 +130,10 @@ describe('buildAgentSandboxSettings', () => {
 
   it('denies the credential env vars, with and without a workdir (scrub replacement 3, 01-26)', () => {
     const { workdir: _omit, ...rest } = paths;
-    const expected = {
-      envVars: [
-        { name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' },
-        { name: 'CLOUDSDK_PROXY_PASSWORD', mode: 'deny' },
-      ],
-    };
-    expect(CREDENTIAL_ENV_DENY).toEqual(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLOUDSDK_PROXY_PASSWORD']);
+    // CLOUDSDK_PROXY_PASSWORD left the list: the rerun showed the deny does not reach it, and it
+    // joined the sandbox-proxy-login exception (STATE.md [Owner] 2026-11-10).
+    const expected = { envVars: [{ name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' }] };
+    expect(CREDENTIAL_ENV_DENY).toEqual(['CLAUDE_CODE_MESSAGING_TOKEN']);
     expect(buildAgentSandboxSettings(paths).settings.sandbox.credentials).toEqual(expected);
     expect(buildAgentSandboxSettings(rest).settings.sandbox.credentials).toEqual(expected);
   });

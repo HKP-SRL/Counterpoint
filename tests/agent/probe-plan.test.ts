@@ -19,8 +19,10 @@ import {
   credentialFindings,
   type EnvEntry,
   exceptedEntries,
+  PROXY_ADDRESS_NAME,
   parseEnvListing,
   SANDBOX_PROXY_EXCEPTION,
+  SANDBOX_PROXY_EXCEPTION_NAMES,
   unexceptedFindings,
 } from '../../src/agent/env-listing.ts';
 import {
@@ -988,10 +990,7 @@ describe('the env-shape step (01-26)', () => {
     const control = buildControlSettings(treatment, p);
     expect(control.sandbox.credentials).toEqual(treatment.sandbox.credentials);
     expect(control.sandbox.credentials).toEqual({
-      envVars: [
-        { name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' },
-        { name: 'CLOUDSDK_PROXY_PASSWORD', mode: 'deny' },
-      ],
+      envVars: [{ name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' }],
     });
     expect(control.sandbox.credentials).not.toBe(treatment.sandbox.credentials);
     expect(control.sandbox.credentials?.envVars).not.toBe(treatment.sandbox.credentials?.envVars);
@@ -1020,8 +1019,11 @@ describe('the env-shape step (01-26)', () => {
     // and, for url-userinfo only, the host class word.
     const prints = ENV_SHAPE_AWK.split('\n').filter((line) => /\bprint\b/.test(line));
     expect(prints).toEqual(['    print name " " length(ENVIRON[name]) " " s extra']);
+    // The CLOUDSDK_PROXY_ADDRESS line always carries its bare-host class (01-26 rerun decision);
+    // every other url-userinfo line carries the URL's host class.
     expect(ENV_SHAPE_AWK).toContain(
-      '    if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])',
+      '    if (name == "CLOUDSDK_PROXY_ADDRESS") extra = " " address_class(ENVIRON[name])\n' +
+        '    else if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])',
     );
   });
 });
@@ -1064,6 +1066,8 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
     CP_PX_OCTET: 'http://cp-user:cp-pw-0126@127.0.0.256:80',
     CP_PX_TWO_AT: 'http://cp-user:cp-pw-0126@extra.invalid@127.0.0.1:80',
     CP_PX_INSIDE: 'see http://cp-user:cp-pw-0126@127.0.0.1:80',
+    // The gcloud proxy config's bare host (01-26 rerun decision): classed, never printed.
+    CLOUDSDK_PROXY_ADDRESS: '127.0.0.1',
   });
 
   it('prints every variable as NAME LENGTH SHAPE with the expected shape, and no value', async () => {
@@ -1105,8 +1109,9 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
       CP_PX_OCTET: 'url-userinfo',
       CP_PX_TWO_AT: 'url-userinfo',
       CP_PX_INSIDE: 'url-userinfo',
+      CLOUDSDK_PROXY_ADDRESS: 'plain',
     });
-    // The host class is present exactly on url-userinfo entries.
+    // The host class is present exactly on url-userinfo entries and CLOUDSDK_PROXY_ADDRESS.
     expect(
       Object.fromEntries(
         listing.entries.filter((e) => e.hostClass !== undefined).map((e) => [e.name, e.hostClass]),
@@ -1125,6 +1130,7 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
       CP_PX_OCTET: 'other',
       CP_PX_TWO_AT: 'other',
       CP_PX_INSIDE: 'other',
+      CLOUDSDK_PROXY_ADDRESS: 'loopback',
     });
     // No host, user or password reaches the output.
     for (const piece of ['cp-user', 'cp-pw-0126', 'cp-pass', '127.0.0', 'localhost', 'example']) {
@@ -1140,6 +1146,53 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
           expect(result.stdout.includes(piece), `${name} piece ${i}`).toBe(false);
         }
       }
+    }
+  });
+
+  it('classes CLOUDSDK_PROXY_ADDRESS as a bare host, loopback only for this machine, never printing it', async () => {
+    // Planted test addresses only. loopback: the whole value is localhost, ::1, [::1] or a dotted
+    // 127.0.0.0/8 address (lower-cased). Every other form reads other (fail closed).
+    const cases: Array<[string, 'loopback' | 'other']> = [
+      ['127.0.0.1', 'loopback'],
+      ['127.255.10.1', 'loopback'],
+      ['localhost', 'loopback'],
+      ['LocalHost', 'loopback'],
+      ['::1', 'loopback'],
+      ['[::1]', 'loopback'],
+      ['proxy.example.invalid', 'other'],
+      ['10.0.0.1', 'other'],
+      ['127.0.0.1:3128', 'other'],
+      ['http://127.0.0.1', 'other'],
+      ['127.0.0.256', 'other'],
+      ['127.0.0', 'other'],
+      ['127.0.0.1.example.invalid', 'other'],
+      ['localhost.example.invalid', 'other'],
+      [' 127.0.0.1', 'other'],
+      ['::2', 'other'],
+      ['', 'other'],
+    ];
+    for (const [value, expected] of cases) {
+      const result = await execa('/usr/bin/awk', ['-f', script], {
+        env: { PATH: '/usr/bin:/bin', HOME: home, CLOUDSDK_PROXY_ADDRESS: value },
+        extendEnv: false,
+        stdin: 'ignore',
+        reject: false,
+        timeout: 5_000,
+      });
+      expect(result.exitCode, value).toBe(0);
+      const listing = parseEnvListing(result.stdout);
+      expect(listing.malformed, value).toBe(0);
+      const entry = listing.entries.find((e) => e.name === 'CLOUDSDK_PROXY_ADDRESS');
+      expect(entry, value).toEqual({
+        name: 'CLOUDSDK_PROXY_ADDRESS',
+        length: value.length,
+        shape: 'plain',
+        hostClass: expected,
+      });
+      const line = result.stdout.split('\n').find((l) => l.startsWith('CLOUDSDK_PROXY_ADDRESS '));
+      // The address never reaches the output: the line is the name, the length, the shape and
+      // the class word only.
+      expect(line, value).toBe(`CLOUDSDK_PROXY_ADDRESS ${value.length} plain ${expected}`);
     }
   });
 
@@ -1191,7 +1244,7 @@ describe('the sandbox proxy exception (01-26)', () => {
     hostClass,
   });
 
-  it("records the owner's exception: id, reason, date, decision and exactly the twelve names", () => {
+  it("records the owner's exception: id, reason, date, decisions, the twelve URL names and the gcloud password", () => {
     expect(SANDBOX_PROXY_EXCEPTION.id).toBe('sandbox-proxy-login');
     expect(SANDBOX_PROXY_EXCEPTION.reason).toBe("the sandbox's own proxy login, local only");
     expect(SANDBOX_PROXY_EXCEPTION.recordedAt).toBe('2026-11-10');
@@ -1199,7 +1252,73 @@ describe('the sandbox proxy exception (01-26)', () => {
     expect(SANDBOX_PROXY_EXCEPTION.decision).toContain(
       'Credential-env row scoped to the real requirement',
     );
-    expect([...SANDBOX_PROXY_EXCEPTION.names]).toEqual(PROXY_NAMES);
+    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain(
+      'CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception',
+    );
+    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain('gcloud proxy config');
+    expect([...SANDBOX_PROXY_EXCEPTION.proxyUrlNames]).toEqual(PROXY_NAMES);
+    expect(SANDBOX_PROXY_EXCEPTION.gcloudPassword).toEqual({
+      name: 'CLOUDSDK_PROXY_PASSWORD',
+      requires: 'CLOUDSDK_PROXY_ADDRESS',
+    });
+    expect(SANDBOX_PROXY_EXCEPTION_NAMES).toEqual([...PROXY_NAMES, 'CLOUDSDK_PROXY_PASSWORD']);
+    expect(PROXY_ADDRESS_NAME).toBe('CLOUDSDK_PROXY_ADDRESS');
+  });
+
+  it('reads the CLOUDSDK_PROXY_ADDRESS line with its host class, and rejects it without one', () => {
+    expect(parseEnvListing('CLOUDSDK_PROXY_ADDRESS 9 plain loopback\n')).toEqual({
+      entries: [
+        { name: 'CLOUDSDK_PROXY_ADDRESS', length: 9, shape: 'plain', hostClass: 'loopback' },
+      ],
+      malformed: 0,
+    });
+    for (const line of [
+      'CLOUDSDK_PROXY_ADDRESS 9 plain',
+      'CLOUDSDK_PROXY_ADDRESS 9 plain remote',
+      'CLOUDSDK_PROXY_ADDRESS 9 plain Loopback',
+      'CLOUDSDK_PROXY_PORT 4 plain loopback',
+    ]) {
+      expect(parseEnvListing(line), line).toEqual({ entries: [], malformed: 1 });
+    }
+  });
+
+  it('excepts CLOUDSDK_PROXY_PASSWORD only beside a loopback CLOUDSDK_PROXY_ADDRESS', () => {
+    const password: EnvEntry = { name: 'CLOUDSDK_PROXY_PASSWORD', length: 32, shape: 'opaque' };
+    const address = (hostClass: 'loopback' | 'other'): EnvEntry => ({
+      name: 'CLOUDSDK_PROXY_ADDRESS',
+      length: 9,
+      shape: 'plain',
+      hostClass,
+    });
+    // Loopback address: the password is excepted, and the address itself is no finding.
+    expect(exceptedEntries([password, address('loopback')])).toEqual([password]);
+    expect(unexceptedFindings([password, address('loopback')])).toEqual([]);
+    // Address absent: the password is a finding by name.
+    expect(exceptedEntries([password])).toEqual([]);
+    expect(unexceptedFindings([password])).toEqual(['CLOUDSDK_PROXY_PASSWORD (name)']);
+    // Address other: both the password and the address are findings.
+    expect(exceptedEntries([password, address('other')])).toEqual([]);
+    expect(unexceptedFindings([password, address('other')])).toEqual([
+      'CLOUDSDK_PROXY_PASSWORD (name)',
+      'CLOUDSDK_PROXY_ADDRESS (value: plain, 9 chars, host other)',
+    ]);
+    // A non-loopback address fails the row even without the password.
+    expect(unexceptedFindings([address('other')])).toEqual([
+      'CLOUDSDK_PROXY_ADDRESS (value: plain, 9 chars, host other)',
+    ]);
+    // The address condition is exact: another name in loopback, or a case variant, does not count.
+    expect(
+      exceptedEntries([
+        password,
+        { name: 'cloudsdk_proxy_address', length: 9, shape: 'plain', hostClass: 'loopback' },
+        { name: 'HTTP_PROXY', length: 100, shape: 'url-userinfo', hostClass: 'loopback' },
+      ]).map((e) => e.name),
+    ).toEqual(['HTTP_PROXY']);
+    // The denied messaging token is never excepted, beside a loopback address or not.
+    const token: EnvEntry = { name: 'CLAUDE_CODE_MESSAGING_TOKEN', length: 32, shape: 'opaque' };
+    expect(unexceptedFindings([token, password, address('loopback')])).toEqual([
+      'CLAUDE_CODE_MESSAGING_TOKEN (name)',
+    ]);
   });
 
   it('reads a url-userinfo line with its host class, and rejects the three malformed forms', () => {
@@ -1240,7 +1359,7 @@ describe('the sandbox proxy exception (01-26)', () => {
     expect(unexceptedFindings(near)).toHaveLength(near.length);
   });
 
-  it('keeps the denied names and a non-loopback proxy as findings beside excepted entries', () => {
+  it('keeps the denied name, a password without its address and a non-loopback proxy as findings beside excepted entries', () => {
     const entries: EnvEntry[] = [
       ...PROXY_NAMES.filter((n) => n !== 'HTTP_PROXY').map((n) => url(n, 'loopback')),
       { name: 'CLAUDE_CODE_MESSAGING_TOKEN', length: 32, shape: 'opaque' },

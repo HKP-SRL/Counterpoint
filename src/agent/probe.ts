@@ -122,7 +122,10 @@ export type StepOperation =
  * The shape words, tested in this order (first match wins; src/agent/env-listing.ts ENV_SHAPES):
  * prefix, jwt, url-userinfo, pem, opaque, plain. A `url-userinfo` line carries a fourth field,
  * the host class `loopback` or `other` (host_class, 01-26 revision): the host, user and password
- * never leave the command. The program has exactly one print statement.
+ * never leave the command. The `CLOUDSDK_PROXY_ADDRESS` line always carries a fourth field too,
+ * that bare host's class (address_class; STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD
+ * joins the sandbox-proxy-login exception"), never the address. The program has exactly one
+ * print statement.
  */
 export const ENV_SHAPE_AWK = `# Counterpoint environment listing (01-26). Prints NAME LENGTH SHAPE [HOSTCLASS] per variable, never a value.
 function is_uuid(v) {
@@ -143,11 +146,21 @@ function shape(v) {
   if (length(v) >= 32 && v ~ "^[A-Za-z0-9+/=_-]+$" && v ~ "[A-Za-z]" && v ~ "[0-9]" && substr(v, 1, 1) != "/" && !is_uuid(v)) return "opaque"
   return "plain"
 }
-function host_class(v,    i, rest, at, user, hp, host, port, n, o, k) {
+function loopback_host(v,    n, o, k) {
+  # 1 when the lower-cased host v is localhost, [::1] or a dotted 127.0.0.0/8 address (four octets
+  # of 1 to 3 digits, each at most 255, the first 127); else 0.
+  if (v == "localhost" || v == "[::1]") return 1
+  n = split(v, o, ".")
+  if (n != 4 || o[1] != "127") return 0
+  for (k = 1; k <= 4; k++) {
+    if (o[k] !~ "^[0-9]+$" || length(o[k]) > 3 || o[k] + 0 > 255) return 0
+  }
+  return 1
+}
+function host_class(v,    i, rest, at, user, hp, host, port, k) {
   # The host class of a url-userinfo value (01-26): "loopback" only when the whole value is one
-  # URL: a scheme and ://, a user:password userinfo with exactly one @, a host that (lower-cased)
-  # is localhost, [::1] or a dotted 127.0.0.0/8 address (four octets of 1 to 3 digits, each at
-  # most 255, the first 127), optionally : and 1 to 5 digits, optionally one /, then nothing.
+  # URL: a scheme and ://, a user:password userinfo with exactly one @, a loopback host (see
+  # loopback_host), optionally : and 1 to 5 digits, optionally one /, then nothing.
   # Every other form is "other" (fail closed). Only the class word is ever printed.
   if (v ~ "[ \\t\\n\\r\\f\\v]") return "other"
   i = index(v, "://")
@@ -176,20 +189,24 @@ function host_class(v,    i, rest, at, user, hp, host, port, n, o, k) {
     port = substr(port, 2)
     if (port !~ "^[0-9]+$" || length(port) > 5) return "other"
   }
-  host = tolower(host)
-  if (host == "localhost" || host == "[::1]") return "loopback"
-  n = split(host, o, ".")
-  if (n != 4 || o[1] != "127") return "other"
-  for (k = 1; k <= 4; k++) {
-    if (o[k] !~ "^[0-9]+$" || length(o[k]) > 3 || o[k] + 0 > 255) return "other"
-  }
-  return "loopback"
+  if (loopback_host(tolower(host))) return "loopback"
+  return "other"
+}
+function address_class(v) {
+  # The host class of CLOUDSDK_PROXY_ADDRESS, a bare host (01-26 rerun decision): "loopback" only
+  # when the whole value, lower-cased, is localhost, ::1, [::1] or a dotted 127.0.0.0/8 address.
+  # Every other form is "other" (fail closed): a port, a scheme, a path, whitespace, an empty value.
+  if (v ~ "[ \\t\\n\\r\\f\\v]") return "other"
+  v = tolower(v)
+  if (v == "::1" || loopback_host(v)) return "loopback"
+  return "other"
 }
 BEGIN {
   for (name in ENVIRON) {
     s = shape(ENVIRON[name])
     extra = ""
-    if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])
+    if (name == "CLOUDSDK_PROXY_ADDRESS") extra = " " address_class(ENVIRON[name])
+    else if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])
     print name " " length(ENVIRON[name]) " " s extra
   }
 }

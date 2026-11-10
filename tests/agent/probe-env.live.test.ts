@@ -18,14 +18,20 @@
 // listing ran before any evaluator edit (the owner's ordering rule).
 //
 // Evidence first: stream.jsonl, stderr.txt, session.json and env-listing.json are written to
-// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-26-rerun/ before any
+// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-26-rerun2/ before any
 // assertion, so a failing run keeps its evidence. Only names, lengths, shapes and host classes are
 // recorded.
 //
-// Rerun (01-26 revision, after the owner scoped the row on 2026-11-10): the profile now carries the
-// two credential env deny entries (CREDENTIAL_ENV_DENY), recorded as `launchedCredentials`, and the
+// Rerun (01-26 revision, after the owner scoped the row on 2026-11-10): the profile carries the
+// credential env deny entries (CREDENTIAL_ENV_DENY), recorded as `launchedCredentials`, and the
 // listing records `findings`, `excepted` (the owner's sandbox-proxy-login exception), `unexcepted`
 // and `deniedPresent`. They are recorded, not asserted: the plan's stop rule decides.
+//
+// Rerun 2 (after the owner's decision on the rerun's halt, STATE.md [Owner] 2026-11-10,
+// "CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception"): CLOUDSDK_PROXY_PASSWORD is no
+// longer denied; the listing classes CLOUDSDK_PROXY_ADDRESS as a host (`proxyAddress`), and the
+// exception covers the password only beside a loopback address. The earlier folders,
+// evidence-01-26-live and evidence-01-26-rerun, stay as they are.
 import { randomBytes } from 'node:crypto';
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -36,6 +42,7 @@ import { AGENT_PERMISSION_MODE, buildClaudeArgv } from '../../src/agent/claude-a
 import {
   credentialFindings,
   exceptedEntries,
+  PROXY_ADDRESS_NAME,
   parseEnvListing,
   unexceptedFindings,
 } from '../../src/agent/env-listing.ts';
@@ -52,8 +59,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEBUG_DIR = join(REPO_ROOT, '.tmp', 'live-env');
 const EVIDENCE_DIR = join(
   process.env.CP_TEST_SCRATCH ?? join(REPO_ROOT, '.tmp'),
-  // The rerun (01-26 revision): the first listing's folder, evidence-01-26-live, stays as it is.
-  'evidence-01-26-rerun',
+  // Rerun 2 (01-26): the first listing's folder (evidence-01-26-live) and the first rerun's
+  // (evidence-01-26-rerun) stay as they are.
+  'evidence-01-26-rerun2',
 );
 const EVALUATOR = 'src/agent/probe-evaluator.ts';
 const NOTICE_RE = /permission mode|auto mode/i;
@@ -235,6 +243,9 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
     const unexcepted = unexceptedFindings(listing.entries);
     const listed = new Set(listing.entries.map((e) => e.name));
     const deniedPresent = CREDENTIAL_ENV_DENY.filter((name) => listed.has(name));
+    // The gcloud proxy address's host class (never its value), or null when it is not listed.
+    const proxyAddress =
+      listing.entries.find((e) => e.name === PROXY_ADDRESS_NAME)?.hostClass ?? null;
     // The deny entries of the exact settings passed to buildClaudeArgv (names and modes only).
     const launchedCredentials = (profile.settings.sandbox.credentials?.envVars ?? []).map((e) => ({
       name: e.name,
@@ -285,6 +296,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
           excepted,
           unexcepted,
           deniedPresent,
+          proxyAddress,
         },
         null,
         2,
@@ -307,7 +319,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
     const names = listing.entries.map((e) => e.name);
     expect.soft(names, 'PATH').toContain('PATH');
     expect.soft(names, 'HOME').toContain('HOME');
-    // `findings`, `excepted`, `unexcepted` and `deniedPresent` are recorded, not asserted: the
-    // plan's stop rule decides.
+    // `findings`, `excepted`, `unexcepted`, `deniedPresent` and `proxyAddress` are recorded, not
+    // asserted: the plan's stop rule decides.
   }, 600_000);
 });
