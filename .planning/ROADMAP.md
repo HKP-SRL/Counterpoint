@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The console lists Cena's QR-menu phases with status, plans and prerequisites (`user_setup`, non-autonomous plans), parsed natively from `.planning/` through the GSD adapter. A lint rule fails the build if core imports the adapter directly.
   4. Owner approves a phase. The console shows a one-line command that asks for the passphrase and creates a signed commit on `master` adding only `.counterpoint/approvals/<item>.json`, with uncommitted work left alone. The commit is signed and verified with `ssh-keygen -Y` against a public key kept outside the repo, and the runway headline goes up by one. Signing is refused if Cena's `.git/config` or hooks changed unexpectedly.
   5. If the approved phase's spec or gate config changes after signing, the item leaves the runway and shows in the Needs You inbox as "approved version changed".
-**Plans**: 17/24 plans executed
+**Plans**: 18/24 plans executed
 
 Plans:
 **Wave 1**
@@ -75,7 +75,7 @@ Plans:
 - [x] 01-24-PLAN.md — Gap (scrub opt-out, WINDOWS.md #3) 1/3: cherry-pick 01-21's launch work (e5e59f3: auto mode, outside-write block, control rules); `agentEnv` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` (owner decision 2026-11-10); replacement 1 `sandbox.autoAllowBashIfSandboxed: false`; live tracer proves auto mode first; deterministic-only evaluator (MATCHER_REVISION 3) *(wave 11)*
 
 **Wave 12** *(blocked on Wave 11 completion)*
-- [ ] 01-25-PLAN.md — Gap (scrub opt-out) 2/3: replacement 2, doctor's `Sandbox isolation settings` check (`sandboxIsolation`, additive v1 field): doctor and its probe rows fail if any settings source turns filesystem isolation off; read-only, fail-closed reader of every source an agent session loads *(wave 12)*
+- [x] 01-25-PLAN.md — Gap (scrub opt-out) 2/3: replacement 2, doctor's `Sandbox isolation settings` check (`sandboxIsolation`, additive v1 field): doctor and its probe rows fail if any settings source turns filesystem isolation off; read-only, fail-closed reader of every source an agent session loads *(wave 12)*
 
 **Wave 13** *(blocked on Wave 12 completion)*
 - [ ] 01-26-PLAN.md — Gap (scrub opt-out) 3/3: replacement 3, ninth probe row `Credentials in the shell environment` (names and value shapes, never values); one live listing first; MATCHER_REVISION 4 *(wave 13)*
@@ -180,7 +180,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trusted Shell & Signed Runway | 17/24 | In Progress | - |
+| 1. Trusted Shell & Signed Runway | 18/24 | In Progress | - |
 | 2. First Unattended Run | 0/TBD | Not started | - |
 | 3. Morning Review & Signed Merge | 0/TBD | Not started | - |
 | 4. Design Drafts & Visual Gate | 0/TBD | Not started | - |
