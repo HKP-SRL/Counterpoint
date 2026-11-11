@@ -10,7 +10,7 @@
 // - every turn's `result` closes input, so the session ends when its turn does; the next session
 //   starts fresh from the handoff.
 // A run stopping at a clean point asks the same way (`wrapUp('stop')`).
-import { buildClaudeArgv } from '../agent/claude-argv.ts';
+import { buildClaudeArgv, type EffortLevel } from '../agent/claude-argv.ts';
 import type { AgentRunner, AgentSessionEnd, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter } from '../agent/usage.ts';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
@@ -34,6 +34,7 @@ export interface BuilderSessionInput {
   windowTokens: number;
   /** Budget as a percentage of the window (e.g. 40). */
   budgetPercent: number;
+  effort?: EffortLevel;
   marginPercent?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
@@ -77,6 +78,7 @@ export async function startBuilderSession(input: BuilderSessionInput): Promise<B
   const argv = buildClaudeArgv({
     settings: input.settings,
     model: input.model,
+    ...(input.effort === undefined ? {} : { effort: input.effort }),
     maxTurns: input.maxTurns ?? 400,
     maxBudgetUsd: input.maxBudgetUsd ?? 50,
     allowedTools: input.allowedTools,

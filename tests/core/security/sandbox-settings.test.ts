@@ -473,7 +473,13 @@ describe('buildClaudeArgv', () => {
     expect(valueAfter(argv, '--add-dir')).toBe('/a');
   });
 
+  it('passes --effort only when given', () => {
+    expect(buildClaudeArgv(base())).not.toContain('--effort');
+    expect(valueAfter(buildClaudeArgv({ ...base(), effort: 'xhigh' }), '--effort')).toBe('xhigh');
+  });
+
   it.each([
+    ['an unknown effort level', { effort: '--dangerously' as never }],
     ['a prompt that starts with a dash', { prompt: '-x' }],
     ['a non-integer turn limit', { maxTurns: 1.5 }],
     ['a zero turn limit', { maxTurns: 0 }],

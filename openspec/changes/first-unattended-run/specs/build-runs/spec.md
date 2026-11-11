@@ -6,19 +6,34 @@ Unattended builds of approved changes: how a run starts and stops, where each ch
 ## ADDED Requirements
 
 ### Requirement: Start and stop a run from the console
-The owner SHALL start a run from the console choosing which changes on the runway to build, a stop time, a model and a context budget, SHALL see the run's progress there, and SHALL be able to stop it there. The CLI SHALL offer the same start and stop. Starting and stopping SHALL require the owner credential that agents cannot use: the console session or the control token.
+The owner SHALL start a run from the console choosing which changes on the runway to build and a stop time, SHALL see the run's progress there, and SHALL be able to stop it there. The run SHALL use the project's run settings at the moment it starts and SHALL record them with the run. The CLI SHALL offer the same start and stop. Starting and stopping SHALL require the owner credential that agents cannot use: the console session or the control token.
 
 #### Scenario: Budget shown as tokens
 - **WHEN** the owner sets the budget to 40% on a model with a 1M-token window
 - **THEN** the run settings show "40% of 1M = 400k tokens"
 
 #### Scenario: Start from the console
-- **WHEN** the owner picks two runway changes, a stop time, a model and a budget in the console and presses Start
+- **WHEN** the owner picks two runway changes and a stop time in the console and presses Start
 - **THEN** the run starts and the console shows each change's progress
 
 #### Scenario: Agent tries to start a run
 - **WHEN** an agent session sends a start request without the console session or the control token
 - **THEN** the request is refused
+
+### Requirement: Run settings page
+Each project SHALL have a Settings page in the console holding its run settings: model, effort, context budget and per-session limits. Saving SHALL be a guarded POST to the daemon. Until the owner saves, defaults apply. A run SHALL use the settings saved when it starts and keep them until it ends. The Run card SHALL show the settings a new run will use. The CLI MAY override model, effort and budget for one run.
+
+#### Scenario: Effort set in Settings
+- **WHEN** the owner sets the effort to high on the Settings page and starts a run
+- **THEN** every builder session of that run launches with effort high, and the run shows it
+
+#### Scenario: Settings changed during a run
+- **WHEN** the owner changes the model while a run is going
+- **THEN** the running run keeps its model and the next run uses the new one
+
+#### Scenario: Per-session limits
+- **WHEN** the owner sets 300 turns, $30 and 6 sessions per attempt
+- **THEN** each builder session stops at 300 turns or $30 estimated cost, and the gates run after at most 6 sessions of one attempt
 
 ### Requirement: Only runway changes are built
 A run SHALL build only changes whose approval verifies at the moment the build starts. A change that leaves the runway during a run SHALL NOT start; one already building SHALL stop at its next handoff and land in Needs You.

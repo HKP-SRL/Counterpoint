@@ -13,6 +13,7 @@ import type { Store } from './db.ts';
  * `planning`: the host's planning truth moved (a new base tip, or a settled re-read).
  * `run`: a build run started, moved on (phase, change state) or ended; `doctor` also carries a
  * console doctor run's phases.
+ * `settings`: a project's run settings were saved.
  */
 export const EVENT_FAMILIES = [
   'host',
@@ -22,6 +23,7 @@ export const EVENT_FAMILIES = [
   'needs-you',
   'doctor',
   'run',
+  'settings',
 ] as const;
 
 export type EventFamily = (typeof EVENT_FAMILIES)[number];

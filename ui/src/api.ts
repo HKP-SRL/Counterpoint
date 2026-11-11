@@ -110,6 +110,12 @@ export const queryKeys = {
   budget: (hostId: string, model: string, percent: number) =>
     ['host', hostId, 'run', 'budget', model, percent] as const,
   doctorStatus: ['doctor-status'] as const,
+  settings: (hostId: string) => ['host', hostId, 'settings'] as const,
+  /** Under the run key, so every `run` event refetches it. */
+  runReport: (hostId: string, runId: string) => ['host', hostId, 'run', 'report', runId] as const,
+  /** Under the run key, so every `run` event refetches it. */
+  preview: (hostId: string, changeId: string) =>
+    ['host', hostId, 'run', 'preview', changeId] as const,
 };
 
 export interface HostSummary {

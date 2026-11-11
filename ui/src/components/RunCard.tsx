@@ -6,10 +6,11 @@
 // decision: the run stops at its next clean point). Holding on a usage limit is described as
 // normal, never as a warning.
 // Otherwise: the last run's outcome (parked changes and stopped runs in the dark-cockpit colors)
-// and the launch form: the runway changes to build (all by default, in build order), an optional
-// stop time, the model and the context budget, shown as tokens once the model's window is known
-// ("40% of 1M = 400k tokens"). Start is a guarded POST; a refusal (doctor failing, a change that
-// left the runway) is shown in the daemon's own words.
+// and the launch form: the runway changes to build (all by default, in build order) and an
+// optional stop time. The model, effort and context budget come from the project's Settings page;
+// the form shows them in one line (budget as tokens once the model's window is known: "40% of 1M =
+// 400k tokens") with a link there. Start is a guarded POST; a refusal (doctor failing, a change
+// that left the runway) is shown in the daemon's own words.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -20,7 +21,6 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { Selector } from '@astryxdesign/core/Selector';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import { TimeInput } from '@astryxdesign/core/TimeInput';
@@ -33,25 +33,17 @@ import { queryKeys } from '../api';
 import {
   activityText,
   budgetQuery,
+  effortLabel,
   errorText,
   nextOccurrence,
   type RunAnswer,
   type RunChangeView,
   type RunView,
   runQuery,
+  settingsQuery,
   startRun,
   stopRun,
 } from '../run';
-
-const MODELS = [
-  { value: 'opus', label: 'Opus' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'haiku', label: 'Haiku' },
-];
-const BUDGETS = [20, 30, 40, 50, 60].map((n) => ({
-  value: String(n),
-  label: `${n}% of the context window`,
-}));
 
 type BadgeLook = { label: string; variant: 'neutral' | 'warning' | 'error' | 'purple' };
 
@@ -88,9 +80,11 @@ function ChangeRows({ hostId, run }: { hostId: string; run: RunView }) {
               </HStack>
             }
             description={
-              change.reason === null ? undefined : (
+              change.reason === null && change.notForMerge !== true ? undefined : (
                 <Text type="supporting" color="secondary">
-                  {change.reason}
+                  {change.notForMerge === true
+                    ? "Its branch edits planning files, so the PR stays a draft and isn't offered for merge."
+                    : change.reason}
                 </Text>
               )
             }
@@ -98,6 +92,9 @@ function ChangeRows({ hostId, run }: { hostId: string; run: RunView }) {
               <HStack gap={2} vAlign="center">
                 {change.prUrl !== null ? <Link href={change.prUrl}>Pull request</Link> : null}
                 {change.previewUrl !== null ? <Link href={change.previewUrl}>Preview</Link> : null}
+                {change.notForMerge === true ? (
+                  <Badge variant="warning" label="Not for merge" />
+                ) : null}
                 <Badge variant={look.variant} label={look.label} />
               </HStack>
             }
@@ -157,9 +154,14 @@ function InFlight({ hostId, run }: { hostId: string; run: RunView }) {
           <Text type="supporting" color="secondary" hasTabularNumbers>
             {[
               `${run.settings.model}`,
+              run.settings.effort === undefined
+                ? null
+                : `${effortLabel(run.settings.effort).toLowerCase()} effort`,
               run.budgetLabel ?? `${run.settings.budgetPercent}% of the context window per session`,
               run.stopAt === null ? 'no stop time' : `stops by ${clock(run.stopAt)}`,
-            ].join(' · ')}
+            ]
+              .filter((part) => part !== null)
+              .join(' · ')}
           </Text>
         </VStack>
         <Button
@@ -199,7 +201,8 @@ function LastRun({ hostId, run }: { hostId: string; run: RunView }) {
         description={
           <>
             {run.endDetail ?? 'It stopped on an error.'} Nothing is lost: each change's branch keeps
-            its work. <Link href={`/h/${hostId}/needs-you`}>Open Needs You</Link>
+            its work. <Link href={`/h/${hostId}/needs-you`}>Open Needs You</Link> ·{' '}
+            <Link href={`/h/${hostId}/runs/${run.id}`}>Read the run report</Link>
           </>
         }
       />
@@ -213,9 +216,12 @@ function LastRun({ hostId, run }: { hostId: string; run: RunView }) {
         : 'finished';
   return (
     <VStack gap={2}>
-      <Text type="supporting" color="secondary" hasTabularNumbers>
-        Last run {reason} {ended}: {counts}.
-      </Text>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Text type="supporting" color="secondary" hasTabularNumbers>
+          Last run {reason} {ended}: {counts}.
+        </Text>
+        <Link href={`/h/${hostId}/runs/${run.id}`}>Read the run report</Link>
+      </HStack>
       {parked > 0 ? (
         <Banner
           status="warning"
@@ -236,11 +242,13 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
   const ids = answer.runway.map((entry) => entry.changeId);
   const [chosen, setChosen] = useState<string[]>(ids);
   const [stopAt, setStopAt] = useState<string | undefined>(undefined);
-  const [model, setModel] = useState('opus');
-  const [budget, setBudget] = useState('40');
   const [starting, setStarting] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
-  const budgetAnswer = useQuery(budgetQuery(hostId, model, Number(budget)));
+  const settings = useQuery(settingsQuery(hostId)).data?.settings;
+  const budgetAnswer = useQuery({
+    ...budgetQuery(hostId, settings?.model ?? '', settings?.budgetPercent ?? 0),
+    enabled: settings !== undefined,
+  });
   const idsKey = ids.join(',');
 
   // A change that joins or leaves the runway joins or leaves the choice.
@@ -263,8 +271,6 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
       const result = await startRun(hostId, {
         changes: chosen.length === ids.length ? null : chosen,
         stopAt: stopAt === undefined ? null : nextOccurrence(stopAt),
-        model,
-        budgetPercent: Number(budget),
       });
       if (!result.ok) {
         setRefusal(errorText(result.body, "The run didn't start."));
@@ -277,9 +283,14 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
     }
   };
 
-  const budgetText =
-    budgetAnswer.data?.label ??
-    `${budget}% of the context window per session (shown in tokens once ${model}'s window is known)`;
+  const settingsText =
+    settings === undefined
+      ? 'Loading the settings…'
+      : [
+          settings.model,
+          `${effortLabel(settings.effort).toLowerCase()} effort`,
+          `${budgetAnswer.data?.label ?? `${settings.budgetPercent}% of the context window`} per session`,
+        ].join(' · ');
 
   return (
     <VStack gap={4}>
@@ -309,12 +320,13 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
           onChange={(value) => setStopAt(value ?? undefined)}
           hasClear
         />
-        <Selector label="Model" options={MODELS} value={model} onChange={setModel} />
-        <Selector label="Context budget" options={BUDGETS} value={budget} onChange={setBudget} />
       </HStack>
-      <Text type="supporting" color="secondary" hasTabularNumbers>
-        {`Budget: ${budgetText}. At the budget a session finishes its task, writes a handoff and a fresh one continues.`}
-      </Text>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Text type="supporting" color="secondary" hasTabularNumbers>
+          {settingsText}
+        </Text>
+        <Link href={`/h/${hostId}/settings`}>Change in Settings</Link>
+      </HStack>
       <HStack gap={3} vAlign="center">
         <Button
           label="Start the run"

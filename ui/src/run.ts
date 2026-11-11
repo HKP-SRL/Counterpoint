@@ -14,6 +14,8 @@ export interface RunChangeView {
   branch: string | null;
   prUrl: string | null;
   previewUrl: string | null;
+  /** The branch edits planning files: its PR is a draft, not offered for merge. */
+  notForMerge?: boolean;
 }
 
 export interface RunActivity {
@@ -38,7 +40,13 @@ export interface RunView {
   id: string;
   hostId: string;
   state: 'running' | 'stopping' | 'ended';
-  settings: { model: string; budgetPercent: number; changes: string[] | null };
+  settings: {
+    model: string;
+    /** Missing on runs recorded before effort was a setting. */
+    effort?: string;
+    budgetPercent: number;
+    changes: string[] | null;
+  };
   stopAt: number | null;
   startedAt: number;
   endedAt: number | null;
@@ -129,15 +137,81 @@ export function errorText(body: Record<string, unknown>, fallback: string): stri
   return typeof body.error === 'string' && body.error !== '' ? body.error : fallback;
 }
 
+/** A run uses the project's saved settings; starting it only picks the changes and a stop time. */
 export const startRun = (
   hostId: string,
-  settings: {
-    changes: string[] | null;
-    stopAt: string | null;
-    model: string;
-    budgetPercent: number;
-  },
-) => apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/run`, settings);
+  request: { changes: string[] | null; stopAt: string | null },
+) => apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/run`, request);
+
+/** A project's run settings (build-runs: Run settings page). */
+export interface HostSettings {
+  model: string;
+  effort: string;
+  budgetPercent: number;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  sessionsPerAttempt: number;
+}
+
+export interface SettingsAnswer {
+  hostId: string;
+  settings: HostSettings;
+  /** False while the defaults apply (nothing saved yet). */
+  saved: boolean;
+  defaults: HostSettings;
+  effortLevels: string[];
+}
+
+function isHostSettings(value: unknown): value is HostSettings {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.model === 'string' &&
+    typeof v.effort === 'string' &&
+    ['budgetPercent', 'maxTurns', 'maxBudgetUsd', 'sessionsPerAttempt'].every(
+      (key) => typeof v[key] === 'number',
+    )
+  );
+}
+
+export const settingsQuery = (hostId: string) =>
+  queryOptions({
+    queryKey: queryKeys.settings(hostId),
+    queryFn: async ({ signal }): Promise<SettingsAnswer> => {
+      const body = (await apiGet(
+        `/api/hosts/${encodeURIComponent(hostId)}/settings`,
+        signal,
+      )) as Record<string, unknown>;
+      if (!isHostSettings(body.settings) || !isHostSettings(body.defaults)) {
+        throw new Error('The settings answer is not valid.');
+      }
+      return {
+        hostId,
+        settings: body.settings,
+        saved: body.saved === true,
+        defaults: body.defaults,
+        effortLevels: Array.isArray(body.effortLevels)
+          ? body.effortLevels.filter((level): level is string => typeof level === 'string')
+          : [],
+      };
+    },
+  });
+
+export const saveSettings = (hostId: string, settings: HostSettings) =>
+  apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/settings`, settings);
+
+const EFFORT_WORDS: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+};
+
+/** `xhigh` → `Extra high`; unknown levels as given. */
+export function effortLabel(level: string): string {
+  return EFFORT_WORDS[level] ?? level;
+}
 
 export const stopRun = (hostId: string) =>
   apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/run/stop`, {});
@@ -186,3 +260,112 @@ export function activityText(now: RunActivity): string {
   if (now.attempt !== undefined && now.attempt > 1) parts.push(`attempt ${now.attempt}`);
   return parts.join(' · ');
 }
+
+/** A green change's local preview (on demand; hosts without preview deploys). */
+export interface PreviewStatus {
+  state: 'stopped' | 'starting' | 'running' | 'exited';
+  url: string | null;
+  port: number | null;
+  startedAt: number | null;
+  reason: string | null;
+  tail: string;
+}
+
+const PREVIEW_STATES = new Set(['stopped', 'starting', 'running', 'exited']);
+
+export const previewQuery = (hostId: string, changeId: string) =>
+  queryOptions({
+    queryKey: queryKeys.preview(hostId, changeId),
+    queryFn: async ({ signal }): Promise<PreviewStatus & { hostId: string; changeId: string }> => {
+      const body = (await apiGet(
+        `/api/hosts/${encodeURIComponent(hostId)}/previews/${encodeURIComponent(changeId)}`,
+        signal,
+      )) as { preview?: Record<string, unknown> };
+      const p = body.preview ?? {};
+      return {
+        hostId,
+        changeId,
+        state: (PREVIEW_STATES.has(String(p.state))
+          ? p.state
+          : 'stopped') as PreviewStatus['state'],
+        url: typeof p.url === 'string' && p.url.startsWith('http://127.0.0.1:') ? p.url : null,
+        port: typeof p.port === 'number' ? p.port : null,
+        startedAt: typeof p.startedAt === 'number' ? p.startedAt : null,
+        reason: typeof p.reason === 'string' ? p.reason : null,
+        tail: typeof p.tail === 'string' ? p.tail : '',
+      };
+    },
+  });
+
+export const startPreview = (hostId: string, changeId: string) =>
+  apiPostAnswer(
+    `/api/hosts/${encodeURIComponent(hostId)}/previews/${encodeURIComponent(changeId)}/start`,
+    {},
+  );
+
+export const stopPreview = (hostId: string, changeId: string) =>
+  apiPostAnswer(
+    `/api/hosts/${encodeURIComponent(hostId)}/previews/${encodeURIComponent(changeId)}/stop`,
+    {},
+  );
+
+/** The run report (run-report: Report at the end of every run), as the daemon builds it. */
+export interface ReportChange {
+  change: string;
+  title: string;
+  state: RunChangeState;
+  reason: string | null;
+  branch: string | null;
+  prUrl: string | null;
+  previewUrl: string | null;
+  attempts: number;
+  lastFailure: {
+    gate: string;
+    attempt: number;
+    reason: string | null;
+    exitCode: number | null;
+    tail: string | null;
+    logPath: string;
+  } | null;
+}
+
+export interface RunReport {
+  runId: string;
+  hostId: string;
+  startedAt: number;
+  endedAt: number | null;
+  endReason: RunView['endReason'];
+  endDetail: string | null;
+  settings: { model: string | null; effort: string | null; budgetPercent: number | null };
+  ready: ReportChange[];
+  notForMerge: ReportChange[];
+  parked: ReportChange[];
+  notBuilt: ReportChange[];
+  waiting: string[];
+  assumptions: { change: string; text: string }[];
+  flags: {
+    change: string;
+    flags: Array<{
+      kind: string;
+      path?: string;
+      category?: string;
+      status?: string;
+      detail?: string;
+    }>;
+  }[];
+}
+
+export const runReportQuery = (hostId: string, runId: string) =>
+  queryOptions({
+    queryKey: queryKeys.runReport(hostId, runId),
+    queryFn: async ({ signal }): Promise<RunReport> => {
+      const body = (await apiGet(
+        `/api/hosts/${encodeURIComponent(hostId)}/runs/${encodeURIComponent(runId)}/report`,
+        signal,
+      )) as { report?: RunReport | null };
+      if (body.report === undefined || body.report === null || !Array.isArray(body.report.ready)) {
+        throw new Error('The report answer is not valid.');
+      }
+      return body.report;
+    },
+  });

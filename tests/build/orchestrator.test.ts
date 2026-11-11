@@ -12,6 +12,7 @@ import type {
 } from '../../src/build/builder-session.ts';
 import type { GateRound, runGateRound } from '../../src/build/gates.ts';
 import { type DoctorGate, Governor, type SessionOutcome } from '../../src/build/governor.ts';
+import { DEFAULT_HOST_SETTINGS, writeHostSettings } from '../../src/build/host-settings.ts';
 import {
   Orchestrator,
   type OrchestratorOptions,
@@ -309,6 +310,140 @@ describe('a run', () => {
       'https://github.com/x/y/pull/2',
     ]);
     expect(view?.budgetLabel).toBe('40% of 1M = 400k tokens');
+  });
+
+  it("builds with the project's saved settings, recorded with the run; the CLI may override effort", async () => {
+    const ctx = await host();
+    writeHostSettings(ctx.db, 'cena', {
+      model: 'sonnet',
+      effort: 'max',
+      budgetPercent: 30,
+      maxTurns: 300,
+      maxBudgetUsd: 30,
+      sessionsPerAttempt: 2,
+    });
+    const inputs: Array<Parameters<typeof startBuilderSession>[0]> = [];
+    // Every session hands off at the budget, so only the sessions-per-attempt limit ends the attempt.
+    const sessions = fakeSessions(() => ({ reason: 'budget-handoff' }));
+    const g = gates(['pass']);
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: async (input) => {
+        inputs.push(input);
+        return sessions.start(input);
+      },
+      runGateRound: g.round,
+    });
+    const started = await o.start('cena', { changes: ['a-thing'], stopAt: null });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toMatchObject({
+      model: 'sonnet',
+      effort: 'max',
+      budgetPercent: 30,
+      maxTurns: 300,
+      maxBudgetUsd: 30,
+    });
+    expect(g.calls).toEqual([1]);
+    expect(o.view('cena')?.settings).toMatchObject({ model: 'sonnet', effort: 'max' });
+
+    // A setting saved later applies to the next run only; a CLI flag overrides for one run.
+    writeHostSettings(ctx.db, 'cena', { ...DEFAULT_HOST_SETTINGS, effort: 'low' });
+    expect(getRun(ctx.db, started.runId)?.settings).toMatchObject({ effort: 'max' });
+    const next = await o.start('cena', { changes: ['a-thing'], stopAt: null, effort: 'medium' });
+    if (!next.ok) throw new Error(next.error);
+    await o.idle();
+    expect(inputs.at(-1)).toMatchObject({ model: 'opus', effort: 'medium', maxTurns: 400 });
+  });
+
+  it('parks a green change whose delivery fails, with the reason, and goes on with the next', async () => {
+    const ctx = await host();
+    const hosts: string[] = [];
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates(['pass', 'pass']).round,
+      deliver: async (c) => {
+        hosts.push(c.host.root);
+        if (c.change.id === 'a-thing')
+          throw new Error(
+            'Pushing cp/a-thing failed: git push failed (exit 128): Permission denied (publickey)',
+          );
+        return { prUrl: 'https://github.com/x/y/pull/9', previewUrl: null };
+      },
+    });
+    const started = await o.start('cena', { changes: null, stopAt: null });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(hosts).toEqual([ctx.repo.root, ctx.repo.root]);
+    const [a, b] = listRunChanges(ctx.db, started.runId);
+    expect(a).toMatchObject({ change: 'a-thing', state: 'parked', prUrl: null });
+    expect(a?.reason).toBe(
+      'Every gate passed, but delivery failed: Pushing cp/a-thing failed: git push failed (exit 128): Permission denied (publickey). The branch cp/a-thing keeps the work.',
+    );
+    expect(b).toMatchObject({
+      change: 'b-thing',
+      state: 'green',
+      prUrl: 'https://github.com/x/y/pull/9',
+    });
+  });
+
+  it("records the host's preview deploy found in the background, before the run ends", async () => {
+    const ctx = await host();
+    const { o, events } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates(['pass']).round,
+      deliver: async () => ({
+        prUrl: 'https://github.com/x/y/pull/1',
+        previewUrl: null,
+        previewLater: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return 'https://cena-a.vercel.app/';
+        },
+      }),
+    });
+    const started = await o.start('cena', { changes: ['a-thing'], stopAt: null });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({
+      state: 'green',
+      previewUrl: 'https://cena-a.vercel.app/',
+    });
+    const order = events.map((e) => (e.preview === true ? 'preview' : e.state)).filter(Boolean);
+    expect(order.indexOf('preview')).toBeLessThan(order.indexOf('ended'));
+  });
+
+  it('ends a preview lookup at once when the owner stops the run', async () => {
+    const ctx = await host();
+    let aborted = false;
+    let release: () => void = () => {};
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions((n) => (n === 2 ? { wait: true } : {})).start,
+      runGateRound: gates(['pass', 'pass']).round,
+      deliver: async () => ({
+        prUrl: 'https://github.com/x/y/pull/1',
+        previewUrl: null,
+        previewLater: (signal) =>
+          new Promise((resolve) => {
+            release = () => resolve(null);
+            signal.addEventListener('abort', () => {
+              aborted = true;
+              resolve(null);
+            });
+          }),
+      }),
+    });
+    const started = await o.start('cena', { changes: null, stopAt: null });
+    if (!started.ok) throw new Error(started.error);
+    // b-thing's session waits; a-thing is green with its lookup pending.
+    for (let i = 0; i < 100 && listRunChanges(ctx.db, started.runId)[0]?.state !== 'green'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    o.stop('cena');
+    await o.idle();
+    release();
+    expect(aborted).toBe(true);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({ state: 'ended', endReason: 'stopped' });
   });
 
   it('gives a failing gate back to the next session, parks at the attempt limit, and moves on', async () => {

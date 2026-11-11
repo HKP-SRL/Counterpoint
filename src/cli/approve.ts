@@ -31,6 +31,7 @@ import { createGitFileReader } from '../core/git/reader.ts';
 import { cleanGitEnv, gitBinary } from '../core/git/run.ts';
 import { homePaths } from '../core/host/home.ts';
 import { assertChangeId, assertHostId, InvalidIdError } from '../core/ids.ts';
+import { withPlanningWriteLock } from '../core/planning/writes.ts';
 import { approvalState, computeRunway } from '../core/runway/runway.ts';
 import {
   getHost,
@@ -301,6 +302,7 @@ export async function approveCommand(options: ApproveCommandOptions): Promise<nu
       ident,
       sign,
       expectedTip: prepared.tip,
+      serialize: (land) => withPlanningWriteLock(home, land),
     });
   } catch (error) {
     if (error instanceof SigningFailed) {

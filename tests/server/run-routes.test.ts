@@ -4,6 +4,7 @@
 // orchestrator is a recording stand-in here: these tests are about the HTTP surface and its guards.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Governor } from '../../src/build/governor.ts';
+import { DEFAULT_HOST_SETTINGS } from '../../src/build/host-settings.ts';
 import type { Orchestrator, RunView } from '../../src/build/orchestrator.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
@@ -11,7 +12,13 @@ import { readAcceptedRisks, writeAcceptedRisk } from '../../src/core/security/ac
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
-import { insertRun, insertRunChange, parkRunChange } from '../../src/core/store/runs.ts';
+import {
+  endRun,
+  insertRun,
+  insertRunChange,
+  parkRunChange,
+  updateRunChange,
+} from '../../src/core/store/runs.ts';
 import { createApp } from '../../src/server/app.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
 import { createControlApp, hashToken } from '../../src/server/control.ts';
@@ -33,6 +40,31 @@ let cookie = '';
 let uiDir = '';
 let stopped = 0;
 let withdrawnEvents = 0;
+const settingsEvents: string[] = [];
+const previewCalls: string[] = [];
+const previewStatus = (state: string) => ({
+  hostId: 'x',
+  change: 'ready-thing',
+  state,
+  url: state === 'starting' ? 'http://127.0.0.1:4174/' : null,
+  port: state === 'starting' ? 4174 : null,
+  startedAt: null,
+  reason: null,
+  tail: '',
+});
+const previews = {
+  status: () => previewStatus('stopped'),
+  start: async (_host: string, change: string) => {
+    previewCalls.push(`start ${change}`);
+    return change === 'never-built'
+      ? { ok: false as const, status: 404 as const, error: 'never-built has not been built yet.' }
+      : { ok: true as const, status: previewStatus('starting') };
+  },
+  stop: (_host: string, change: string) => {
+    previewCalls.push(`stop ${change}`);
+    return true;
+  },
+} as never;
 const started: Array<{ hostId: string; input: unknown }> = [];
 const stops: Array<string | undefined> = [];
 let doctor: DoctorService;
@@ -77,6 +109,10 @@ function app() {
       onRiskWithdrawn: () => {
         withdrawnEvents += 1;
       },
+      onSettingsChanged: (id) => {
+        settingsEvents.push(id);
+      },
+      previews,
     },
   });
 }
@@ -162,19 +198,12 @@ describe('runs from the console', () => {
     const response = await request('POST', `/api/hosts/${hostId}/run`, {
       changes: ['ready-thing'],
       stopAt: '2026-11-12T06:00:00.000Z',
-      model: 'opus',
-      budgetPercent: 40,
     });
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ runId: 'r1' });
     expect(started.at(-1)).toEqual({
       hostId,
-      input: {
-        changes: ['ready-thing'],
-        stopAt: Date.parse('2026-11-12T06:00:00.000Z'),
-        model: 'opus',
-        budgetPercent: 40,
-      },
+      input: { changes: ['ready-thing'], stopAt: Date.parse('2026-11-12T06:00:00.000Z') },
     });
   });
 
@@ -224,6 +253,139 @@ describe('runs from the console', () => {
         reason: 'Gate "unit" failed 3 times (last: exit code 1).',
       }),
     ]);
+  });
+});
+
+describe('run settings from the console', () => {
+  it('answers the defaults until the owner saves', async () => {
+    const response = await request('GET', `/api/hosts/${hostId}/settings`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      settings: DEFAULT_HOST_SETTINGS,
+      saved: false,
+      defaults: DEFAULT_HOST_SETTINGS,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    });
+  });
+
+  it('saves with a guarded POST and tells open consoles', async () => {
+    const next = { ...DEFAULT_HOST_SETTINGS, model: 'sonnet', effort: 'xhigh', maxTurns: 300 };
+    const response = await request('POST', `/api/hosts/${hostId}/settings`, next);
+    expect(response.status).toBe(200);
+    expect(settingsEvents.at(-1)).toBe(hostId);
+    const read = (await (await request('GET', `/api/hosts/${hostId}/settings`)).json()) as {
+      settings: unknown;
+      saved: boolean;
+    };
+    expect(read).toMatchObject({ settings: next, saved: true });
+  });
+
+  it('refuses invalid settings, naming the field, and keeps what was saved', async () => {
+    const before = (await (await request('GET', `/api/hosts/${hostId}/settings`)).json()) as {
+      settings: unknown;
+    };
+    const bad = await request('POST', `/api/hosts/${hostId}/settings`, {
+      ...DEFAULT_HOST_SETTINGS,
+      effort: 'huge',
+    });
+    expect(bad.status).toBe(422);
+    expect(((await bad.json()) as { error: string }).error).toMatch(/effort/);
+    const extra = await request('POST', `/api/hosts/${hostId}/settings`, {
+      ...DEFAULT_HOST_SETTINGS,
+      allowWrite: ['/'],
+    });
+    expect(extra.status).toBe(422);
+    const after = (await (await request('GET', `/api/hosts/${hostId}/settings`)).json()) as {
+      settings: unknown;
+    };
+    expect(after.settings).toEqual(before.settings);
+  });
+
+  it('refuses a save without the Origin or the session', async () => {
+    const events = settingsEvents.length;
+    const noOrigin = await app().request(`http://${HOST}/api/hosts/${hostId}/settings`, {
+      method: 'POST',
+      headers: { host: HOST, cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(DEFAULT_HOST_SETTINGS),
+    });
+    expect(noOrigin.status).toBe(403);
+    const noSession = await app().request(`http://${HOST}/api/hosts/${hostId}/settings`, {
+      method: 'POST',
+      headers: { host: HOST, origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify(DEFAULT_HOST_SETTINGS),
+    });
+    expect(noSession.status).toBe(401);
+    expect(settingsEvents.length).toBe(events);
+  });
+
+  it('answers 404 for an unknown project', async () => {
+    expect((await request('GET', '/api/hosts/nope/settings')).status).toBe(404);
+  });
+});
+
+describe('the run report in the console', () => {
+  it("builds the host's run report from the store, and nobody else's", async () => {
+    // Earlier tests leave a run open; one active run per machine.
+    db.prepare(
+      "UPDATE runs SET state = 'ended', ended_at = 1, end_reason = 'stopped' WHERE state <> 'ended'",
+    ).run();
+    insertRun(db, { id: 'run-report-1', hostId, settings: { model: 'opus' }, stopAt: null });
+    const id = insertRunChange(db, { runId: 'run-report-1', change: 'ready-thing', position: 0 });
+    updateRunChange(db, id, { state: 'green', prUrl: 'https://github.com/x/y/pull/4' });
+    endRun(db, 'run-report-1', { reason: 'finished' });
+    const response = await request('GET', `/api/hosts/${hostId}/runs/run-report-1/report`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      report: { ready: Array<{ change: string; prUrl: string }> };
+    };
+    expect(body.report.ready).toEqual([
+      expect.objectContaining({ change: 'ready-thing', prUrl: 'https://github.com/x/y/pull/4' }),
+    ]);
+    expect((await request('GET', `/api/hosts/${hostId}/runs/no-such-run/report`)).status).toBe(404);
+    expect((await request('GET', `/api/hosts/${hostId}/runs/..%2Fx/report`)).status).toBe(404);
+    expect((await request('GET', '/api/hosts/nope/runs/run-report-1/report')).status).toBe(404);
+  });
+});
+
+describe('local previews from the console', () => {
+  it("shows, starts and stops a change's preview with guarded POSTs", async () => {
+    const shown = await request('GET', `/api/hosts/${hostId}/previews/ready-thing`);
+    expect(await shown.json()).toMatchObject({ preview: { state: 'stopped' } });
+    const started = await request('POST', `/api/hosts/${hostId}/previews/ready-thing/start`, {});
+    expect(started.status).toBe(202);
+    expect(await started.json()).toMatchObject({ preview: { state: 'starting', port: 4174 } });
+    expect(
+      (await request('POST', `/api/hosts/${hostId}/previews/ready-thing/stop`, {})).status,
+    ).toBe(200);
+    expect(previewCalls.slice(-2)).toEqual(['start ready-thing', 'stop ready-thing']);
+  });
+
+  it('passes a refusal through, and refuses bad names and missing credentials', async () => {
+    const never = await request('POST', `/api/hosts/${hostId}/previews/never-built/start`, {});
+    expect(never.status).toBe(404);
+    expect(await never.json()).toEqual({ error: 'never-built has not been built yet.' });
+    expect((await request('GET', `/api/hosts/${hostId}/previews/Not_A_Change`)).status).toBe(404);
+    const before = previewCalls.length;
+    const noOrigin = await app().request(
+      `http://${HOST}/api/hosts/${hostId}/previews/ready-thing/start`,
+      {
+        method: 'POST',
+        headers: { host: HOST, cookie, 'content-type': 'application/json' },
+        body: '{}',
+      },
+    );
+    expect(noOrigin.status).toBe(403);
+    const noSession = await app().request(
+      `http://${HOST}/api/hosts/${hostId}/previews/ready-thing/start`,
+      {
+        method: 'POST',
+        headers: { host: HOST, origin: ORIGIN, 'content-type': 'application/json' },
+        body: '{}',
+      },
+    );
+    expect(noSession.status).toBe(401);
+    expect(previewCalls.length).toBe(before);
   });
 });
 
@@ -295,6 +457,9 @@ describe('runs over the control socket', () => {
       model: 'opus',
       budgetPercent: 40,
     });
+    // Without flags the project's saved settings apply: nothing is overridden.
+    expect((await send('POST', '/control/run', { hostId, effort: 'max' })).status).toBe(202);
+    expect(started.at(-1)?.input).toEqual({ changes: null, stopAt: null, effort: 'max' });
     expect((await send('POST', '/control/run/stop', { hostId })).status).toBe(202);
     expect(
       ((await (await send('GET', `/control/run?hostId=${hostId}`)).json()) as { run: unknown }).run,

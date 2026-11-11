@@ -1,13 +1,20 @@
 // `counterpoint run`, `run stop`, `run status` (build-runs: Start and stop a run from the console;
 // the CLI offers the same through the control socket, whose token agents cannot read).
 //
-//   counterpoint run [host] --model <m> [--budget 40] [--until HH:MM] [--changes a,b]
+//   counterpoint run [host] [--model <m>] [--effort <level>] [--budget <percent>] [--until HH:MM]
+//                    [--changes a,b]
+// Model, effort and budget default to the project's saved settings (the console's Settings page);
+// a flag overrides them for this run only.
 //   counterpoint run stop [host]
 //   counterpoint run status [host]
 //
 // The daemon decides everything: it refuses a run while doctor fails or a chosen change is not on
 // the runway, and it builds; the CLI only asks and prints.
+import { EFFORT_LEVELS } from '../agent/claude-argv.ts';
+import { readSmallFile } from '../build/deliver.ts';
 import type { RunView } from '../build/orchestrator.ts';
+import { openStoreReadOnly } from '../core/store/db.ts';
+import { latestReportedRun } from '../core/store/runs.ts';
 import { controlRequest, DaemonUnreachableError } from './control-client.ts';
 import { resolveHostForCommand } from './doctor.ts';
 import { printable } from './trust.ts';
@@ -59,7 +66,7 @@ async function send(
 export async function runStartCommand(
   home: string,
   hostArg: string | undefined,
-  flags: { model?: string; budget?: string; until?: string; changes?: string },
+  flags: { model?: string; effort?: string; budget?: string; until?: string; changes?: string },
   options: RunCommandOptions = {},
 ): Promise<number> {
   const err = options.err ?? console.error;
@@ -69,12 +76,16 @@ export async function runStartCommand(
     err(found.message);
     return found.code;
   }
-  if (flags.model === undefined || flags.model === '') {
-    err('Name the model: counterpoint run --model <model> (for example opus).');
+  if (flags.model === '') {
+    err('Name the model: --model <model> (for example opus), or leave the flag out.');
     return 2;
   }
-  const budget = Number(flags.budget ?? '40');
-  if (!Number.isInteger(budget) || budget < 10 || budget > 90) {
+  if (flags.effort !== undefined && !(EFFORT_LEVELS as readonly string[]).includes(flags.effort)) {
+    err(`The effort is one of ${EFFORT_LEVELS.join(', ')}.`);
+    return 2;
+  }
+  const budget = flags.budget === undefined ? undefined : Number(flags.budget);
+  if (budget !== undefined && (!Number.isInteger(budget) || budget < 10 || budget > 90)) {
     err('The budget is a whole percentage of the context window, from 10 to 90.');
     return 2;
   }
@@ -99,7 +110,14 @@ export async function runStartCommand(
     home,
     'POST',
     '/control/run',
-    { hostId: found.host.id, changes, until, model: flags.model, budgetPercent: budget },
+    {
+      hostId: found.host.id,
+      changes,
+      until,
+      ...(flags.model === undefined ? {} : { model: flags.model }),
+      ...(flags.effort === undefined ? {} : { effort: flags.effort }),
+      ...(budget === undefined ? {} : { budgetPercent: budget }),
+    },
     { timeoutMs: START_TIMEOUT_MS },
   );
   if (response === null) return 1;
@@ -147,7 +165,7 @@ export function formatRunView(run: RunView): string[] {
   const lines = [
     `Run ${run.id}: ${run.state}${run.endReason === null ? '' : ` (${run.endReason})`}`,
     `  started ${time(run.startedAt)}${run.stopAt === null ? '' : `, stops by ${time(run.stopAt)}`}${run.endedAt === null ? '' : `, ended ${time(run.endedAt)}`}`,
-    `  model ${printable(run.settings.model)}, budget ${run.budgetLabel ?? `${run.settings.budgetPercent}% of the window`}`,
+    `  model ${printable(run.settings.model)}, effort ${printable(run.settings.effort)}, budget ${run.budgetLabel ?? `${run.settings.budgetPercent}% of the window`}`,
   ];
   if (run.endDetail !== null) lines.push(`  ${printable(run.endDetail)}`);
   if (run.hold !== null) {
@@ -205,5 +223,42 @@ export async function runStatusCommand(
     return 0;
   }
   for (const line of formatRunView(run)) out(line);
+  return 0;
+}
+
+/**
+ * `counterpoint run report [host]`: prints the latest run's report (run-report: Report at the end
+ * of every run). It reads the store read-only and the report file, so it works with Counterpoint
+ * stopped too.
+ */
+export function runReportCommand(
+  home: string,
+  hostArg: string | undefined,
+  options: RunCommandOptions = {},
+): number {
+  const err = options.err ?? console.error;
+  const out = options.out ?? console.log;
+  const found = resolveHostForCommand(home, hostArg, options.cwd ?? process.cwd(), 'run report');
+  if (!found.ok) {
+    err(found.message);
+    return found.code;
+  }
+  const db = openStoreReadOnly(home);
+  let path: string | null;
+  try {
+    path = latestReportedRun(db, found.host.id)?.reportPath ?? null;
+  } finally {
+    db.close();
+  }
+  if (path === null) {
+    out(`No run report yet for ${found.host.id}.`);
+    return 0;
+  }
+  const text = readSmallFile(path);
+  if (text === null) {
+    err(`The report at ${path} could not be read.`);
+    return 1;
+  }
+  for (const line of text.trimEnd().split('\n')) out(printable(line));
   return 0;
 }

@@ -37,7 +37,7 @@ The first two groups come from the trusted-shell review and must be done before 
 
 - [x] 4.1 Design the build lane in this file's design.md from the spike results
 - [x] 4.2 Detail the build-lane tasks here (worktrees, sessions and handoff, governor, gates, PRs, planning-write queue, crash recovery, run report)
-- [ ] 4.3 Owner: approve a real Cena change for the first overnight run
+- [x] 4.3 Owner: approve a real Cena change for the first overnight run
 
 ## 5. Foundations
 
@@ -90,16 +90,17 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 10.7 Console Run doctor on the Trust page: guarded POST, one probe at a time, progress over SSE, report replaced when done
 - [x] 10.8 Console: withdraw an accepted risk on the Trust page (accepting stays terminal-only)
 - [x] 10.9 Console: Stop Counterpoint (a run stops at its next clean point first)
+- [x] 10.10 Console Settings page per project: model, effort, context budget, per-session limits; stored by the daemon; runs use them (CLI may override model, effort, budget)
 
 ## 11. Pull requests and report
 
-- [ ] 11.1 Push helper (owner credentials for that call only) and `gh pr create` with the generated body
-- [ ] 11.2 Preview link: host deploy from the PR checks, else a sandboxed loopback preview
-- [ ] 11.3 Planning-write queue (serialized) and the planning-file flag that keeps a PR from being offered for merge
-- [ ] 11.4 Run report at every run end: file, store, shown in the console, `counterpoint run report`
+- [x] 11.1 Push helper (owner credentials for that call only) and `gh pr create` with the generated body
+- [x] 11.2 Preview link: host deploy from the PR checks, else a sandboxed loopback preview
+- [x] 11.3 Planning-write queue (serialized) and the planning-file flag that keeps a PR from being offered for merge
+- [x] 11.4 Run report at every run end: file, store, shown in the console, `counterpoint run report`
 
 ## 12. First run on Cena
 
-- [ ] 12.1 Draft Cena's `.counterpoint/config.yaml` (gates, Supabase service, ports) on a branch
+- [x] 12.1 Draft Cena's `.counterpoint/config.yaml` (gates, Supabase service, ports) on a branch
 - [ ] 12.2 Owner: review and commit Cena's `.counterpoint/config.yaml`
 - [ ] 12.3 Owner: start the first overnight run from the console and read its report there

@@ -1,7 +1,7 @@
 // The console chrome (local-console: Host-scoped navigation): TopNav with the wordmark, host
 // switcher, live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves
 // the SideNav into its mobile drawer. Items: Mission, Changes, Needs You (with its count badge),
-// Trust. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
+// Trust, Settings. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
 // owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AlertDialog } from '@astryxdesign/core/AlertDialog';
@@ -204,6 +204,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const needsYouPath = `${missionPath}/needs-you`;
   const onNeedsYou = pathname === needsYouPath || pathname.startsWith(`${needsYouPath}/`);
   const trustPath = `${missionPath}/trust`;
+  const settingsPath = `${missionPath}/settings`;
   const queryClient = useQueryClient();
   useLiveEvents(queryClient);
   const connected = useConnectionState() === 'connected';
@@ -266,6 +267,11 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
             endContent={<NeedsYouCount count={needsYouCount} />}
           />
           <SideNavItem label="Trust" href={trustPath} isSelected={pathname === trustPath} />
+          <SideNavItem
+            label="Settings"
+            href={settingsPath}
+            isSelected={pathname === settingsPath}
+          />
         </SideNav>
       }
     >

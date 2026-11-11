@@ -39,7 +39,7 @@ import type { ChangeFacts } from '../core/framework/port.ts';
 import { findChange } from '../core/framework/port.ts';
 import { runGit } from '../core/git/run.ts';
 import { hostDir } from '../core/host/home.ts';
-import { HostConfigError, readHostConfig } from '../core/host/host-config.ts';
+import { type HostConfig, HostConfigError, readHostConfig } from '../core/host/host-config.ts';
 import { isChangeId } from '../core/ids.ts';
 import type { ApprovalState, Runway } from '../core/runway/runway.ts';
 import { buildAgentSandboxSettings } from '../core/security/sandbox-settings.ts';
@@ -82,8 +82,9 @@ import {
   MAX_TRANSIENT_RETRIES,
   transientBackoffMs,
 } from './governor.ts';
+import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
 import { builderPrompt, type GateFailure } from './prompt.ts';
-import { checkProtectedPaths } from './protected-paths.ts';
+import { blocksMerge, checkProtectedPaths } from './protected-paths.ts';
 import { createServiceSession } from './services.ts';
 import { commitSession } from './session-commit.ts';
 import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
@@ -93,28 +94,35 @@ import { prepareWorktree, releaseWorktree, WorktreeRefusal, worktreePathFor } fr
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 /** The least time between two context-fill events of one session. */
 const FILL_EVENT_MS = 20_000;
-/** Builder sessions per attempt before the gates run anyway. */
-export const MAX_SESSIONS_PER_ATTEMPT = 8;
 /** How far ahead a stop time may be. */
 const MAX_STOP_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,99}$/;
-
+/**
+ * A start request: the changes and the stop time. Everything else comes from the project's saved
+ * settings (host-settings.ts); the CLI may override the model, effort and budget for one run.
+ */
 export const RunSettings = z.strictObject({
   /** The runway changes to build; null for every change on the runway. */
   changes: z.array(z.string().refine(isChangeId, 'Not a change name.')).min(1).max(100).nullable(),
   /** Epoch ms; no new session starts after it. Null: no stop time. */
   stopAt: z.number().int().positive().nullable(),
-  model: z.string().regex(MODEL_RE, 'Not a model name.'),
-  /** The context budget as a percentage of the model's window. */
-  budgetPercent: z.number().int().min(10).max(90),
+  model: HostSettings.shape.model.optional(),
+  effort: HostSettings.shape.effort.optional(),
+  budgetPercent: HostSettings.shape.budgetPercent.optional(),
 });
 export type RunSettings = z.infer<typeof RunSettings>;
 
-/** What the run records with its settings. */
-interface StoredSettings extends RunSettings {
+/** What the run records: the request, the project settings in force at its start, and more. */
+interface StoredSettings extends HostSettings {
+  changes: string[] | null;
+  stopAt: number | null;
   claudeVersion: string | null;
   /** The model's context window the run measures its budget against, once known. */
   windowTokens?: number;
+}
+
+/** A run's recorded settings; fields added since an older run was recorded get the defaults. */
+function storedSettings(raw: unknown): StoredSettings {
+  return withDefaults(raw as Partial<StoredSettings>) as StoredSettings;
 }
 
 export type StartResult =
@@ -138,7 +146,12 @@ export interface RunView {
     Pick<
       RunChangeRow,
       'change' | 'state' | 'reason' | 'attempts' | 'branch' | 'flags' | 'startedAt' | 'endedAt'
-    > & { prUrl: string | null; previewUrl: string | null }
+    > & {
+      prUrl: string | null;
+      previewUrl: string | null;
+      /** The branch edits the host's planning files: its PR is not offered for merge. */
+      notForMerge: boolean;
+    }
   >;
   /** What the run is doing right now (only while it runs). */
   now: RunActivity | null;
@@ -182,6 +195,9 @@ export interface RunHost {
 export interface DeliverContext {
   db: Store;
   hostId: string;
+  host: HostContext;
+  /** The host config at the approved base (gates, preview). */
+  config: HostConfig;
   runId: string;
   runChangeId: number;
   change: ChangeFacts;
@@ -212,10 +228,19 @@ export interface OrchestratorOptions {
   consolePort: number;
   /** Tells open consoles something about the run changed (ids only). */
   publish: (hostId: string, payload: Record<string, unknown>) => void;
-  /** Pushes, opens the PR and finds the preview (group 11). Default: none, the change is green. */
-  deliver?: (
-    context: DeliverContext,
-  ) => Promise<{ prUrl: string | null; previewUrl: string | null; flags?: RunChangeFlag[] }>;
+  /**
+   * Pushes, opens the PR and finds the preview (deliver.ts). Default: none, the change is green.
+   * A throw parks the change with the error as its reason; the branch keeps the work.
+   */
+  deliver?: (context: DeliverContext) => Promise<{
+    prUrl: string | null;
+    previewUrl: string | null;
+    flags?: RunChangeFlag[];
+    /** The host's preview deploy, looked up in the background (awaited before the report). */
+    previewLater?: (signal: AbortSignal) => Promise<string | null>;
+  }>;
+  /** Called before a change builds: its local preview (if running) must stop first. */
+  beforeBuild?: (hostId: string, change: string) => void;
   /** Writes the run report (11.4). */
   onRunEnd?: (runId: string) => Promise<void>;
   now?: () => number;
@@ -274,6 +299,10 @@ interface ActiveRun {
   /** Asks the running session to wrap up (set while a session runs). */
   wrapUp: (() => void) | null;
   done: Promise<void>;
+  /** Background preview-deploy lookups; the run report waits for them. */
+  previews: Promise<void>[];
+  /** Aborted when the owner stops the run: the lookups end at once. */
+  previewStop: AbortController;
 }
 
 export class Orchestrator {
@@ -305,11 +334,11 @@ export class Orchestrator {
         error: `Invalid run settings${issue === undefined ? '' : `: ${issue.path.join('.')} ${issue.message}`}.`,
       };
     }
-    const settings = parsed.data;
+    const request = parsed.data;
     const now = this.#now();
     if (
-      settings.stopAt !== null &&
-      (settings.stopAt <= now || settings.stopAt > now + MAX_STOP_AHEAD_MS)
+      request.stopAt !== null &&
+      (request.stopAt <= now || request.stopAt > now + MAX_STOP_AHEAD_MS)
     ) {
       return { ok: false, status: 422, error: 'The stop time must be in the next seven days.' };
     }
@@ -330,7 +359,7 @@ export class Orchestrator {
 
     const runway = await this.#o.approvals.runway(runtime);
     const onRunway = new Set(runway.onRunway.map((entry) => entry.changeId));
-    const chosen = settings.changes ?? [...onRunway];
+    const chosen = request.changes ?? [...onRunway];
     const off = chosen.filter((change) => !onRunway.has(change));
     if (off.length > 0) {
       return {
@@ -343,12 +372,21 @@ export class Orchestrator {
     const order = await this.#buildOrder(runtime, chosen);
 
     const runId = newRunId(now);
-    const stored: StoredSettings = { ...settings, changes: order, claudeVersion: null };
-    insertRun(this.#o.db, { id: runId, hostId, settings: stored, stopAt: settings.stopAt }, now);
+    const saved = readHostSettings(this.#o.db, hostId).settings;
+    const stored: StoredSettings = {
+      ...saved,
+      model: request.model ?? saved.model,
+      effort: request.effort ?? saved.effort,
+      budgetPercent: request.budgetPercent ?? saved.budgetPercent,
+      changes: order,
+      stopAt: request.stopAt,
+      claudeVersion: null,
+    };
+    insertRun(this.#o.db, { id: runId, hostId, settings: stored, stopAt: request.stopAt }, now);
     order.forEach((change, position) => {
       insertRunChange(this.#o.db, { runId, change, position });
     });
-    this.#launch(runId, hostId, settings.stopAt);
+    this.#launch(runId, hostId, request.stopAt);
     return { ok: true, runId };
   }
 
@@ -357,6 +395,7 @@ export class Orchestrator {
     const active = this.#active;
     if (active === null || (hostId !== undefined && active.hostId !== hostId)) return false;
     if (active.stopReason === null) active.stopReason = reason;
+    if (reason === 'stopped') active.previewStop.abort(new Error('The run is stopping.'));
     setRunStopping(this.#o.db, active.id);
     active.activity = {
       ...(active.activity ?? { change: null, phase: 'stopping' }),
@@ -382,7 +421,7 @@ export class Orchestrator {
   view(hostId: string): RunView | null {
     const run = latestRun(this.#o.db, hostId);
     if (run === undefined) return null;
-    const settings = run.settings as StoredSettings;
+    const settings = storedSettings(run.settings);
     const version = settings.claudeVersion;
     const window =
       settings.windowTokens ??
@@ -413,6 +452,7 @@ export class Orchestrator {
         endedAt: change.endedAt,
         prUrl: change.prUrl,
         previewUrl: change.previewUrl,
+        notForMerge: blocksMerge(change.flags),
       })),
       now: active?.activity ?? null,
       hold: run.state === 'ended' ? null : this.#o.governor.holdUntil(),
@@ -456,6 +496,8 @@ export class Orchestrator {
       activity: null,
       wrapUp: null,
       done: Promise.resolve(),
+      previews: [],
+      previewStop: new AbortController(),
     };
     if (stopReason !== null) active.stop.abort(new Error('The run is stopping.'));
     if (stopAt !== null) {
@@ -503,7 +545,7 @@ export class Orchestrator {
       }
       const run = getRun(db, active.id);
       if (run === undefined) throw new RunEnd('error', 'The run record is gone.');
-      const settings = run.settings as StoredSettings;
+      const settings = storedSettings(run.settings);
 
       await this.#ensureDoctor(active);
       const window = await this.#window(active, runtime, settings);
@@ -527,6 +569,14 @@ export class Orchestrator {
         end = { reason: 'error', detail: `Counterpoint failed: ${(error as Error).message}` };
         this.#o.log?.('run-failed', { runId: active.id, message: (error as Error).message });
       }
+    }
+    if (active.previews.length > 0) {
+      this.#activity(active, {
+        change: null,
+        phase: 'waiting',
+        detail: "Waiting for the host's preview deploys",
+      });
+      await Promise.allSettled(active.previews);
     }
     this.#finishChanges(
       active.id,
@@ -699,6 +749,7 @@ export class Orchestrator {
     const changeDir = join(this.#runDir(active), row.change);
     mkdirSync(changeDir, { recursive: true, mode: 0o700 });
     this.#activity(active, { change: row.change, phase: 'preparing' });
+    this.#o.beforeBuild?.(active.hostId, row.change);
 
     // 1. The approval, now.
     const state = await this.#o.approvals.state(runtime, row.change);
@@ -842,19 +893,37 @@ export class Orchestrator {
           hostGlobs: config.protected,
         });
         addRunChangeFlags(db, row.id, flags);
-        const delivered = (await this.#o.deliver?.({
-          db,
-          hostId: active.hostId,
-          runId: active.id,
-          runChangeId: row.id,
-          change: facts,
-          worktree,
-          branch,
-          baseCommit,
-          changeDir,
-          flags: getRunChange(db, row.id)?.flags ?? flags,
-          signal: active.stop.signal,
-        })) ?? { prUrl: null, previewUrl: null };
+        let delivered: Awaited<ReturnType<NonNullable<OrchestratorOptions['deliver']>>>;
+        try {
+          delivered = (await this.#o.deliver?.({
+            db,
+            hostId: active.hostId,
+            host: runtime.host,
+            config,
+            runId: active.id,
+            runChangeId: row.id,
+            change: facts,
+            worktree,
+            branch,
+            baseCommit,
+            changeDir,
+            flags: getRunChange(db, row.id)?.flags ?? flags,
+            signal: active.stop.signal,
+          })) ?? { prUrl: null, previewUrl: null };
+        } catch (error) {
+          this.#o.log?.('delivery-failed', {
+            change: row.change,
+            message: (error as Error).message,
+          });
+          parkRunChange(
+            db,
+            row.id,
+            `Every gate passed, but delivery failed: ${(error as Error).message.replace(/\.?$/, '.')} The branch ${branch} keeps the work.`,
+            this.#now(),
+          );
+          this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'parked' });
+          return;
+        }
         if (delivered.flags !== undefined) addRunChangeFlags(db, row.id, delivered.flags);
         updateRunChange(db, row.id, {
           state: 'green',
@@ -864,6 +933,27 @@ export class Orchestrator {
           endedAt: this.#now(),
         });
         this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'green' });
+        const later = delivered.previewLater;
+        if (later !== undefined) {
+          active.previews.push(
+            later(active.previewStop.signal)
+              .then((url) => {
+                if (url === null) return;
+                updateRunChange(db, row.id, { previewUrl: url });
+                this.#publish(active.hostId, {
+                  runId: active.id,
+                  change: row.change,
+                  preview: true,
+                });
+              })
+              .catch((error: unknown) => {
+                this.#o.log?.('preview-lookup-failed', {
+                  change: row.change,
+                  message: (error as Error).message,
+                });
+              }),
+          );
+        }
         return;
       }
     } finally {
@@ -896,7 +986,7 @@ export class Orchestrator {
     if (adapter === null) throw new RunEnd('error', 'The project has no planning framework.');
     let transient = 0;
     let gateFeedback = c.feedback;
-    for (let inAttempt = 0; inAttempt < MAX_SESSIONS_PER_ATTEMPT; inAttempt += 1) {
+    for (let inAttempt = 0; inAttempt < settings.sessionsPerAttempt; inAttempt += 1) {
       if (active.stop.signal.aborted) return 'stopped';
       const left = await this.#stillApproved(
         runtime,
@@ -967,6 +1057,9 @@ export class Orchestrator {
           prompt,
           windowTokens: window,
           budgetPercent: settings.budgetPercent,
+          effort: settings.effort,
+          maxTurns: settings.maxTurns,
+          maxBudgetUsd: settings.maxBudgetUsd,
           timeoutMs: SESSION_TIMEOUT_MS,
           onStart: (pid) => setAgentSessionPid(db, sessionId, pid),
           onEvent: (event: StreamEvent) => {

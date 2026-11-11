@@ -43,7 +43,7 @@ import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
 import { doctorCommand } from './doctor.ts';
 import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
-import { runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
+import { runReportCommand, runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
 import {
   initKeyCommand,
   type TrustCommandOptions,
@@ -539,6 +539,11 @@ async function runStatus(hostId: string | undefined): Promise<void> {
   exitWith(await runStatusCommand(home, hostId));
 }
 
+function runReport(hostId: string | undefined): void {
+  const { home } = homeOrExit();
+  exitWith(runReportCommand(home, hostId));
+}
+
 async function acceptRisk(risk: string): Promise<void> {
   const { home } = homeOrExit();
   exitWith(await acceptRiskCommand(home, risk, terminalPrompt()));
@@ -614,14 +619,24 @@ export function buildProgram(): Command {
     .command('run')
     .description('start a build run of approved changes (the console offers the same)')
     .argument('[host]', 'the registered project id (default: the project you are in)')
-    .option('--model <model>', 'the model builders use, for example opus')
-    .option('--budget <percent>', 'context budget as a percentage of the model window', '40')
+    .option('--model <model>', "the model builders use (default: the project's settings)")
+    .option('--effort <level>', "low, medium, high, xhigh or max (default: the project's settings)")
+    .option(
+      '--budget <percent>',
+      "context budget, % of the model window (default: the project's settings)",
+    )
     .option('--until <HH:MM>', 'stop time: no new session starts after it')
     .option('--changes <a,b>', 'the runway changes to build (default: all of them)')
     .action(
       (
         hostId: string | undefined,
-        flags: { model?: string; budget?: string; until?: string; changes?: string },
+        flags: {
+          model?: string;
+          effort?: string;
+          budget?: string;
+          until?: string;
+          changes?: string;
+        },
       ) => runStart(hostId, flags),
     );
   run
@@ -629,6 +644,11 @@ export function buildProgram(): Command {
     .description('stop the run at its next clean point')
     .argument('[host]', 'the registered project id')
     .action((hostId: string | undefined) => runStop(hostId));
+  run
+    .command('report')
+    .description("print the project's latest run report")
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runReport(hostId));
   run
     .command('status')
     .description("show the project's current or last run")

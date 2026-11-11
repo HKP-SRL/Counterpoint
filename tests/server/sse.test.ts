@@ -195,6 +195,7 @@ describe('events outbox', () => {
       'needs-you',
       'doctor',
       'run',
+      'settings',
     ]);
   });
 

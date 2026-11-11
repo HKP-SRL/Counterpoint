@@ -177,8 +177,9 @@ export function createControlApp(options: ControlAppOptions): Hono {
     hostId: z.string().regex(HOST_ID_RE),
     changes: z.array(z.string()).max(100).nullable().optional(),
     until: z.string().max(64).nullable().optional(),
-    model: z.string().max(100),
-    budgetPercent: z.number(),
+    model: z.string().max(100).optional(),
+    effort: z.string().max(20).optional(),
+    budgetPercent: z.number().optional(),
   });
   app.post('/control/run', async (c) => {
     if (options.orchestrator === undefined) return c.json({ error: 'not found' }, 404);
@@ -190,15 +191,17 @@ export function createControlApp(options: ControlAppOptions): Hono {
     }
     const parsed = RunBody.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'Invalid run request.' }, 400);
-    const { hostId, changes, until, model, budgetPercent } = parsed.data;
+    const { hostId, changes, until, model, effort, budgetPercent } = parsed.data;
     const stopAt = until === null || until === undefined ? null : Date.parse(until);
     if (stopAt !== null && !Number.isFinite(stopAt))
       return c.json({ error: 'Invalid stop time.' }, 422);
     const result = await options.orchestrator.start(hostId, {
       changes: changes ?? null,
       stopAt,
-      model,
-      budgetPercent,
+      // Only what the CLI overrides; the rest comes from the project's saved settings.
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(budgetPercent === undefined ? {} : { budgetPercent }),
     });
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ runId: result.runId }, 202);

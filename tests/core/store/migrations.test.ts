@@ -27,9 +27,9 @@ function insertRun(db: Store, id: string, state = 'running'): void {
 }
 
 describe('store migration 2 (build lane)', () => {
-  it('reaches schema version 2 with the build-lane tables', () => {
+  it('reaches the latest schema version with the build-lane and settings tables', () => {
     const db = freshStore();
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
     const tables = db
       .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
       .all()
@@ -41,6 +41,7 @@ describe('store migration 2 (build lane)', () => {
       'gate_results',
       'model_windows',
       'governor',
+      'host_settings',
     ]) {
       expect(tables).toContain(name);
     }

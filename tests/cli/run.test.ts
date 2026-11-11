@@ -65,20 +65,37 @@ describe('counterpoint run', () => {
     expect(err).toEqual(['The run did not start: Not on the runway now: b-thing.']);
   });
 
-  it('needs a model and a sane budget', async () => {
+  it('refuses an empty model, an unknown effort and a budget out of range', async () => {
     const err: string[] = [];
     const h = home();
-    expect(await runStartCommand(h, 'cena', {}, { err: (l) => err.push(l) })).toBe(2);
-    expect(
-      await runStartCommand(
-        h,
-        'cena',
-        { model: 'opus', budget: '95' },
-        { err: (l) => err.push(l) },
-      ),
-    ).toBe(2);
+    const refuse = async (flags: Parameters<typeof runStartCommand>[2]) =>
+      runStartCommand(h, 'cena', flags, {
+        err: (l) => err.push(l),
+        request: async () => {
+          throw new Error('nothing is sent');
+        },
+      });
+    expect(await refuse({ model: '' })).toBe(2);
+    expect(await refuse({ effort: 'huge' })).toBe(2);
+    expect(await refuse({ budget: '95' })).toBe(2);
     expect(err[0]).toMatch(/--model/);
-    expect(err[1]).toMatch(/10 to 90/);
+    expect(err[1]).toMatch(/low, medium, high, xhigh, max/);
+    expect(err[2]).toMatch(/10 to 90/);
+  });
+
+  it("leaves model, effort and budget to the project's settings unless a flag overrides them", async () => {
+    const sent: unknown[] = [];
+    const request = async (_home: string, _method: string, _path: string, body?: unknown) => {
+      sent.push(body);
+      return { status: 202, body: { runId: 'r1' } };
+    };
+    const h = home();
+    expect(await runStartCommand(h, 'cena', {}, { out: () => {}, request })).toBe(0);
+    expect(await runStartCommand(h, 'cena', { effort: 'max' }, { out: () => {}, request })).toBe(0);
+    expect(sent).toEqual([
+      { hostId: 'cena', changes: null, until: null },
+      { hostId: 'cena', changes: null, until: null, effort: 'max' },
+    ]);
   });
 
   it('prints the run status', async () => {
@@ -86,7 +103,7 @@ describe('counterpoint run', () => {
       id: 'r1',
       hostId: 'cena',
       state: 'ended',
-      settings: { model: 'opus', budgetPercent: 40 },
+      settings: { model: 'opus', effort: 'high', budgetPercent: 40 },
       stopAt: null,
       startedAt: 0,
       endedAt: 1,
@@ -119,7 +136,7 @@ describe('counterpoint run', () => {
       request: async () => ({ status: 200, body: { run: view } }),
     });
     expect(out).toEqual(formatRunView(view));
-    expect(out[2]).toContain('budget 40% of 1M = 400k tokens');
+    expect(out[2]).toBe('  model opus, effort high, budget 40% of 1M = 400k tokens');
     expect(out.slice(-2)).toEqual([
       '  green    a-thing  https://github.com/x/y/pull/7',
       '  parked   b-thing  3 failed attempts; Gate "unit" failed 3 times.',

@@ -147,6 +147,16 @@ export function latestRun(db: Store, hostId: string): RunRow | undefined {
   return row === undefined ? undefined : toRun(row);
 }
 
+/** The host's latest run that has a report. */
+export function latestReportedRun(db: Store, hostId: string): RunRow | undefined {
+  const row = db
+    .prepare(
+      'SELECT * FROM runs WHERE host_id = ? AND report_path IS NOT NULL ORDER BY started_at DESC LIMIT 1',
+    )
+    .get(hostId);
+  return row === undefined ? undefined : toRun(row);
+}
+
 export function setRunStopping(db: Store, id: string): void {
   db.prepare("UPDATE runs SET state = 'stopping' WHERE id = ? AND state = 'running'").run(id);
 }
@@ -225,6 +235,22 @@ export function listRunChanges(db: Store, runId: string): RunChangeRow[] {
     .prepare('SELECT * FROM run_changes WHERE run_id = ? ORDER BY position')
     .all(runId)
     .map(toRunChange);
+}
+
+/** The host's latest run entry for `change` that has a worktree (newest run first), if any. */
+export function latestBuiltRunChange(
+  db: Store,
+  hostId: string,
+  change: string,
+): RunChangeRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT rc.* FROM run_changes rc JOIN runs r ON r.id = rc.run_id
+       WHERE r.host_id = ? AND rc.change = ? AND rc.worktree IS NOT NULL AND rc.base_commit IS NOT NULL
+       ORDER BY r.started_at DESC, rc.id DESC LIMIT 1`,
+    )
+    .get(hostId, change);
+  return row === undefined ? undefined : toRunChange(row);
 }
 
 export interface RunChangeUpdate {

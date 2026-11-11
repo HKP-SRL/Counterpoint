@@ -5,8 +5,17 @@
 //
 //   GET  /api/hosts/:hostId/run                  { run, runway, claudeVersion, doctor }
 //   GET  /api/hosts/:hostId/run/budget?model=&percent=   { window, label }
-//   POST /api/hosts/:hostId/run                  start: { changes, stopAt (ISO or null), model,
-//                                                budgetPercent } → 202 { runId } or the refusal
+//   POST /api/hosts/:hostId/run                  start: { changes, stopAt (ISO or null) } → 202
+//                                                { runId } or the refusal; the run uses the
+//                                                project's saved settings
+//   GET  /api/hosts/:hostId/runs/:runId/report   the run's report, built from the store now
+//                                                (so a preview found later is in it): { report }
+//   GET  /api/hosts/:hostId/previews/:change     a green change's local preview: { preview }
+//   POST /api/hosts/:hostId/previews/:change/start   start it on demand → 202 { preview }
+//   POST /api/hosts/:hostId/previews/:change/stop    stop it
+//   GET  /api/hosts/:hostId/settings             { settings, saved, defaults, effortLevels }
+//   POST /api/hosts/:hostId/settings             save the run settings (build-runs: Run settings
+//                                                page); runs started afterwards use them
 //   POST /api/hosts/:hostId/run/stop             stop at the next clean point
 //   POST /api/hosts/:hostId/doctor/run           run doctor (one probe at a time) → 202
 //   GET  /api/doctor/status                      the probe running now, or null
@@ -15,15 +24,25 @@
 //   POST /api/stop                               stop Counterpoint (a run first stops at its next
 //                                                clean point)
 import type { Hono } from 'hono';
+import { EFFORT_LEVELS } from '../../agent/claude-argv.ts';
+import {
+  DEFAULT_HOST_SETTINGS,
+  parseHostSettings,
+  readHostSettings,
+  writeHostSettings,
+} from '../../build/host-settings.ts';
+import type { LocalPreviews } from '../../build/local-preview.ts';
 import type { Orchestrator } from '../../build/orchestrator.ts';
+import { buildRunReport, factsFromRuntime } from '../../build/run-report.ts';
 import { formatBudget, knownWindow, normalizeClaudeVersion } from '../../build/windows.ts';
-import { HOST_ID_RE } from '../../core/ids.ts';
+import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
 import {
   ACCEPTED_RISK_IDS,
   type AcceptedRiskId,
   revokeAcceptedRisk,
 } from '../../core/security/accepted-risks.ts';
 import { getHost, type Store } from '../../core/store/db.ts';
+import { getRun } from '../../core/store/runs.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { DoctorService } from '../doctor-service.ts';
 import type { HostRuntimes } from '../hosts.ts';
@@ -41,6 +60,10 @@ export interface RunRoutesOptions {
   stopDaemon: () => void;
   /** Tells open consoles the accepted risks changed. */
   onRiskWithdrawn: () => void;
+  /** Tells open consoles a project's run settings changed. */
+  onSettingsChanged?: (hostId: string) => void;
+  /** Local previews, started on demand from the console. */
+  previews?: Pick<LocalPreviews, 'status' | 'start' | 'stop'>;
 }
 
 async function jsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {
@@ -109,6 +132,75 @@ export function mountRunRoutes(app: Hono, options: RunRoutesOptions): void {
     const result = await orchestrator.start(runtime.host.id, { ...body, stopAt });
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ runId: result.runId }, 202);
+  });
+
+  app.get('/api/hosts/:hostId/settings', (c) => {
+    const runtime = hostOf(c.req.param('hostId'));
+    if (runtime === null) return c.json({ error: 'not found' }, 404);
+    const { settings, saved } = readHostSettings(store, runtime.host.id);
+    return c.json({
+      settings,
+      saved,
+      defaults: DEFAULT_HOST_SETTINGS,
+      effortLevels: EFFORT_LEVELS,
+    });
+  });
+
+  app.post('/api/hosts/:hostId/settings', async (c) => {
+    const runtime = hostOf(c.req.param('hostId'));
+    if (runtime === null) return c.json({ error: 'not found' }, 404);
+    const parsed = parseHostSettings(await jsonBody(c));
+    if (!parsed.ok) return c.json({ error: parsed.error }, 422);
+    writeHostSettings(store, runtime.host.id, parsed.settings);
+    options.onSettingsChanged?.(runtime.host.id);
+    return c.json({ settings: parsed.settings, saved: true });
+  });
+
+  app.get('/api/hosts/:hostId/runs/:runId/report', async (c) => {
+    const runtime = hostOf(c.req.param('hostId'));
+    const runId = c.req.param('runId');
+    if (runtime === null || !/^[A-Za-z0-9-]{1,64}$/.test(runId)) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const run = getRun(store, runId);
+    if (run === undefined || run.hostId !== runtime.host.id)
+      return c.json({ error: 'not found' }, 404);
+    const report = await buildRunReport({
+      home: options.home,
+      db: store,
+      runId,
+      factsAt: factsFromRuntime(runtime),
+    });
+    return c.json({ report });
+  });
+
+  const previewOf = (c: { req: { param(name: string): string } }) => {
+    const runtime = hostOf(c.req.param('hostId'));
+    const change = c.req.param('change');
+    return runtime === null || options.previews === undefined || !isChangeId(change)
+      ? null
+      : { hostId: runtime.host.id, change, previews: options.previews };
+  };
+
+  app.get('/api/hosts/:hostId/previews/:change', (c) => {
+    const target = previewOf(c);
+    if (target === null) return c.json({ error: 'not found' }, 404);
+    return c.json({ preview: target.previews.status(target.hostId, target.change) });
+  });
+
+  app.post('/api/hosts/:hostId/previews/:change/start', async (c) => {
+    const target = previewOf(c);
+    if (target === null) return c.json({ error: 'not found' }, 404);
+    const started = await target.previews.start(target.hostId, target.change);
+    if (!started.ok) return c.json({ error: started.error }, started.status);
+    return c.json({ preview: started.status }, 202);
+  });
+
+  app.post('/api/hosts/:hostId/previews/:change/stop', (c) => {
+    const target = previewOf(c);
+    if (target === null) return c.json({ error: 'not found' }, 404);
+    target.previews.stop(target.hostId, target.change);
+    return c.json({ preview: target.previews.status(target.hostId, target.change) });
   });
 
   app.post('/api/hosts/:hostId/run/stop', (c) => {

@@ -234,7 +234,7 @@ export type LandResult =
  * overwrite anything of the owner's: the path must be absent or tracked and unmodified, with no
  * symlink on the way, and no content filter (which could run a program) may apply to it.
  */
-async function checkCheckouts(
+export async function checkCheckouts(
   root: string,
   baseRef: string,
   itemPath: string,
@@ -342,6 +342,11 @@ export async function signAndLand(options: {
   ident: CommitIdent;
   sign: (payload: Uint8Array) => Promise<string>;
   expectedTip?: string;
+  /**
+   * Runs the landing step (after signing) one planning write at a time (planning-writes: Single
+   * serialized write path); `counterpoint approve` passes the home's planning-write lock.
+   */
+  serialize?: (land: () => Promise<LandResult>) => Promise<LandResult>;
 }): Promise<LandResult> {
   const { root, baseBranch, itemPath } = options;
   assertApprovalPath(itemPath);
@@ -365,12 +370,14 @@ export async function signAndLand(options: {
   });
   const signature = await options.sign(built.payload);
   const signedBytes = embedSignature(built.payload, signature);
-  return landApprovalCommit({
-    root,
-    baseRef,
-    expectedOldTip: tip,
-    signedBytes,
-    itemPath,
-    blob: built.blob,
-  });
+  const land = () =>
+    landApprovalCommit({
+      root,
+      baseRef,
+      expectedOldTip: tip,
+      signedBytes,
+      itemPath,
+      blob: built.blob,
+    });
+  return options.serialize === undefined ? land() : options.serialize(land);
 }

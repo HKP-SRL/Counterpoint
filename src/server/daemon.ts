@@ -20,10 +20,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { ClaudeCliRunner } from '../agent/runner.ts';
+import { createDeliver } from '../build/deliver.ts';
 import { doctorGate } from '../build/doctor-gate.ts';
 import { Governor } from '../build/governor.ts';
+import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { recoverRuns } from '../build/recovery.ts';
+import { factsFromRuntime, writeRunReport } from '../build/run-report.ts';
 import { detectFramework } from '../compose.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
@@ -31,6 +34,7 @@ import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus, publishEvent } from '../core/store/events.ts';
+import { getRun } from '../core/store/runs.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
 import { createControlApp, hashToken } from './control.ts';
@@ -273,6 +277,13 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     publish: publish('doctor'),
     log,
   });
+  const previews = new LocalPreviews({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    consolePort: bound,
+    publish: publish('run'),
+  });
   const orchestrator = new Orchestrator({
     home: options.home,
     db: store,
@@ -293,6 +304,24 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     consolePort: bound,
     publish: publish('run'),
+    onRunEnd: async (runId) => {
+      const run = getRun(store, runId);
+      if (run === undefined) return;
+      await writeRunReport({
+        home: options.home,
+        db: store,
+        runId,
+        factsAt: factsFromRuntime(runtimes.get(run.hostId)),
+      });
+    },
+    beforeBuild: (hostId, change) => {
+      previews.stop(hostId, change);
+    },
+    deliver: createDeliver({
+      home: options.home,
+      consolePort: bound,
+      adapterFor: (hostId) => runtimes.get(hostId)?.adapter ?? null,
+    }),
     log,
   });
   // Crash recovery before any new work: end what a killed daemon left running, commit
@@ -340,6 +369,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
           publishEvent(store, bus, { hostId: host.host.id, family: 'doctor' });
         }
       },
+      onSettingsChanged: (hostId) => {
+        publishEvent(store, bus, { hostId, family: 'settings' });
+      },
+      previews,
     },
   });
 
@@ -348,6 +381,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     stopping = true;
     log('stopping', { reason });
     watcher?.stop();
+    await previews.stopAll();
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
     rmSync(paths.daemonJson, { force: true });

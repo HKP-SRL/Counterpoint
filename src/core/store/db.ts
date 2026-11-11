@@ -148,6 +148,14 @@ const MIGRATIONS: readonly string[] = [
   INSERT INTO governor (id, paused_until, pause_reason, utilization, updated_at)
     VALUES (1, NULL, NULL, '{}', 0);
   `,
+  // 3: each project's run settings (build-runs: Run settings page), saved from the console.
+  `
+  CREATE TABLE host_settings (
+    host_id TEXT PRIMARY KEY REFERENCES hosts(id),
+    settings TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) STRICT;
+  `,
 ];
 
 /** Path of the state database under a home. */

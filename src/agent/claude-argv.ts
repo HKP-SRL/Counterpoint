@@ -17,6 +17,7 @@
 //   `permissions.blockWritesOutsideWorkingDirectories` (sandbox-settings.ts).
 // - `--output-format stream-json --verbose`: the machine-readable event stream.
 // - `--no-session-persistence`, `--max-turns`, `--max-budget-usd`: bounded, throwaway sessions.
+// - `--effort` only when given (builder sessions pass the project's setting; probes leave it out).
 // The prompt goes directly after `-p` because `--allowedTools` and `--add-dir` are variadic and
 // would swallow a trailing positional argument. With `streamInput` (builder sessions) there is no
 // positional prompt: `--input-format stream-json` makes claude read user messages from stdin,
@@ -24,6 +25,10 @@
 // mid-session (spike 5.1 of first-unattended-run).
 import { isAbsolute } from 'node:path';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
+
+/** The effort levels `claude --effort` accepts. */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /** The setting sources every agent session loads (probe sessions and builders). */
 export const AGENT_SETTING_SOURCES = 'user,project';
@@ -35,6 +40,8 @@ export interface ClaudeArgvInput {
   settings: AgentSettings;
   /** A model alias or id, e.g. `haiku`. */
   model: string;
+  /** The effort level (`--effort`); left out, claude uses its own default. */
+  effort?: EffortLevel;
   maxTurns: number;
   maxBudgetUsd: number;
   /** Explicit tool allow-list, e.g. `['Bash', 'Read']`. */
@@ -60,6 +67,9 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
   if (!/^[A-Za-z0-9._:-]+$/.test(model) || model.startsWith('-')) {
     throw new Error('Invalid model name.');
   }
+  if (input.effort !== undefined && !(EFFORT_LEVELS as readonly string[]).includes(input.effort)) {
+    throw new Error('Invalid effort level.');
+  }
   if (!Number.isInteger(maxTurns) || maxTurns < 1) {
     throw new Error('maxTurns must be a positive integer.');
   }
@@ -83,6 +93,7 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
     '--no-session-persistence',
     '--model',
     model,
+    ...(input.effort === undefined ? [] : ['--effort', input.effort]),
     '--max-turns',
     String(maxTurns),
     '--max-budget-usd',
