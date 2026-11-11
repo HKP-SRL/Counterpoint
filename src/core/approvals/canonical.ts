@@ -1,4 +1,4 @@
-// Canonical JSON for approval digests (RESEARCH Item 4).
+// Canonical JSON for approval digests (signed-approvals: Statement format).
 //
 // One value has exactly one canonical text: object keys sorted by UTF-16 code unit (JavaScript's
 // default string order), no whitespace, strings escaped exactly as JSON.stringify does, and only

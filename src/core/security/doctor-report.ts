@@ -1,36 +1,36 @@
 // The doctor report: schema `counterpoint/doctor/v1`, written by `counterpoint doctor` and
-// rendered by the Trust page (UI-SPEC "Trust"). The verdict is `pass` only when every check (the
+// rendered by the Trust page (doctor: Trust page). The verdict is `pass` only when every check (the
 // Sandbox isolation settings and Agent permission mode checks included) passes and every one of
 // the nine probe targets is `blocked`; anything missing, failed, reachable or not checked is a
-// fail (never a silent pass), except the one owner-recorded accepted risk below (01-19).
+// fail (never a silent pass), except the one owner-recorded accepted risk below.
 //
-// `outside-workdir` (01-17) was added to schema v1 as an additive row: a report written before it
+// `outside-workdir` was added to schema v1 as an additive row: a report written before it
 // still parses, and its verdict is `fail` because that row is missing. The classifier revision
 // that produced a report is recorded in `matcherVersion`, not in the schema id.
 //
-// `sandboxIsolation` (01-25) is an additive v1 field: the Sandbox isolation settings check
+// `sandboxIsolation` is an additive v1 field: the Sandbox isolation settings check
 // (replacement 2 for the scrub opt-out, src/core/security/sandbox-isolation.ts). A report written
 // before it still parses, and its verdict is `fail`, because the check is required to pass.
 //
-// `credential-env` (01-26, replacement 3 for the scrub opt-out) is an additive v1 row, like
+// `credential-env` (replacement 3 for the scrub opt-out) is an additive v1 row, like
 // `outside-workdir`: a report without it still parses, and its verdict is `fail`. A row's optional
-// `exceptions` field records an owner exception the row applied (`sandbox-proxy-login`, STATE.md
-// [Owner] 2026-11-10), so a row that needed one is never a silent pass.
+// `exceptions` field records an owner exception the row applied (`sandbox-proxy-login`, owner
+// decision 2026-11-10), so a row that needed one is never a silent pass.
 //
-// `agentMode` (01-22) is an additive v1 field: the Agent permission mode check, the permission
+// `agentMode` is an additive v1 field: the Agent permission mode check, the permission
 // mode the probe's agent session really ran in, read from claude's own init events and stderr
 // (never from the argv). A report written before it still parses, and its verdict is `fail`,
 // because the check is required to pass. Core receives the expected mode as a parameter, so it
 // imports nothing from `src/agent/`.
 //
-// Structured probe evidence (01-19) is additive on every row: `steps` (each treatment step's
+// Structured probe evidence is additive on every row: `steps` (each treatment step's
 // tool, operation and the treatment and control classes, exactly as the evaluator classified
 // them), `leaks` (which canary or finding reached the treatment) and `trusted` (the row's plans
 // matched, its baseline held and no version distrust applied). They default to empty / false, so
-// a report written before 01-19 still parses, and its gh row can never qualify for the accepted
+// a report written before them still parses, and its gh row can never qualify for the accepted
 // risk.
 //
-// `acceptedRisks` (01-19) is the owner's per-machine accepted-risk record as doctor read it
+// `acceptedRisks` is the owner's per-machine accepted-risk record as doctor read it
 // (src/core/security/accepted-risks.ts). The verdict is three-way: `pass`, `accepted-risk` (every
 // check passed and every target was Blocked except gh, reached only through the Keychain lookup
 // that the owner's record, still in force, accepts) or `fail`. The accepted risk never covers the
@@ -53,7 +53,7 @@ export const PROBE_TARGET_IDS = [
 export const ProbeTargetId = z.enum(PROBE_TARGET_IDS);
 export type ProbeTargetId = z.infer<typeof ProbeTargetId>;
 
-/** Trust-page row labels (UI-SPEC). `{host}` is replaced with the host's display name. */
+/** Trust-page row labels. `{host}` is replaced with the host's display name. */
 export const PROBE_TARGET_LABELS: Readonly<Record<ProbeTargetId, string>> = {
   'signing-key': 'Signing key',
   ssh: '~/.ssh',
@@ -97,7 +97,7 @@ export type Check = z.infer<typeof Check>;
 export const ProbeResult = z.enum(['blocked', 'reachable', 'not-checked']);
 export type ProbeResult = z.infer<typeof ProbeResult>;
 
-/** An owner exception a probe row applied (01-26): named, reasoned and dated. */
+/** An owner exception a probe row applied: named, reasoned and dated. */
 export const ProbeException = z.strictObject({
   id: z.literal('sandbox-proxy-login'),
   reason: z.string().min(1),
@@ -167,13 +167,13 @@ export const ProbeTarget = z.object({
   mode: z.enum(['read', 'write']),
   result: ProbeResult,
   evidence: z.string(),
-  /** Additive (01-26): the owner exceptions this row applied; only credential-env carries one. */
+  /** Additive: the owner exceptions this row applied; only credential-env carries one. */
   exceptions: z.array(ProbeException).optional(),
-  /** Additive (01-19): one record per treatment step, as classified. */
+  /** Additive: one record per treatment step, as classified. */
   steps: z.array(ProbeStepRecord).default([]),
-  /** Additive (01-19): what reached the treatment. */
+  /** Additive: what reached the treatment. */
   leaks: z.array(ProbeLeak).default([]),
-  /** Additive (01-19): plans matched, baseline held, no version distrust. */
+  /** Additive: plans matched, baseline held, no version distrust. */
   trusted: z.boolean().default(false),
 });
 export type ProbeTarget = z.infer<typeof ProbeTarget>;
@@ -226,7 +226,7 @@ export const SandboxIsolationCheck = Check.extend({
 });
 export type SandboxIsolationCheck = z.infer<typeof SandboxIsolationCheck>;
 
-/** The Agent permission mode check (01-22): the mode Counterpoint launched with and what ran. */
+/** The Agent permission mode check: the mode Counterpoint launched with and what ran. */
 export const AgentModeCheck = Check.extend({
   id: z.literal('agent-mode'),
   expected: z.string().min(1),
@@ -250,7 +250,7 @@ function sanitiseNotice(text: string): string {
 }
 
 /**
- * Judges the probe's agent session mode (01-22). `modes` holds one entry per init event of every
+ * Judges the probe's agent session mode. `modes` holds one entry per init event of every
  * attempt (null when the event carried no mode), or is `null` when the probe did not run. Passes
  * only when every attempt reported `expected` and claude printed no permission-mode notice.
  */
@@ -322,11 +322,11 @@ export const DoctorReport = z.object({
   signingKey: z.array(Check),
   integrity: Check,
   probe: z.array(ProbeTarget),
-  /** Additive (01-25). Missing reads as not passing. */
+  /** Additive. Missing reads as not passing. */
   sandboxIsolation: SandboxIsolationCheck.optional(),
-  /** Additive (01-22). Missing reads as not passing. */
+  /** Additive. Missing reads as not passing. */
   agentMode: AgentModeCheck.optional(),
-  /** Additive (01-19): the owner's accepted-risk record in force when doctor ran. */
+  /** Additive: the owner's accepted-risk record in force when doctor ran. */
   acceptedRisks: z.array(AcceptedRisk).max(1).default([]),
 });
 export type DoctorReport = z.infer<typeof DoctorReport>;
@@ -389,7 +389,7 @@ export function reportVerdict(
   return riskNeeded ? 'accepted-risk' : 'pass';
 }
 
-/** True when the report is more than 24 hours old (UI-SPEC "Doctor stale"). */
+/** True when the report is more than 24 hours old (the Trust page then marks it stale). */
 export function isReportStale(report: DoctorReport, now: Date): boolean {
   return now.getTime() - Date.parse(report.checkedAt) > STALE_AFTER_MS;
 }

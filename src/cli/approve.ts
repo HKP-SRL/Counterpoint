@@ -1,11 +1,13 @@
-// `counterpoint approve {host} {phase}` (APPR-01, APPR-04, MISN-01).
+// `counterpoint approve {host} {change}` (signed-approvals: Approve command shows what is
+// signed; Signing at a terminal with a clean environment; One-file signed commit on the base
+// branch).
 //
 // The command is ID-only: both ids are validated by the strict regexes before any lookup, path or
-// argv use, and everything else is re-derived from git at signing time (RESEARCH Pitfall 8,
-// Pattern 4). It refuses, writing nothing, unless a key is trusted, the host's integrity baseline
-// exists and still matches, the phase is Ready to approve and a terminal is attached. Then it
+// argv use, and everything else is re-derived from git at signing time (nothing an agent wrote is
+// trusted). It refuses, writing nothing, unless a key is trusted, the host's integrity baseline
+// exists and still matches, the change is Ready to approve and a terminal is attached. Then it
 // prints exactly what is being signed (every input digest in full, the gate slot, the statement
-// fingerprint, the prerequisites and the signer), and lets ssh-keygen ask for the passphrase at
+// fingerprint, the owner steps and the signer), and lets ssh-keygen ask for the passphrase at
 // the terminal. The signature is checked against the trusted key before anything lands; the
 // commit lands by compare-and-swap on the LOCAL base branch without touching the owner's work, is
 // verified again from git, and the new runway is reported. Nothing is pushed.
@@ -28,7 +30,7 @@ import { OWNER_PRINCIPAL, readTrust } from '../core/approvals/trust-store.ts';
 import { createGitFileReader } from '../core/git/reader.ts';
 import { cleanGitEnv, gitBinary } from '../core/git/run.ts';
 import { homePaths } from '../core/host/home.ts';
-import { assertHostId, assertPhaseId, InvalidIdError } from '../core/ids.ts';
+import { assertChangeId, assertHostId, InvalidIdError } from '../core/ids.ts';
 import { approvalState, computeRunway } from '../core/runway/runway.ts';
 import {
   getHost,
@@ -49,7 +51,7 @@ export interface ApprovalNotice {
 export interface ApproveCommandOptions {
   home: string;
   hostId: string;
-  phaseId: string;
+  changeId: string;
   /** True when stdin and stdout are a terminal (the passphrase is typed there). */
   isTTY: boolean;
   out?: (line: string) => void;
@@ -115,18 +117,18 @@ async function signerIdentity(root: string): Promise<{ name: string; email: stri
   return usable(name) && usable(email) ? { name, email } : { ...FALLBACK_IDENT };
 }
 
-function refusalMessage(refusal: PrepareRefusal, host: HostRow, phaseId: string): string {
+function refusalMessage(refusal: PrepareRefusal, host: HostRow, changeId: string): string {
   switch (refusal.reason) {
     case 'not-ready':
-      return refusal.notReadyReason === 'no-plans'
-        ? `Not ready to approve. Phase ${phaseId} has context but no plans yet. You sign the exact plans the builder will run. Run /gsd-plan-phase ${phaseId} in ${host.id}, then come back.`
-        : `Not ready to approve. Phase ${phaseId} has no CONTEXT.md yet. Run /gsd-discuss-phase ${phaseId} and /gsd-plan-phase ${phaseId} in ${host.id}, then come back.`;
+      return refusal.notReadyReason === 'no-tasks'
+        ? `Not ready to approve. ${changeId} has no tasks.md yet. You sign the exact tasks the builder will run. Run /opsx:propose or add tasks in ${host.id}, commit, then come back.`
+        : `Not ready to approve. ${changeId} has no proposal.md yet. Run /opsx:propose in ${host.id}, commit, then come back.`;
     case 'built':
-      return `Phase ${phaseId} is already built. Approval is not offered.`;
+      return `${changeId} is already built. Approval is not offered.`;
     case 'unreadable':
-      return `Couldn't read Phase ${phaseId}: ${printable(refusal.file)} could not be parsed: ${printable(refusal.detail)}.`;
+      return `Couldn't read ${changeId}: ${printable(refusal.file)} could not be parsed: ${printable(refusal.detail)}.`;
     case 'not-found':
-      return `Phase ${phaseId} is not in ${host.id}'s planning on ${host.baseBranch}.`;
+      return `${changeId} is not a change in ${host.id}'s planning on ${host.baseBranch}.`;
     case 'no-base':
       return `The base branch ${printable(host.baseBranch)} of ${host.id} does not resolve to a commit.`;
     case 'gates-config':
@@ -140,10 +142,10 @@ function signingBlock(
   baseBranch: string,
   ident: { name: string; email: string },
 ): string[] {
-  const { statement, prerequisites } = prepared;
+  const { statement } = prepared;
   const lines = [
     'You are signing',
-    `  Phase ${prepared.phase.id}: ${printable(prepared.phase.name)}`,
+    `  Change ${prepared.change.id}: ${printable(prepared.change.title)}`,
     `  Project: ${hostId}`,
     `  Base: ${printable(baseBranch)} at ${prepared.tip}`,
     '  Inputs:',
@@ -158,21 +160,11 @@ function signingBlock(
     `  Gates: ${statement.gates.state === 'absent' ? 'none yet' : statement.gates.digest}`,
   );
   lines.push(`  Statement ${prepared.fingerprint}`);
-  const setup = prerequisites.userSetup;
-  if (setup.length === 0 && prerequisites.nonAutonomous === 0) {
-    lines.push('  Prerequisites: none');
+  if (prepared.ownerSteps.length === 0) {
+    lines.push('  Owner steps: none');
   } else {
-    lines.push('  Prerequisites:');
-    for (const item of setup) {
-      const why = item.why === null ? '' : `: ${printable(item.why)}`;
-      const vars = item.envVars.length === 0 ? '' : ` (${item.envVars.map(printable).join(', ')})`;
-      lines.push(`    - ${printable(item.service)}${why}${vars}`);
-    }
-    if (prerequisites.nonAutonomous > 0) {
-      lines.push(
-        `    - ${prerequisites.nonAutonomous} of ${prerequisites.total} plans need you present (not autonomous).`,
-      );
-    }
+    lines.push('  Owner steps (you do these by hand):');
+    for (const step of prepared.ownerSteps) lines.push(`    - ${printable(step)}`);
   }
   lines.push(`  Signing as ${printable(ident.name)} <${printable(ident.email)}>`);
   return lines;
@@ -189,10 +181,10 @@ export async function approveCommand(options: ApproveCommandOptions): Promise<nu
 
   // 1. Ids first: nothing is looked up, read or printed with an unchecked id.
   let hostId: string;
-  let phaseId: string;
+  let changeId: string;
   try {
     hostId = assertHostId(options.hostId);
-    phaseId = assertPhaseId(options.phaseId);
+    changeId = assertChangeId(options.changeId);
   } catch (error) {
     if (error instanceof InvalidIdError) {
       err(error.message);
@@ -252,12 +244,12 @@ export async function approveCommand(options: ApproveCommandOptions): Promise<nu
   const prepared = await prepareApproval({
     hostId,
     baseBranch: host.baseBranch,
-    phaseId,
+    changeId,
     reader,
     adapter,
   });
   if (!prepared.ok) {
-    err(refusalMessage(prepared, host, phaseId));
+    err(refusalMessage(prepared, host, changeId));
     return 1;
   }
 
@@ -305,7 +297,7 @@ export async function approveCommand(options: ApproveCommandOptions): Promise<nu
       baseBranch: host.baseBranch,
       itemPath: prepared.itemPath,
       fileBytes: prepared.bytes,
-      message: `counterpoint: approve phase ${phaseId}\n\nStatement ${prepared.fingerprint}\nInputs ${prepared.statement.inputs.combined}\n`,
+      message: `counterpoint: approve change ${changeId}\n\nStatement ${prepared.fingerprint}\nInputs ${prepared.statement.inputs.combined}\n`,
       ident,
       sign,
       expectedTip: prepared.tip,
@@ -356,7 +348,7 @@ export async function approveCommand(options: ApproveCommandOptions): Promise<nu
     trust,
     tmpDir,
   };
-  const state = await approvalState({ ...runwayOptions, phaseId });
+  const state = await approvalState({ ...runwayOptions, changeId });
   if (state.state !== 'on-runway') {
     const reason =
       state.state === 'invalid'

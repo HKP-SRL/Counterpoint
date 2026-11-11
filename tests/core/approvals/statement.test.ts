@@ -1,8 +1,9 @@
-// The approval statement format the owner chose at the 01-12 checkpoint ("item4", RESEARCH Item 4):
-// canonical JSON, the strict statement schema, the builder and serializer, the gate-config digest
-// and preparation at the base tip. Fixture repos are scratch git repositories; nothing is signed.
+// The approval statement format (`counterpoint/approval/v2`, openspec-host-adapter design decision
+// 7): canonical JSON, the strict statement schema, the builder and serializer, the gate-config
+// digest and preparation at the base tip. Fixture repos are scratch git repositories; nothing is
+// signed.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGsdAdapter } from '../../../src/adapters/gsd/index.ts';
+import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { canonicalJson } from '../../../src/core/approvals/canonical.ts';
 import { sha256Digest } from '../../../src/core/approvals/digest.ts';
 import {
@@ -24,10 +25,12 @@ import {
   commitChange,
   type FixtureRepo,
   materializeFixtureRepo,
+  SYNTHETIC,
 } from '../../helpers/fixture-repo.ts';
 import { removeScratchDirs } from '../../helpers/scratch.ts';
 
-const adapter = createGsdAdapter();
+const adapter = createOpenSpecAdapter();
+const READY_DIR = `openspec/changes/${SYNTHETIC.ready}`;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const TIP = 'a'.repeat(40);
 
@@ -46,7 +49,7 @@ function input(path: string, text: string, extra: Partial<ApprovalInput> = {}): 
     path,
     sourcePath: path,
     label: path.slice(path.lastIndexOf('/') + 1),
-    kind: 'plan',
+    kind: 'proposal',
     normalization: null,
     bytes: new TextEncoder().encode(text),
     ...extra,
@@ -97,12 +100,12 @@ describe('canonicalJson', () => {
 });
 
 describe('buildStatement', () => {
-  it('builds the item4 format for synthetic phase 02 at a fixed tip', async () => {
+  it('builds the v2 format for the synthetic ready change at a fixed tip', async () => {
     const reader = createGitFileReader(synthetic.root);
-    const inputs = await adapter.approvalInputs(reader, synthetic.commit, '02');
+    const inputs = await adapter.approvalInputs(reader, synthetic.commit, SYNTHETIC.ready);
     const statement = buildStatement({
       hostId: 'synthetic',
-      phaseId: '02',
+      changeId: SYNTHETIC.ready,
       baseBranch: 'master',
       tip: synthetic.commit,
       inputs,
@@ -110,10 +113,10 @@ describe('buildStatement', () => {
     });
 
     expect(statement.schema).toBe(APPROVAL_SCHEMA);
-    expect(statement.schema).toBe('counterpoint/approval/v1');
+    expect(statement.schema).toBe('counterpoint/approval/v2');
     expect(statement.kind).toBe('runway');
     expect(statement.host).toBe('synthetic');
-    expect(statement.item).toEqual({ type: 'phase', id: '02' });
+    expect(statement.item).toEqual({ type: 'change', id: SYNTHETIC.ready });
     expect(statement.base).toEqual({ branch: 'master', commit: synthetic.commit });
     expect(statement.inputs.algorithm).toBe('sha256');
     expect(statement.draft).toEqual({ state: 'none', digest: null });
@@ -121,22 +124,27 @@ describe('buildStatement', () => {
 
     const paths = statement.inputs.files.map((f) => f.path);
     expect(paths).toEqual([
-      '.planning/ROADMAP.md#phase-02',
-      '.planning/phases/02-ready-thing/02-01-PLAN.md',
-      '.planning/phases/02-ready-thing/02-02-PLAN.md',
-      '.planning/phases/02-ready-thing/02-CONTEXT.md',
-      '.planning/phases/02-ready-thing/02-RESEARCH.md',
-      '.planning/phases/02-ready-thing/02-UI-SPEC.md',
+      `${READY_DIR}/.openspec.yaml`,
+      `${READY_DIR}/design.md`,
+      `${READY_DIR}/proposal.md`,
+      `${READY_DIR}/specs/menu/spec.md`,
+      `${READY_DIR}/tasks.md`,
     ]);
     for (const file of statement.inputs.files) {
       const source = inputs.find((i) => i.path === file.path) as ApprovalInput;
       expect(file.digest).toBe(sha256Digest(source.bytes));
       expect(file.kind).toBe(source.kind);
     }
-    const section = statement.inputs.files[0];
-    expect(section?.normalization).toBe('cp-gsd-roadmap-section/v1');
-    expect(section?.kind).toBe('roadmap-section');
-    expect('normalization' in (statement.inputs.files[1] as object)).toBe(false);
+    expect(statement.inputs.files.map((f) => f.kind)).toEqual([
+      'metadata',
+      'design',
+      'proposal',
+      'spec',
+      'tasks',
+    ]);
+    const tasks = statement.inputs.files[4];
+    expect(tasks?.normalization).toBe('cp-openspec-tasks/v1');
+    expect('normalization' in (statement.inputs.files[2] as object)).toBe(false);
     expect(statement.inputs.combined).toBe(sha256Digest(canonicalJson(statement.inputs.files)));
     expect(ApprovalStatement.parse(statement)).toEqual(statement);
   });
@@ -144,7 +152,7 @@ describe('buildStatement', () => {
   it('sorts files by path bytes, not by locale', () => {
     const statement = buildStatement({
       hostId: 'h',
-      phaseId: '02',
+      changeId: 'a-change',
       baseBranch: 'master',
       tip: TIP,
       inputs: [
@@ -168,7 +176,7 @@ describe('buildStatement', () => {
     const build = (list: ApprovalInput[]) =>
       buildStatement({
         hostId: 'h',
-        phaseId: '02',
+        changeId: 'a-change',
         baseBranch: 'master',
         tip: TIP,
         inputs: list,
@@ -185,7 +193,7 @@ describe('buildStatement', () => {
   it('serializes pretty JSON with sorted keys, two-space indent and a trailing LF', () => {
     const statement = buildStatement({
       hostId: 'h',
-      phaseId: '02',
+      changeId: 'a-change',
       baseBranch: 'master',
       tip: TIP,
       inputs: [input('p/1.md', 'one')],
@@ -203,7 +211,7 @@ describe('buildStatement', () => {
     expect(() =>
       buildStatement({
         hostId: 'h',
-        phaseId: '02',
+        changeId: 'a-change',
         baseBranch: 'master',
         tip: TIP,
         inputs: [input('p/1.md', 'one'), input('p/1.md', 'two')],
@@ -219,7 +227,7 @@ describe('ApprovalStatement schema', () => {
       serializeStatement(
         buildStatement({
           hostId: 'h',
-          phaseId: '02',
+          changeId: 'a-change',
           baseBranch: 'master',
           tip: TIP,
           inputs: [input('p/1.md', 'one')],
@@ -239,10 +247,19 @@ describe('ApprovalStatement schema', () => {
     );
   });
 
-  it('rejects a wrong schema string', () => {
+  it('rejects a wrong schema string, including v1 statements', () => {
     expect(
-      ApprovalStatement.safeParse({ ...valid(), schema: 'counterpoint/approval/v2' }).success,
+      ApprovalStatement.safeParse({ ...valid(), schema: 'counterpoint/approval/v1' }).success,
     ).toBe(false);
+    expect(
+      ApprovalStatement.safeParse({ ...valid(), schema: 'counterpoint/approval/v3' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an input kind outside the v2 set', () => {
+    const statement = valid() as { inputs: { files: { kind: string }[] } };
+    (statement.inputs.files[0] as { kind: string }).kind = 'plan';
+    expect(ApprovalStatement.safeParse(statement).success).toBe(false);
   });
 
   it('rejects a malformed digest', () => {
@@ -267,10 +284,16 @@ describe('ApprovalStatement schema', () => {
     ).toBe(false);
   });
 
-  it('rejects a host or phase id that fails the regex', () => {
+  it('rejects a host or change id that fails the rules, and any other item type', () => {
     expect(ApprovalStatement.safeParse({ ...valid(), host: '-bad' }).success).toBe(false);
+    for (const id of ['Bad_Id', 'archive', 'a'.repeat(65), '../x']) {
+      expect(
+        ApprovalStatement.safeParse({ ...valid(), item: { type: 'change', id } }).success,
+      ).toBe(false);
+    }
     expect(
-      ApprovalStatement.safeParse({ ...valid(), item: { type: 'phase', id: '2' } }).success,
+      ApprovalStatement.safeParse({ ...valid(), item: { type: 'milestone', id: 'a-change' } })
+        .success,
     ).toBe(false);
   });
 });
@@ -343,84 +366,88 @@ describe('gatesDigest', () => {
 });
 
 describe('prepareApproval', () => {
-  async function prepare(phaseId: string) {
+  async function prepare(changeId: string) {
     return prepareApproval({
       hostId: 'synthetic',
       baseBranch: 'master',
-      phaseId,
+      changeId,
       reader: createGitFileReader(synthetic.root),
       adapter,
     });
   }
 
-  it('prepares phase 02 at the local base tip', async () => {
-    const prepared = await prepare('02');
+  it('prepares the ready change at the local base tip', async () => {
+    const prepared = await prepare(SYNTHETIC.ready);
     if (!prepared.ok) throw new Error(`refused: ${prepared.reason}`);
     expect(prepared.tip).toBe(synthetic.commit);
-    expect(prepared.itemId).toBe('phase-02');
-    expect(prepared.itemPath).toBe('.counterpoint/approvals/phase-02.json');
+    expect(prepared.itemId).toBe(SYNTHETIC.ready);
+    expect(prepared.itemPath).toBe(`.counterpoint/approvals/${SYNTHETIC.ready}.json`);
     expect(prepared.fingerprint).toMatch(/^[0-9a-f]{12}$/);
     expect(prepared.fingerprint).toBe(statementFingerprint(prepared.statement));
     expect(new TextDecoder().decode(prepared.bytes)).toBe(serializeStatement(prepared.statement));
     expect(prepared.statement.base).toEqual({ branch: 'master', commit: synthetic.commit });
-    expect(prepared.phase).toEqual({ id: '02', name: 'Ready Thing', planCount: 2 });
-    expect(prepared.prerequisites.total).toBe(2);
-    expect(prepared.prerequisites.nonAutonomous).toBe(1);
-    expect(prepared.prerequisites.userSetup.map((s) => s.service)).toContain('google-oauth');
+    expect(prepared.change).toEqual({ id: SYNTHETIC.ready, title: 'Ready thing', taskCount: 4 });
+    expect(prepared.ownerSteps).toEqual(['Owner: create the Supabase project']);
     expect(prepared.inputs.map((i) => i.path)).toEqual(
       prepared.statement.inputs.files.map((f) => f.path),
     );
-    const section = prepared.inputs[0];
-    expect(section?.label).toBe('ROADMAP.md · Phase 02 section');
-    expect(section?.normalization).toBe('cp-gsd-roadmap-section/v1');
+    expect(prepared.inputs.map((i) => i.label)).toEqual([
+      '.openspec.yaml',
+      'design.md',
+      'proposal.md',
+      'specs/menu/spec.md',
+      'tasks.md',
+    ]);
     for (const entry of prepared.inputs) expect(entry.digest).toMatch(DIGEST_RE);
-    expect(prepared.inputs[1]?.normalization).toBeNull();
+    expect(prepared.inputs[4]?.normalization).toBe('cp-openspec-tasks/v1');
+    expect(prepared.inputs[2]?.normalization).toBeNull();
   });
 
   it('prepares byte-identical statements for the same tip', async () => {
-    const a = await prepare('02');
-    const b = await prepare('02');
+    const a = await prepare(SYNTHETIC.ready);
+    const b = await prepare(SYNTHETIC.ready);
     if (!a.ok || !b.ok) throw new Error('refused');
     expect(Buffer.from(b.bytes).equals(Buffer.from(a.bytes))).toBe(true);
   });
 
-  it('refuses a phase without context as not-ready (no-context)', async () => {
-    expect(await prepare('03')).toMatchObject({
+  it('refuses a change without a proposal as not-ready (no-proposal)', async () => {
+    expect(await prepare(SYNTHETIC.noProposal)).toMatchObject({
       ok: false,
       reason: 'not-ready',
-      notReadyReason: 'no-context',
+      notReadyReason: 'no-proposal',
     });
   });
 
-  it('refuses a phase with context but no plans as not-ready (no-plans)', async () => {
-    expect(await prepare('02.1')).toMatchObject({
+  it('refuses a proposal without tasks as not-ready (no-tasks)', async () => {
+    expect(await prepare(SYNTHETIC.noTasks)).toMatchObject({
       ok: false,
       reason: 'not-ready',
-      notReadyReason: 'no-plans',
+      notReadyReason: 'no-tasks',
     });
   });
 
-  it('refuses a built phase', async () => {
-    expect(await prepare('01')).toMatchObject({ ok: false, reason: 'built' });
+  it('refuses a built change and an archived one', async () => {
+    expect(await prepare(SYNTHETIC.built)).toMatchObject({ ok: false, reason: 'built' });
+    expect(await prepare(SYNTHETIC.archived)).toMatchObject({ ok: false, reason: 'built' });
   });
 
-  it('refuses an unreadable phase naming the file and reason', async () => {
-    const result = await prepare('04');
+  it('refuses an unreadable change naming the file and reason', async () => {
+    const result = await prepare(SYNTHETIC.broken);
     expect(result).toMatchObject({ ok: false, reason: 'unreadable' });
     if (result.ok || result.reason !== 'unreadable') throw new Error('expected unreadable');
-    expect(result.file).toContain('04-01-PLAN.md');
+    expect(result.file).toBe(`openspec/changes/${SYNTHETIC.broken}/.openspec.yaml`);
     expect(result.detail.length).toBeGreaterThan(0);
   });
 
-  it('refuses an unknown phase as not-found', async () => {
-    expect(await prepare('09')).toMatchObject({ ok: false, reason: 'not-found' });
+  it('refuses an unknown change as not-found', async () => {
+    expect(await prepare('no-such-change')).toMatchObject({ ok: false, reason: 'not-found' });
   });
 
   it('refuses when the base branch does not resolve', async () => {
     const result = await prepareApproval({
       hostId: 'synthetic',
       baseBranch: 'no-such-branch',
-      phaseId: '02',
+      changeId: SYNTHETIC.ready,
       reader: createGitFileReader(synthetic.root),
       adapter,
     });
@@ -428,12 +455,12 @@ describe('prepareApproval', () => {
   });
 
   it('refuses invalid ids before reading anything', async () => {
-    await expect(prepare('2')).rejects.toThrow('Invalid phase id');
+    await expect(prepare('Not_A_Change')).rejects.toThrow('Invalid change id');
     await expect(
       prepareApproval({
         hostId: '-x',
         baseBranch: 'master',
-        phaseId: '02',
+        changeId: SYNTHETIC.ready,
         reader: createGitFileReader(synthetic.root),
         adapter,
       }),

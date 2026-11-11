@@ -7,10 +7,14 @@ import { EventEmitter } from 'node:events';
 import type { SQLOutputValue } from 'node:sqlite';
 import type { Store } from './db.ts';
 
-/** UI-SPEC Interaction Contract 2 families, plus `host` (a host registered or updated). */
+/**
+ * The live-update families (local-console: Live updates over one event stream), plus `host`
+ * (a host registered or updated).
+ * `planning`: the host's planning truth moved (a new base tip, or a settled re-read).
+ */
 export const EVENT_FAMILIES = [
   'host',
-  'phase',
+  'planning',
   'approval',
   'runway',
   'needs-you',
@@ -30,7 +34,7 @@ export interface StoredEvent {
 export interface NewEvent {
   hostId: string | null;
   family: EventFamily;
-  /** Ids only (phase id, item id, commit sha); never file contents. */
+  /** Ids only (change id, item id, commit sha); never file contents. */
   payload?: Record<string, unknown>;
 }
 

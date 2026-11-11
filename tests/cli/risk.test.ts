@@ -1,4 +1,4 @@
-// The owner's accepted-risk commands (01-19): `accept-risk gh-keychain` and `revoke-risk`, driven
+// The owner's accepted-risk commands: `accept-risk gh-keychain` and `revoke-risk`, driven
 // as functions with an injected TTY flag and typed answers, against scratch homes only. Nothing
 // here touches the owner's real Counterpoint home, Keychain or keys. A source scan keeps the
 // record's writer and revoker inside src/cli/risk.ts.

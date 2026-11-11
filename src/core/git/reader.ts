@@ -60,32 +60,38 @@ function assertCommit(commit: string, path: string): void {
   if (!OID_RE.test(commit)) throw new UnsafeTreeEntryError(path, 'invalid-commit');
 }
 
-/** Parses `ls-tree -z` output: `mode SP type SP oid TAB path NUL`. */
-function parseLsTree(stdout: string): TreeEntry[] {
-  const entries: TreeEntry[] = [];
+/**
+ * Parses `ls-tree -z` output: `mode SP type SP oid TAB path NUL`, or with `-l` (long)
+ * `mode SP type SP oid SP+ size TAB path NUL`, where size is `-` for anything but a blob.
+ */
+function parseLsTree(stdout: string, long = false): (TreeEntry & { size: number | null })[] {
+  const entries: (TreeEntry & { size: number | null })[] = [];
   for (const record of stdout.split('\u0000')) {
     if (record === '') continue;
     const tab = record.indexOf('\t');
-    const [mode, type, oid] = record.slice(0, tab).split(' ');
+    const [mode, type, oid, sizeText] = record.slice(0, tab).split(/ +/);
     const path = record.slice(tab + 1);
     if (tab < 0 || !mode || !oid || (type !== 'blob' && type !== 'tree' && type !== 'commit')) {
       throw new Error('Unexpected git ls-tree output.');
     }
-    entries.push({ name: path.slice(path.lastIndexOf('/') + 1), path, type, mode, oid });
+    const size = long && sizeText !== undefined && /^\d+$/.test(sizeText) ? Number(sizeText) : null;
+    entries.push({ name: path.slice(path.lastIndexOf('/') + 1), path, type, mode, oid, size });
   }
   return entries;
 }
 
 export function createGitFileReader(repoRoot: string): GitFileReader {
-  async function entryAt(commit: string, path: string): Promise<TreeEntry | null> {
+  /** The tree entry at `path` with its blob size (one `ls-tree -l` call), or null. */
+  async function entryAt(
+    commit: string,
+    path: string,
+  ): Promise<(TreeEntry & { size: number | null }) | null> {
     const { stdout } = await runGit(
       repoRoot,
-      ['ls-tree', '-z', '--full-tree', commit, '--', path],
-      {
-        env: LITERAL,
-      },
+      ['ls-tree', '-z', '-l', '--full-tree', commit, '--', path],
+      { env: LITERAL },
     );
-    return parseLsTree(stdout).find((entry) => entry.path === path) ?? null;
+    return parseLsTree(stdout, true).find((entry) => entry.path === path) ?? null;
   }
 
   return {
@@ -109,7 +115,7 @@ export function createGitFileReader(repoRoot: string): GitFileReader {
       const args = ['ls-tree', '-z', '--full-tree', commit];
       if (trimmed !== '') args.push('--', `${trimmed}/`);
       const { stdout } = await runGit(repoRoot, args, { env: LITERAL });
-      return parseLsTree(stdout);
+      return parseLsTree(stdout).map(({ size: _size, ...entry }) => entry);
     },
 
     async read(commit, path) {
@@ -119,11 +125,9 @@ export function createGitFileReader(repoRoot: string): GitFileReader {
       if (entry === null) return null;
       if (entry.mode === SYMLINK_MODE) throw new UnsafeTreeEntryError(path, 'symlink');
       if (entry.type !== 'blob') return null;
-      const size = Number.parseInt(
-        (await runGit(repoRoot, ['cat-file', '-s', entry.oid])).stdout,
-        10,
-      );
-      if (!Number.isSafeInteger(size) || size > MAX_BLOB_BYTES) {
+      // The size comes from the same listing, before any content is read.
+      const size = entry.size;
+      if (size === null || !Number.isSafeInteger(size) || size > MAX_BLOB_BYTES) {
         throw new UnsafeTreeEntryError(path, 'too-large');
       }
       const { stdout } = await runGit(repoRoot, ['cat-file', 'blob', entry.oid], {

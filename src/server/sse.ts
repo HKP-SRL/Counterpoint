@@ -1,4 +1,5 @@
-// GET /api/events: the console's one live stream (UI-SPEC Interaction Contract 2).
+// GET /api/events: the console's one live stream (local-console: Live updates over one event
+// stream).
 //
 // Each SQLite outbox event becomes one SSE frame: `id:` is the seq, `event:` is the family and
 // `data:` is `{ hostId, ...payload }`. A reconnecting browser sends `Last-Event-ID` (or the

@@ -1,4 +1,5 @@
-// The console's request guard over a real 127.0.0.1 socket (FOUND-02, T-01-06, T-01-07, T-01-11).
+// The console's request guard over a real 127.0.0.1 socket (local-console: Loopback-only bind;
+// Exact Host allowlist; Origin and content checks on writes; Session required for the API).
 // Raw node:http requests, because fetch cannot set or omit the Host header.
 import type { Server } from 'node:http';
 import { request } from 'node:http';

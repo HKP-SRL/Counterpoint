@@ -2,7 +2,7 @@
 
 > Working name. Independent voices that each keep their own line and resolve into one harmony: council seats arguing, agents building in parallel, and the owner as composer who signs off the result.
 
-Status: brainstorm captured on 2026-11-09, before any planning. Input for `/gsd-new-project`.
+Status: brainstorm captured on 2026-11-09, before any planning. Input for the first planning round.
 
 ## What it is
 
@@ -12,8 +12,8 @@ It is its own public project (open source, published as a scoped npm package, e.
 
 ## Principles
 
-1. **Agnostic to the SDD framework.** The core never knows which spec framework is used. Frameworks plug in through adapters. **GSD is the first adapter**; "no framework" (a plain markdown/YAML list) should also work.
-2. **Read the plan, don't own it.** Counterpoint reads planning truth from the host's framework (for GSD: `.planning/` ROADMAP, phases, CONTEXT, PLANs). It never becomes a second spec system.
+1. **Agnostic to the SDD framework.** The core never knows which spec framework is used. Frameworks plug in through adapters. **OpenSpec is the first adapter**; "no framework" (a plain markdown/YAML list) should also work.
+2. **Read the plan, don't own it.** Counterpoint reads planning truth from the host's framework (for OpenSpec: `openspec/` specs and changes — proposal, design, tasks). It never becomes a second spec system.
 3. **Claude Code only.** Designed for Claude Code as the agent runtime; no multi-vendor abstraction.
 4. **The owner approves, agents satisfy.** Human approval is a signed git commit by a key agents cannot use (passphrase or Touch ID, never cached).
 5. **An external judge.** Gates are commands judged by exit code. An agent saying "done" never counts.
@@ -47,10 +47,10 @@ The council (role "seats", e.g. product, design, tech, QA, compliance, customer 
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **Pick**: the answer becomes a decision written back through the framework adapter (GSD: the phase CONTEXT decisions) and committed.
+- **Pick**: the answer becomes a decision written back through the framework adapter (OpenSpec: the change's design.md decisions) and committed.
 - **More like B →**: none fits, but B is closest. The council generates a new round anchored on B, optionally with a steering note ("B, but don't block the waiter"). A breadcrumb trail (A/B/C → B → B2 …) shows how you converged and lets you back up.
 - **None fit, reframe**: the question itself was wrong; the council reframes it.
-- With GSD this is a better front-end for what `discuss-phase` already does (grey areas → decisions).
+- With OpenSpec this is a better front-end for what `/opsx:explore` already does (grey areas → decisions).
 
 ## Gamification — on what matters, not points
 
@@ -71,8 +71,8 @@ Runway length, questions resolved, rounds-to-converge, first-attempt gate pass r
 ## Open questions
 
 - Approving and deciding from the UI vs. signing in a terminal: prepare-and-show-command, a local passphrase helper, or a Touch ID key (1Password SSH agent) signing on click.
-- How GSD plans map to buildable work items (phase → plans → tasks/waves) and where "approved" lives.
+- How OpenSpec changes map to buildable work items (change → tasks) and where "approved" lives.
 - Day-mode concurrency: the owner working in the main checkout while builds run in worktrees — merge/conflict policy.
 - Which Cena scope Counterpoint builds first (the QR-menu roadmap vs. the ordering/kitchen tier the prototype targeted).
 - Council cost: seats × rounds × cards; how many seats per question by default.
-- Package layout: CLI + local web UI + adapters (`@alex-profir/counterpoint`, `…-gsd`?) or a single package.
+- Package layout: CLI + local web UI + adapters (`@alex-profir/counterpoint`, `…-openspec`?) or a single package.

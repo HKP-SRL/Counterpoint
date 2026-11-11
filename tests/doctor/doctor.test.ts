@@ -1,6 +1,6 @@
 // `counterpoint doctor` with an injected probe (no live claude), fake tool and key checks, a
-// throwaway trusted key and scratch hosts. The live probe path is proven in 01-04/01-05 and
-// exercised by the owner in 01-16.
+// throwaway trusted key and scratch hosts. The live probe path is proven by the live probe tests
+// and exercised by the owner.
 import {
   existsSync,
   lstatSync,
@@ -129,7 +129,7 @@ interface ProbeCall {
 type Evidence = Pick<ProbeTarget, 'steps' | 'leaks' | 'trusted'>;
 
 /**
- * The gh row's structured evidence as the live probe records it (01-19): Bash cat, Read and Grep
+ * The gh row's structured evidence as the live probe records it: Bash cat, Read and Grep
  * refused by a deny rule (control reached), the Keychain lookup reached in both sessions. A
  * reachable row leaks only the Keychain canary; a blocked one leaks nothing and its lookup was
  * refused too.
@@ -300,7 +300,7 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     await runDoctorCommand(host);
     const { matcherVersion } = readReport(host.home);
-    // Revision 4 (01-26): the credential-env row, on top of 3's deterministic refusals only.
+    // Revision 4: the credential-env row, on top of 3's deterministic refusals only.
     expect(matcherVersion).toBe(`${MATCHER_CLAUDE_VERSION}+r${MATCHER_REVISION}`);
     expect(matcherVersion.endsWith('+r4')).toBe(true);
   });
@@ -608,7 +608,7 @@ describe('counterpoint doctor', () => {
     expect(run.code).toBe(1);
   });
 
-  describe('the credential-env row through the real probe pipeline (01-26, fake claude)', () => {
+  describe('the credential-env row through the real probe pipeline (fake claude)', () => {
     /**
      * A fake claude that makes only two kinds of call: the env-shape step, answered with the
      * session's planted listing (names, lengths, shapes and host classes; no value exists), and
@@ -792,7 +792,7 @@ describe('counterpoint doctor', () => {
     });
   });
 
-  describe('the Sandbox isolation settings check (01-25)', () => {
+  describe('the Sandbox isolation settings check', () => {
     /** A scratch user home whose `.claude/settings.json` holds `settings`, or nothing. */
     function settingsHome(settings?: unknown) {
       const home = makeScratchDir('dset');
@@ -908,7 +908,7 @@ describe('counterpoint doctor', () => {
     });
   });
 
-  describe('the Agent permission mode check (01-22)', () => {
+  describe('the Agent permission mode check', () => {
     const FORCED =
       '⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (it blocks auto mode).';
     const FIX =
@@ -1084,7 +1084,7 @@ describe('counterpoint doctor', () => {
   });
 });
 
-describe('the accepted risk gh-keychain (01-19)', () => {
+describe('the accepted risk gh-keychain', () => {
   const REASON = 'gh keyring entry; Keychain access is the accepted macOS residual';
   const RECORDED = new Date('2026-11-10T12:00:00.000Z');
   const ACCEPTED_LINE = `  ${' '.repeat('NOT CHECKED'.length)}  Accepted risk gh-keychain, recorded 2026-11-10: ${REASON}`;
@@ -1296,7 +1296,7 @@ describe('resolveHostForCommand', () => {
   });
 });
 
-describe('sessionModeEvidence (01-22)', () => {
+describe('sessionModeEvidence', () => {
   it('records one mode per init event and no notice on empty stderr', () => {
     const events = [
       { type: 'system', subtype: 'init', permissionMode: 'auto' },
@@ -1334,7 +1334,7 @@ describe('sessionModeEvidence (01-22)', () => {
   });
 });
 
-describe('judgeAgentMode (01-22)', () => {
+describe('judgeAgentMode', () => {
   const FIX =
     'Counterpoint launches agent sessions with --permission-mode auto. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.';
 

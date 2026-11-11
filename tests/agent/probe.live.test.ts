@@ -1,5 +1,5 @@
-// Live differential sandbox probe against the owner's real `claude` binary (01-04 Task 2; eight
-// targets since 01-17/01-18, nine since 01-26; the full proof of the gap chain in 01-23).
+// Live differential sandbox probe against the owner's real `claude` binary (nine
+// targets: the outside-workdir row and the credential-env row were added after the first run).
 //
 // Gated by COUNTERPOINT_LIVE_PROBE=1: it needs a signed-in `claude` and spends a few cents of
 // haiku. Every protected directory here is a scratch directory under CP_TEST_SCRATCH (a fake home
@@ -8,20 +8,21 @@
 // the probe directory is scratch too. The owner's real directories are never targeted.
 //
 // The treatment runs with the production launch profile (plan.treatmentProfile) in auto mode, with
-// the subprocess scrub opted out (agentEnv sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to `0`; 01-24,
-// STATE.md [Owner] 2026-11-10) and the scrub's three replacements in force: sandbox auto-allow off
-// (01-24), the launched settings passing the isolation judge (01-25, judged here on the launch
-// source only), and the credential-env row (01-26). Only deterministic refusals count: a deny rule,
+// the subprocess scrub opted out (agentEnv sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to `0`; owner
+// decision 2026-11-10) and the scrub's three replacements in force: sandbox auto-allow off,
+// the launched settings passing the isolation judge (judged here on the launch
+// source only), and the credential-env row. Only deterministic refusals count: a deny rule,
 // the OS sandbox or the outside-write block. A mode or classifier decision never makes a row
 // Blocked. The credential-env row reads each sandboxed shell's environment by name, length, shape
-// and host class, never a value (01-26), with the owner's one exception `sandbox-proxy-login`.
-// gh credentials may read Reachable only as the owner-accepted Keychain-only reach (WINDOWS.md #1).
+// and host class, never a value, with the owner's one exception `sandbox-proxy-login`.
+// gh credentials may read Reachable only as the owner-accepted Keychain-only reach
+// (doctor: Owner-recorded accepted risk).
 //
 // Evidence first: before any assertion, the raw streams, stderr, targets.json, step-classes.json,
 // mode.json, control-rules.json, launch.json, isolation.json, env-listing.json, tool-calls.json and
 // redacted copies of both streams plus live-plan.json go to .tmp/live-probe/ (gitignored). Then the
-// assertions: the stop conditions of 01-23 Task 1 step 3 are hard; the facts that step records as
-// findings (the mode and notices, launch.json, isolation.json, the control attribution rule, a
+// assertions: the stop conditions (protected targets reached) are hard; the facts that step records
+// as findings (the mode and notices, launch.json, isolation.json, the control attribution rule, a
 // missing tool) are soft. Last, and only when every hard assertion passed, every tool call was a
 // planned step and COUNTERPOINT_FREEZE_FIXTURES=1 is set, the redacted pair and live-plan.json
 // replace the frozen fixtures under tests/fixtures/stream-json/.
@@ -138,8 +139,9 @@ function redact(raw: string, prefixes: ReadonlyArray<readonly [string, string]>)
   return `${lines.join('\n')}\n`;
 }
 
-// --- The recording runner (copied from 01-24's live launch test; never imported from a live test
-// file, which would register its tests here) -------------------------------------------------------
+// --- The recording runner (copied from the live launch test; never imported from a live test
+// file, which would register its tests here)
+// -------------------------------------------------------
 
 interface RecordedRequest {
   argv: string[];
@@ -220,7 +222,7 @@ function launchedFact(request: RecordedRequest | undefined): LaunchedFact | null
   };
 }
 
-/** 01-25's isolation judge over one launch source: the request's launched `--settings`. */
+/** The isolation judge over one launch source: the request's launched `--settings`. */
 function isolationOf(request: RecordedRequest | undefined, homeDir: string) {
   if (request === undefined) return null;
   const settings = launchedSettings(request);
@@ -240,7 +242,8 @@ function isolationOf(request: RecordedRequest | undefined, homeDir: string) {
   );
 }
 
-// --- Stream access ---------------------------------------------------------------------------------
+// --- Stream access
+// ---------------------------------------------------------------------------------
 
 function contentBlocks(event: StreamEvent): Json[] {
   const message = (event as Json).message;
@@ -271,7 +274,7 @@ function toolUses(events: readonly StreamEvent[]): ToolUse[] {
   return uses;
 }
 
-/** True when the tool call is the step (right tool, right path or command), loosely (01-04). */
+/** True when the tool call is the step (right tool, right path or command), loosely. */
 function matches(step: ProbeStep, use: ToolUse): boolean {
   if (use.name !== step.tool) return false;
   if (step.tool === 'Bash') {
@@ -421,7 +424,7 @@ function isInside(path: string, dir: string): boolean {
   return path === dir || path.startsWith(`${dir}/`);
 }
 
-/** The control allow-surface entry that covers a control step, or null (01-24). */
+/** The control allow-surface entry that covers a control step, or null. */
 function coveringEntry(step: ProbeStep, surface: readonly string[], mirror: string): string | null {
   const has = (entry: string) => (surface.includes(entry) ? entry : null);
   const path = step.path;
@@ -500,7 +503,7 @@ interface SessionListing {
   deniedPresent: string[];
 }
 
-/** 01-26's parser and rule over one session's env-shape step results. Never a value. */
+/** The env-listing parser and rule over one session's env-shape step results. Never a value. */
 function sessionListing(plan: ProbePlan, session: Session, run: AgentRun): SessionListing {
   const step = plan[session].steps.find((s) => s.operation === 'env-shape');
   const uses =
@@ -619,7 +622,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     const cClasses = stepClasses(plan, 'control', control.events, undefined);
     writeJson(DEBUG_DIR, 'step-classes.json', { treatment: tClasses, control: cClasses });
 
-    // mode.json: the treatment judged exactly as doctor judges it (01-22).
+    // mode.json: the treatment judged exactly as doctor judges it.
     const treatmentMode = sessionModeEvidence(treatment);
     const controlMode = sessionModeEvidence(control);
     const mode = {
@@ -629,7 +632,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     };
     writeJson(DEBUG_DIR, 'mode.json', mode);
 
-    // The recorded requests (01-24): the control's, and every treatment attempt's.
+    // The recorded requests: the control's, and every treatment attempt's.
     const promptOf = (r: RecordedRequest) => r.argv[r.argv.indexOf('-p') + 1];
     const controlRequest = runner.requests.find((r) => promptOf(r) === plan.control.prompt);
     const treatmentRequests = runner.requests.filter((r) => promptOf(r) === plan.treatment.prompt);
@@ -674,15 +677,15 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     };
     writeJson(DEBUG_DIR, 'launch.json', launch);
 
-    // isolation.json: 01-25's judge over each launched --settings as the launch source. No user or
-    // managed settings source is read here (executors never read the owner's settings).
+    // isolation.json: the isolation judge over each launched --settings as the launch source. No
+    // user or managed settings source is read here (executors never read the owner's settings).
     const isolation = {
       treatment: isolationOf(treatmentRequests.at(-1), home),
       control: isolationOf(controlRequest, home),
     };
     writeJson(DEBUG_DIR, 'isolation.json', isolation);
 
-    // env-listing.json: names, lengths, shapes and host classes only, never a value (01-26).
+    // env-listing.json: names, lengths, shapes and host classes only, never a value.
     const envListing = {
       envScriptIntact: outcome.envScriptIntact,
       treatment: sessionListing(plan, 'treatment', treatment),
@@ -739,13 +742,13 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
       .map((row) => `${row.id}: ${row.result} (${row.evidence})`)
       .join('\n');
 
-    // --- The raw facts (01-04, c3f8034) ----------------------------------------------------------
+    // --- The raw facts (c3f8034) ----------------------------------------------------------
     // Both sessions really ran to a result.
     expect(treatment.result, treatment.stderr).not.toBeNull();
     expect(control.result, control.stderr).not.toBeNull();
 
     // Both sessions attempted every planned step; a skipped step would make a "no canary in the
-    // treatment stream" result meaningless (RESEARCH Pitfall 1).
+    // treatment stream" result meaningless.
     const tUses = toolUses(treatment.events);
     const cUses = toolUses(control.events);
     const missing = (steps: readonly ProbeStep[], uses: readonly ToolUse[]) =>
@@ -773,7 +776,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     expect(gitNamesAfter.filter((name) => !gitNamesBefore.includes(name))).toEqual([]);
     expect(existsSync(plan.outsideRoot), 'outside canary dir left behind').toBe(false);
 
-    // A session that lacked a tool it needed is a recorded finding (01-23 step 3).
+    // A session that lacked a tool it needed is a recorded finding.
     expect
       .soft(treatment.raw, 'treatment tool unavailable')
       .not.toContain('No such tool available');
@@ -805,11 +808,11 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
       expect.soft(fact?.blockWritesOutsideWorkingDirectories, `${label} block`).toBe(true);
     }
 
-    // isolation.json: both launched --settings pass 01-25's judge as the launch source.
+    // isolation.json: both launched --settings pass the isolation judge as the launch source.
     expect.soft(isolation.treatment?.result, 'treatment isolation').toBe('pass');
     expect.soft(isolation.control?.result, 'control isolation').toBe('pass');
 
-    // control-rules.json: 01-21's control attribution rule.
+    // control-rules.json: the control attribution rule.
     expect.soft(typeof workdir === 'string' && isAbsolute(workdir), 'control workdir').toBe(true);
     expect.soft(sessions.length, 'control init events').toBeGreaterThan(0);
     for (const s of sessions) expect.soft(s.cwd, 'control init cwd').toBe(workdir);
@@ -842,8 +845,9 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
       }
     }
 
-    // --- Stop conditions (hard) -------------------------------------------------------------------
-    // Every tool call was a planned step (an unplanned command could have printed env values).
+    // --- Stop conditions (hard)
+    // ------------------------------------------------------------------- Every tool call was a
+    // planned step (an unplanned command could have printed env values).
     expect(
       toolCalls.filter((c) => !c.planned),
       'unplanned tool calls',
@@ -876,7 +880,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
       expect(['denied-rule', 'denied-os'], `gh treatment ${s.operation}`).toContain(s.cls);
     }
 
-    // env-listing.json: both listings recognised and clean under 01-26's scoped rule.
+    // env-listing.json: both listings recognised and clean under the scoped credential-env rule.
     expect(envListing.envScriptIntact, 'env script intact').toBe(true);
     for (const session of ['treatment', 'control'] as const) {
       const listing = envListing[session];
@@ -925,7 +929,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
       );
     }
 
-    // gh credentials: Blocked, or exactly the owner-accepted Keychain residual (WINDOWS.md #1).
+    // gh credentials: Blocked, or exactly the owner-accepted gh-keychain residual.
     if (ghResult === 'blocked') {
       // A classifier decision never makes the row Blocked: the Keychain step was refused by a rule
       // or the OS sandbox.

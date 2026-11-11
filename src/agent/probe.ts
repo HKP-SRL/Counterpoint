@@ -1,18 +1,17 @@
-// The differential sandbox probe behind `counterpoint doctor` (FOUND-04, RESEARCH "doctor live
-// probe design").
+// The differential sandbox probe behind `counterpoint doctor` (doctor: Differential live probe).
 //
 // Two headless sessions run the same numbered steps:
 // - Treatment (T) runs with the production launch profile (buildAgentSandboxSettings: settings
 //   and tool list, unchanged, with the probe directory as its workdir) against nonce canaries the
 //   probe plants inside the real protected directories, write attempts on the host's git config,
 //   hooks and info, and Write/Edit attempts on files outside the working folder (a canary
-//   directory `.cp-outside-{nonce}` in the user's home, 01-17). Every such step should be denied.
+//   directory `.cp-outside-{nonce}` in the user's home). Every such step should be denied.
 //   Last, both sessions list their sandboxed Bash environment by name, length and value shape
-//   only (the env-shape step, ENV_SHAPE_AWK, 01-26); no variable may look like a credential.
+//   only (the env-shape step, ENV_SHAPE_AWK); no variable may look like a credential.
 // - Control (C) keeps every deny of T but gets a freshly built allow side that names only a
 //   probe-owned mirror directory (`cp-mirror-{nonce}`), and runs the same steps against mirror
 //   canaries. Every step should succeed. C never receives any grant on a real protected
-//   directory or the real git dir, inherited or added (T-01-18, T-01-61).
+//   directory or the real git dir, inherited or added.
 // A target counts as Blocked only if C reached its mirror and T did not reach the real one; that
 // judgement (and the denial-text classifier) lives in probe-evaluator.ts. This module plans,
 // launches, captures, evaluates (through evaluateProbe) and cleans up.
@@ -63,20 +62,20 @@ import type { AgentRun, AgentRunner } from './runner.ts';
 /**
  * The treatment session is launched with the production launch profile itself (the plan's
  * `treatmentProfile`: buildAgentSandboxSettings' settings and `allowedTools`), never with a
- * probe-local tool list (T-01-19, T-01-65).
+ * probe-local tool list.
  *
  * The control session's tools: only Grep scoped to the mirror. Grep needs the scoped entry
  * because claude 2.1.319 removes Grep and Glob from a session whose `--allowedTools` does not
  * name Grep (verified live: "No such tool available: Grep"); a bare `Grep` would be a grant over
  * every path, so the entry names only the mirror. Bash, Read, Write and Edit stay available
- * without being named (Read, Write and Edit did in 01-18; the live launch test checks Bash), and
- * every control step is covered by an explicit allow rule in buildControlSettings.
+ * without being named (Read, Write and Edit did in a live run; the live launch test checks Bash),
+ * and every control step is covered by an explicit allow rule in buildControlSettings.
  *
- * There is no bare `Bash` entry (01-21). The stream names only the reason type of a permission
+ * There is no bare `Bash` entry. The stream names only the reason type of a permission
  * decision, never the matched rule, so with a bare `Bash` present a `rule` accept of a control
  * Bash step could not be told apart from one by its exact-command rule. Without it only the
  * control's narrow rules can accept a control step. Every entry names only probe-owned paths or
- * the probe's own commands (T-01-18, T-01-61).
+ * the probe's own commands.
  */
 export function controlTools(plan: ProbePlan): string[] {
   return [pathRule('Grep', plan.mirrorRoot)];
@@ -106,7 +105,7 @@ export type StepOperation =
   | 'env-shape';
 
 /**
- * The environment listing script (01-26, replacement 3 of 3 for the scrub opt-out). For every
+ * The environment listing script (replacement 3 of 3 for the scrub opt-out). For every
  * variable in the environment of the command that runs it, it prints one line: the name, a space,
  * the value's length, a space and one shape word. It never prints a value or any part of one.
  *
@@ -121,13 +120,13 @@ export type StepOperation =
  *
  * The shape words, tested in this order (first match wins; src/agent/env-listing.ts ENV_SHAPES):
  * prefix, jwt, url-userinfo, pem, opaque, plain. A `url-userinfo` line carries a fourth field,
- * the host class `loopback` or `other` (host_class, 01-26 revision): the host, user and password
+ * the host class `loopback` or `other` (host_class): the host, user and password
  * never leave the command. The `CLOUDSDK_PROXY_ADDRESS` line always carries a fourth field too,
- * that bare host's class (address_class; STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD
+ * that bare host's class (address_class; owner decision 2026-11-10, "CLOUDSDK_PROXY_PASSWORD
  * joins the sandbox-proxy-login exception"), never the address. The program has exactly one
  * print statement.
  */
-export const ENV_SHAPE_AWK = `# Counterpoint environment listing (01-26). Prints NAME LENGTH SHAPE [HOSTCLASS] per variable, never a value.
+export const ENV_SHAPE_AWK = `# Counterpoint environment listing. Prints NAME LENGTH SHAPE [HOSTCLASS] per variable, never a value.
 function is_uuid(v) {
   # A 36-character hex UUID with dashes at 9, 14, 19 and 24 (a session id, not a secret).
   return length(v) == 36 && v ~ "^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+$" && substr(v, 9, 1) == "-" && substr(v, 14, 1) == "-" && substr(v, 19, 1) == "-" && substr(v, 24, 1) == "-"
@@ -158,7 +157,7 @@ function loopback_host(v,    n, o, k) {
   return 1
 }
 function host_class(v,    i, rest, at, user, hp, host, port, k) {
-  # The host class of a url-userinfo value (01-26): "loopback" only when the whole value is one
+  # The host class of a url-userinfo value: "loopback" only when the whole value is one
   # URL: a scheme and ://, a user:password userinfo with exactly one @, a loopback host (see
   # loopback_host), optionally : and 1 to 5 digits, optionally one /, then nothing.
   # Every other form is "other" (fail closed). Only the class word is ever printed.
@@ -193,7 +192,7 @@ function host_class(v,    i, rest, at, user, hp, host, port, k) {
   return "other"
 }
 function address_class(v) {
-  # The host class of CLOUDSDK_PROXY_ADDRESS, a bare host (01-26 rerun decision): "loopback" only
+  # The host class of CLOUDSDK_PROXY_ADDRESS, a bare host (owner decision after the rerun): "loopback" only
   # when the whole value, lower-cased, is localhost, ::1, [::1] or a dotted 127.0.0.0/8 address.
   # Every other form is "other" (fail closed): a port, a scheme, a path, whitespace, an empty value.
   if (v ~ "[ \\t\\n\\r\\f\\v]") return "other"
@@ -298,12 +297,12 @@ export interface ProbePlan {
     treatment: { path: string; target: string };
     control: { path: string; target: string };
   };
-  /** A temporary Keychain item standing in for gh's real keyring entry (RESEARCH A5). */
+  /** A temporary Keychain item standing in for gh's real keyring entry. */
   keychain: { service: string; account: string; value: string };
   /** Files the treatment session must not be able to create in the real git dir. */
   gitArtifacts: string[];
   /**
-   * The environment listing script (01-26): `{probeDir}/cp-env-{nonce}.awk`, holding exactly
+   * The environment listing script: `{probeDir}/cp-env-{nonce}.awk`, holding exactly
    * ENV_SHAPE_AWK. Both sessions run the same env-shape step against it.
    */
   envScript: { path: string; content: string };
@@ -508,7 +507,7 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
       });
     }
     // Files outside the working folder, appended last so every earlier step keeps its index
-    // (and the frozen 01-04 streams still line up). The Read is preparatory: Claude Code's Edit
+    // (and the frozen legacy streams still line up). The Read is preparatory: Claude Code's Edit
     // tool refuses a file the session has not read, before any permission check.
     const files = session === 'treatment' ? outside : outsideMirror;
     const outsideContent = `cp-probe ${nonce}`;
@@ -539,7 +538,7 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
       newString: outside.after,
       instruction: `Edit tool, file_path: ${files.editFile}, old_string: ${outside.before}, new_string: ${outside.after}`,
     });
-    // The environment listing (01-26), appended last in both sessions so every earlier step keeps
+    // The environment listing, appended last in both sessions so every earlier step keeps
     // its index. The same script and command in both sessions.
     steps.push(envShapeStep(envScript.path));
     return steps.map((step, i) => ({ index: i + 1, ...step }));
@@ -598,7 +597,7 @@ function bashStep(
 }
 
 /**
- * The env-shape step of the `credential-env` row (01-26): runs the listing script through awk.
+ * The env-shape step of the `credential-env` row: runs the listing script through awk.
  * Without an index; planProbe appends it last, and the live listing builds its one-step prompt
  * from it.
  */
@@ -649,21 +648,20 @@ export function probePrompt(steps: readonly ProbeStep[]): string {
 /**
  * Settings for the control session. The deny side, the sandbox flags, the outside-write block
  * (`blockWritesOutsideWorkingDirectories`), sandbox auto-allow off (`autoAllowBashIfSandboxed:
- * false`, 01-24) and the credential env deny entries (`sandbox.credentials`, 01-26) are copied
+ * false`) and the credential env deny entries (`sandbox.credentials`) are copied
  * from the treatment; all are restrictions, not grants. The allow side
  * is written fresh.
  * Nothing on the treatment's allow side (allow rules, additionalDirectories, allowWrite,
  * excludedCommands, ...) is ever read.
  *
- * Every control step is covered by an explicit allow rule (01-21), so in auto mode the
+ * Every control step is covered by an explicit allow rule, so in auto mode the
  * classifier never has to decide one: Read and Edit on the mirror, a Read rule on exactly the
  * control canary and on exactly the control symlink, and one `Bash(<command>)` rule per control
  * Bash step with that step's exact command. The Bash rules live in settings rather than
  * `--allowedTools`, so no CLI list parsing touches them. The stream names only the reason type of
  * an accept, never the matched rule, which is why the control carries no bare `Bash` entry
  * (controlTools): a `rule` accept of a control Bash step can then only come from its own
- * exact-command rule. Every entry names only probe-owned paths or the probe's own commands
- * (T-01-18, T-01-61).
+ * exact-command rule. Every entry names only probe-owned paths or the probe's own commands.
  */
 export function buildControlSettings(treatment: AgentSettings, plan: ProbePlan): AgentSettings {
   if (treatment.sandbox.enabled !== true || treatment.sandbox.failIfUnavailable !== true) {
@@ -699,7 +697,7 @@ export function buildControlSettings(treatment: AgentSettings, plan: ProbePlan):
         denyWrite: [...treatment.sandbox.filesystem.denyWrite],
         allowWrite: [mirror],
       },
-      // The credential env deny entries (01-26) are a restriction, copied fresh so both sessions
+      // The credential env deny entries are a restriction, copied fresh so both sessions
       // list the same environment.
       ...(treatment.sandbox.credentials !== undefined
         ? {
@@ -907,7 +905,7 @@ export interface ProbeOutcome {
   keychainCreated: boolean;
   /**
    * Whether the environment listing script still held exactly ENV_SHAPE_AWK, as a regular file,
-   * after both sessions (01-26). The treatment may edit files in its working folder, where the
+   * after both sessions. The treatment may edit files in its working folder, where the
    * script lives; a changed script means the listing proves nothing.
    */
   envScriptIntact: boolean;
@@ -956,7 +954,7 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
     writeFileSync(join(plan.mirrorGitDir, 'config'), '', { mode: 0o600 });
     symlinkSync(plan.symlinks.treatment.target, plan.symlinks.treatment.path);
     symlinkSync(plan.symlinks.control.target, plan.symlinks.control.path);
-    // The environment listing script (01-26): exclusive create, owner-only, before either session.
+    // The environment listing script: exclusive create, owner-only, before either session.
     writeFileSync(plan.envScript.path, plan.envScript.content, { mode: 0o600, flag: 'wx' });
 
     // Canaries inside the real protected directories; a missing directory is not created.
@@ -1011,7 +1009,7 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       });
     let treatment = await runTreatment();
     let treatmentAttempts = 1;
-    // RESEARCH Pitfall 1: a model that skips a step makes "no leak" meaningless. Retry once; the
+    // A model that skips a step makes "no leak" meaningless. Retry once; the
     // evaluator sees both attempts, and a step still skipped reads Not checked.
     const skippedStep = (run: AgentRun) =>
       activePlan.treatment.steps.some((step) => classifyStep(step, run.events) === 'skipped');

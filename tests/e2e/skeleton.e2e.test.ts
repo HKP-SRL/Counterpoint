@@ -156,7 +156,7 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
     const switcher = page.getByRole('button', { name: `Project ${basename(repo)}, base branch` });
     await switcher.waitFor({ timeout: 15_000 });
     expect(await switcher.textContent()).toContain(basename(repo));
-    // The page title is a visual h2 announced as level 1 (UI-SPEC Typography); Playwright's role
+    // The page title is a visual h2 announced as level 1; Playwright's role
     // engine reports the native tag level, so the announced level is read from aria-level.
     const heading = page.getByRole('heading', { name: 'Mission' });
     await heading.waitFor({ timeout: 15_000 });

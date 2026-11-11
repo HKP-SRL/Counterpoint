@@ -1,16 +1,16 @@
 /// <reference lib="dom" />
 // (playwright-core's published types name DOM element types.)
 //
-// The drift loop end to end in a browser (01-15, APPR-02, MISN-01, MISN-02, ROADMAP success
-// criterion 5): approve Phase 02 of a scratch copy of the synthetic host through the real CLI in a
-// pseudo-terminal, then change what was signed on the base branch and watch Counterpoint notice
-// it everywhere the owner looks: the Mission banner and runway, the SideNav badge and tab title,
-// the Needs You inbox and Mission card (each row headed by the visible `Approved version changed`
-// label), the change view with git's diff, and `Review changes` on Phase detail. Re-signing (or
-// reverting the change) resolves it with no other action. A change to only the `gates` section of
-// `.counterpoint/config.yaml` does the same with a `Gate config` row. Uncommitted edits only show
-// the soft hint. A 7-phase host from buildLargeHost proves the Mission card's 5-row cap, and
-// stored doctor reports drive the Mission Trust card.
+// The drift loop end to end in a browser (needs-you: Approved version changed; Self-resolving
+// items; runway: Runway is the Mission headline): approve ready-thing of a scratch copy of the
+// synthetic host through the real CLI in a pseudo-terminal, then change what was signed on the base
+// branch and watch Counterpoint notice it everywhere the owner looks: the Mission banner and
+// runway, the SideNav badge and tab title, the Needs You inbox and Mission card (each row headed by
+// the visible `Approved version changed` label), the drift view with git's diff, and `Review
+// changes` on Change detail. Re-signing (or reverting the change) resolves it with no other action.
+// A change to only the `gates` section of `.counterpoint/config.yaml` does the same with a `Gate
+// config` row. Uncommitted edits only show the soft hint. A 7-change host from buildLargeHost
+// proves the Mission card's 5-row cap, and stored doctor reports drive the Mission Trust card.
 //
 // Nothing here touches ~/.ssh, ssh-agent, the Keychain, the global git config, the real
 // Counterpoint home or a real host repository.
@@ -29,7 +29,12 @@ import {
   revokeAcceptedRisk,
   writeAcceptedRisk,
 } from '../../src/core/security/accepted-risks.ts';
-import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
+import {
+  commitChange,
+  type FixtureRepo,
+  materializeFixtureRepo,
+  SYNTHETIC,
+} from '../helpers/fixture-repo.ts';
 import { makeThrowawayKey } from '../helpers/keys.ts';
 import { buildLargeHost, type LargeHost } from '../helpers/large-host.ts';
 import { gitIn, makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
@@ -45,14 +50,16 @@ const DESKTOP = { width: 1280, height: 900 };
 const LINK_RE =
   /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:\d+\/login\?code=[A-Za-z0-9_-]{43})$/m;
 
-const CONTEXT_02 = '.planning/phases/02-ready-thing/02-CONTEXT.md';
+const READY = SYNTHETIC.ready;
+const PROPOSAL = `openspec/changes/${READY}/proposal.md`;
+const TASKS = `openspec/changes/${READY}/tasks.md`;
 const CONFIG = '.counterpoint/config.yaml';
-const EDITED_LINE = '- **D-02:** The ready thing changed after it was signed.';
-const REVERT_LINE = '- **D-03:** A change that is about to be reverted.';
+const EDITED_LINE = '- The ready thing changed after it was signed.';
+const REVERT_LINE = '- An edit that is about to be reverted.';
 const UNCOMMITTED_HINT =
-  'Uncommitted edits to this approved phase. The approval only follows what is committed on master.';
+  'Uncommitted edits to this approved change. The approval only follows what is committed on master.';
 const KIND_LABEL = 'Approved version changed';
-const ITEM_TITLE = 'Phase 02 changed since you signed it';
+const ITEM_TITLE = 'Ready thing changed since you signed it';
 const LIVE = 20_000;
 
 function cliEnv(home: string): Record<string, string> {
@@ -114,14 +121,14 @@ const PROBE = [
   ['git-config', 'host .git/config', 'write'],
   ['git-hooks', '.git/hooks', 'write'],
   ['git-info', '.git/info', 'write'],
-  // 01-17: the eighth target, so this all-pass report still passes reportVerdict.
+  // The eighth target, so this all-pass report still passes reportVerdict.
   ['outside-workdir', 'Files outside the working folder', 'write'],
-  // 01-26: the ninth target, so this all-pass report still passes reportVerdict.
+  // The ninth target, so this all-pass report still passes reportVerdict.
   ['credential-env', 'Credentials in the shell environment', 'read'],
 ] as const;
 
 /**
- * The gh row as the live probe records a Keychain-only reach (01-19): Bash cat, Read and Grep
+ * The gh row as the live probe records a Keychain-only reach: Bash cat, Read and Grep
  * refused by a deny rule (control reached), the Keychain lookup reached in both sessions.
  */
 const GH_KEYCHAIN_ONLY = {
@@ -140,7 +147,7 @@ const GH_KEYCHAIN_ONLY = {
 /**
  * A stored doctor report in which every check passed and every probe target was blocked; with
  * `acceptedRisks`, the gh row is the Keychain-only reach and the report carries the record doctor
- * read (01-20).
+ * read when it ran.
  */
 function allPassReport(
   hostId: string,
@@ -180,7 +187,7 @@ function allPassReport(
       ...(covered && id === 'gh' ? GH_KEYCHAIN_ONLY : {}),
     })),
     ...(covered ? { acceptedRisks: options.acceptedRisks } : {}),
-    // 01-25: a report passes only with the Sandbox isolation settings check passing.
+    // A report passes only with the Sandbox isolation settings check passing.
     sandboxIsolation: {
       id: 'sandbox-isolation',
       label: 'Sandbox isolation settings',
@@ -191,7 +198,7 @@ function allPassReport(
         { kind: 'launch', label: 'launch settings', path: null, state: 'read', findings: [] },
       ],
     },
-    // 01-22: and with the Agent permission mode check passing.
+    // And only with the Agent permission mode check passing.
     agentMode: {
       id: 'agent-mode',
       label: 'Agent permission mode',
@@ -203,14 +210,14 @@ function allPassReport(
   };
 }
 
-describe('Needs You: an approved phase changes, is reviewed, and is signed again', () => {
+describe('Needs You: an approved change is edited, reviewed, and signed again', () => {
   let home: string;
   let repo: FixtureRepo;
   let hostId = '';
   let origin = '';
   let browser: Browser;
   let page: Page;
-  let context02 = '';
+  let proposal = '';
   const consoleLines: string[] = [];
 
   const main = () => page.getByRole('main');
@@ -220,7 +227,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
   const needsYouCard = () => main().getByLabel('Needs You', { exact: true });
   const trustCard = () => main().getByLabel('Trust', { exact: true });
   const changedBanner = () =>
-    main().getByText('1 approved phase changed since you signed it', { exact: true });
+    main().getByText('1 approved change was edited since you signed it', { exact: true });
 
   async function openMission() {
     await page.goto(`${origin}/h/${hostId}`);
@@ -233,8 +240,8 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
       .waitFor({ timeout: LIVE });
   }
 
-  async function approve02() {
-    const signed = await cliInTerminal(['approve', hostId, '02'], home, repo.root);
+  async function approveReady() {
+    const signed = await cliInTerminal(['approve', hostId, READY], home, repo.root);
     expect(signed.output).toContain('Signed and verified.');
     expect(signed.exitCode).toBe(0);
   }
@@ -243,7 +250,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     home = makeScratchDir('home');
     repo = await materializeFixtureRepo('synthetic');
     hostId = hostIdFromName(basename(repo.root));
-    context02 = readFileSync(join(repo.root, CONTEXT_02), 'utf8');
+    proposal = readFileSync(join(repo.root, PROPOSAL), 'utf8');
 
     const key = await makeThrowawayKey(makeScratchDir('keys'), { name: 'approval' });
     await writeTrust(home, { publicKeyPath: key.publicKeyPath });
@@ -273,7 +280,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     expect(
       await needsYouCard()
         .getByText(
-          'If a phase you approved changes after signing, it will show up here with what changed.',
+          'If a change you approved is edited after signing, it will show up here with what changed.',
           { exact: true },
         )
         .count(),
@@ -284,13 +291,21 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     expect(await needsYouNav().textContent()).toBe('Needs You');
   });
 
-  it('puts Phase 02 on the runway when the real CLI signs it', async () => {
-    await approve02();
+  it('puts ready-thing on the runway when the real CLI signs it', async () => {
+    await approveReady();
     await runwayIs(1);
   });
 
-  it('shows a committed input change on Mission, in the badge and in the tab title', async () => {
-    await commitChange(repo.root, CONTEXT_02, `${context02}\n${EDITED_LINE}\n`);
+  it('keeps the approval when only a task box is ticked on the base branch', async () => {
+    const tasks = readFileSync(join(repo.root, TASKS), 'utf8');
+    await commitChange(repo.root, TASKS, tasks.replace('- [ ] 1.1', '- [x] 1.1'));
+    await openMission();
+    await runwayIs(1);
+    expect(await changedBanner().count()).toBe(0);
+  });
+
+  it('shows a committed proposal edit on Mission, in the badge and in the tab title', async () => {
+    await commitChange(repo.root, PROPOSAL, `${proposal}\n${EDITED_LINE}\n`);
 
     await changedBanner().waitFor({ timeout: LIVE });
     await runwayIs(0);
@@ -329,7 +344,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     expect(await main().getByRole('listitem').count()).toBe(1);
   });
 
-  it('opens the change view with the diff and the re-sign command', async () => {
+  it('opens the drift view with the diff and the re-sign command', async () => {
     await main().getByText(ITEM_TITLE, { exact: true }).click();
     await main().getByRole('heading', { name: ITEM_TITLE }).waitFor({ timeout: 15_000 });
     await main().getByText('1 input file changed', { exact: false }).first().waitFor();
@@ -337,24 +352,24 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     await main().getByText(EDITED_LINE, { exact: false }).first().waitFor({ timeout: LIVE });
     const region = main().getByRole('region', { name: 'Sign the new version' });
     expect(
-      await region.getByText(`counterpoint approve ${hostId} 02`, { exact: true }).count(),
+      await region.getByText(`counterpoint approve ${hostId} ${READY}`, { exact: true }).count(),
     ).toBe(1);
   });
 
-  it('offers Review changes on the changed phase, linking to its change view', async () => {
-    await page.goto(`${origin}/h/${hostId}/phases/02`);
+  it('offers Review changes on the edited change, linking to its drift view', async () => {
+    await page.goto(`${origin}/h/${hostId}/changes/${READY}`);
     const review = main().getByText('Review changes', { exact: true });
     await review.waitFor({ timeout: 15_000 });
-    expect(await main().getByRole('button', { name: 'Approve phase' }).count()).toBe(0);
+    expect(await main().getByRole('button', { name: 'Approve change' }).count()).toBe(0);
     await review.click();
-    await page.waitForURL(`${origin}/h/${hostId}/needs-you/phase-02`);
+    await page.waitForURL(`${origin}/h/${hostId}/needs-you/${READY}`);
     await main().getByRole('heading', { name: ITEM_TITLE }).waitFor({ timeout: 15_000 });
   });
 
-  it('resolves on its own when the phase is signed again', async () => {
-    await approve02();
+  it('resolves on its own when the change is signed again', async () => {
+    await approveReady();
     await main()
-      .getByText('This phase matches what you signed again', { exact: true })
+      .getByText('This change matches what you signed again', { exact: true })
       .waitFor({ timeout: LIVE });
     await expect.poll(() => needsYouNav().textContent(), { timeout: LIVE }).toBe('Needs You');
     await expect.poll(() => page.title(), { timeout: LIVE }).not.toMatch(/^\(\d+\) /);
@@ -388,38 +403,38 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     await runwayIs(0);
     await changedBanner().waitFor({ timeout: LIVE });
 
-    await approve02();
+    await approveReady();
     await runwayIs(1);
     await expect.poll(() => needsYouNav().textContent(), { timeout: LIVE }).toBe('Needs You');
   });
 
-  it('resolves with no re-sign when the change is reverted', async () => {
-    const signedContext = readFileSync(join(repo.root, CONTEXT_02), 'utf8');
-    await commitChange(repo.root, CONTEXT_02, `${signedContext}${REVERT_LINE}\n`);
+  it('resolves with no re-sign when the edit is reverted', async () => {
+    const signedProposal = readFileSync(join(repo.root, PROPOSAL), 'utf8');
+    await commitChange(repo.root, PROPOSAL, `${signedProposal}${REVERT_LINE}\n`);
     await openMission();
     await changedBanner().waitFor({ timeout: LIVE });
     await runwayIs(0);
 
-    await commitChange(repo.root, CONTEXT_02, signedContext);
-    // The change and its revert can land inside one watcher pass; the open page still catches up.
+    await commitChange(repo.root, PROPOSAL, signedProposal);
+    // The edit and its revert can land inside one watcher pass; the open page still catches up.
     await runwayIs(1);
     await expect.poll(async () => changedBanner().count(), { timeout: LIVE }).toBe(0);
     await needsYouCard().getByText('Nothing needs you', { exact: true }).waitFor({ timeout: LIVE });
   });
 
-  it('shows only the soft hint for uncommitted edits, with the phase still on the runway', async () => {
-    const file = join(repo.root, CONTEXT_02);
+  it('shows only the soft hint for uncommitted edits, with the change still on the runway', async () => {
+    const file = join(repo.root, PROPOSAL);
     const committed = readFileSync(file, 'utf8');
     writeFileSync(file, `${committed}- an edit that is not committed\n`);
     try {
-      await page.goto(`${origin}/h/${hostId}/phases`);
+      await page.goto(`${origin}/h/${hostId}/changes`);
       const row = main()
         .getByRole('row')
-        .filter({ has: page.getByRole('link', { name: /^Phase 02:/ }) });
+        .filter({ has: page.getByRole('link', { name: /\(ready-thing\)$/ }) });
       await row.getByText(UNCOMMITTED_HINT, { exact: true }).waitFor({ timeout: LIVE });
       expect(await row.getByText('On runway', { exact: true }).count()).toBe(1);
 
-      await page.goto(`${origin}/h/${hostId}/phases/02`);
+      await page.goto(`${origin}/h/${hostId}/changes/${READY}`);
       await main().getByText(UNCOMMITTED_HINT, { exact: true }).waitFor({ timeout: LIVE });
       expect(await main().getByText('Review changes', { exact: true }).count()).toBe(0);
 
@@ -427,7 +442,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
       await runwayIs(1);
       expect(await changedBanner().count()).toBe(0);
     } finally {
-      await gitIn(repo.root, ['checkout', '--', CONTEXT_02]);
+      await gitIn(repo.root, ['checkout', '--', PROPOSAL]);
     }
   });
 
@@ -467,7 +482,7 @@ describe('Needs You: an approved phase changes, is reviewed, and is signed again
     write(allPassReport(hostId, new Date(Date.now() - 25 * 60 * 60 * 1000)));
     await nudgeUntil(/^This check is 25 hours old\./);
 
-    // 01-20: the owner's accepted risk shows as its own warning verdict, never as Pass.
+    // The owner's accepted risk shows as its own warning verdict, never as Pass.
     const entry = writeAcceptedRisk(home, { reason: 'E2E: owner accepted the Keychain residual' });
     try {
       write(allPassReport(hostId, new Date(), { acceptedRisks: [entry] }));
@@ -507,7 +522,7 @@ describe('the Mission Needs You card on a host with seven changed approvals', ()
   let origin = '';
 
   beforeAll(async () => {
-    host = await buildLargeHost({ phases: 7 });
+    host = await buildLargeHost({ changes: 7 });
     const daemon = await startDaemon(host.home, host.root);
     origin = daemon.origin;
     browser = await chromium.launch({ executablePath: CHROME, headless: true });
@@ -533,7 +548,7 @@ describe('the Mission Needs You card on a host with seven changed approvals', ()
 
     await host.driftAll();
     await main
-      .getByText('7 approved phases changed since you signed them', { exact: true })
+      .getByText('7 approved changes were edited since you signed them', { exact: true })
       .waitFor({ timeout: LIVE });
     const card = main.getByLabel('Needs You', { exact: true });
     const cardRows = card

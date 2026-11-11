@@ -4,7 +4,7 @@
 
 **Buttons appear only for decisions.** The owner never moves work by hand. The only actions on
 Mission are decisions: Launch, Stop, Resume, Approve, Merge, Retry tonight, Later, Keep or Change
-an assumed decision, pick A or B, and Dismiss. Everything else (cards moving, plans finishing,
+an assumed decision, pick A or B, and Dismiss. Everything else (cards moving, tasks finishing,
 gates running) happens on its own and simply shows up.
 
 **Signing happens in the owner's terminal, never in the browser.** Approve and Merge open a
@@ -12,8 +12,8 @@ dialog that explains what signing does and shows the exact command with a Copy b
 `counterpoint approve 6`, `counterpoint merge 41`. It also says "it asks for your passphrase".
 Fixing auth works the same way (`claude /login`). Counterpoint never signs in for the owner.
 Dialog copy, kept from the sketch:
-- Approve: "Approving signs this exact version of the phase onto the runway … If the phase
-  changes after you sign, it leaves the runway and shows up in Needs You."
+- Approve: "Approving signs this exact version of the change onto the runway … If the change
+  is edited after you sign, it leaves the runway and shows up in Needs You."
 - Merge: "Only your signed merge commit lands it … Gates re-run on the merge result before it lands."
 
 **Needs You is a keyboard inbox (In flight, and wherever it carries key hints):**
@@ -23,11 +23,11 @@ Dialog copy, kept from the sketch:
 - `A` / `B` pick an option on a council question
 - Keys are ignored while a dialog is open or an input has focus. The hints show in the card
   header as `Kbd` chips and hide on narrow widths.
-- Each row has an icon (or a seat avatar), a one-line title, a one-line detail ("Phase 7 · not
+- Each row has an icon (or a seat avatar), a one-line title, a one-line detail ("Split the bill · not
   blocking · A: … · B: …"), and small buttons. The first action is secondary and the rest are
   ghost.
 - A resolved row fades out (opacity 0 over about 180ms), then the list re-renders and a toast
-  confirms what happened ("Picked A. Written to Phase 7 decisions as a signed-off choice.").
+  confirms what happened ("Picked A. Written to the Split the bill design decisions.").
 - Empty: "Nothing needs you. Go do something else."
 - The Needs You count also shows in the side nav.
 
@@ -36,11 +36,11 @@ CLI signed in, Runway signed and unchanged, Gate config approved, Mac stays awak
 fresh. Each row shows GO or NO-GO (12px, weight 600, letter-spaced). A No-go row turns error red
 and swaps its detail for the fix ("On battery. Plug in, or the Mac may sleep mid-run."). The
 footer says why Launch is disabled ("1 No-go. Launch waits until every check is Go.") until
-every check is Go and at least one phase is included. In the real app the checks come from
+every check is Go and at least one change is included. In the real app the checks come from
 doctor/trust, not clicks.
 
-**Flight plan (Launch mode):** runway phases with checkboxes to include or exclude them for
-tonight, in build order, each with its plan count, signed time and ≈ duration. A phase that
+**Flight plan (Launch mode):** runway changes with checkboxes to include or exclude them for
+tonight, in build order, each with its task count, signed time and ≈ duration. A change that
 changed after signing is listed separately as not included, with See change / Re-approve….
 
 **Settings (Launch mode, compact):** one summary line in the card header ("Stop 07:00 · Opus 5.5
@@ -59,7 +59,7 @@ Assumed decisions offer Keep or Change… per row, and Keep all in the header.
 - everything stops under `prefers-reduced-motion: reduce`
 
 **Toasts** confirm every decision. They sit bottom-center, use the accent background and the
-high shadow, 13px text, and disappear after about 2.6s. Example: "Phase 5 is green. PR #42
+high shadow, 13px text, and disappear after about 2.6s. Example: "Kitchen display is green. PR #42
 opened with a preview link."
 
 **Live updates feel calm:** the page re-renders as the night advances (in the real app, from SSE).
@@ -92,7 +92,7 @@ Needs You row:
   <span class="av pink" title="Design seat">DS</span>
   <div class="n-main">
     <div class="n-title">Design seat: Bill split empty state, A or B?</div>
-    <div class="n-detail">Phase 7 · not blocking · A: illustration and "Split evenly" · B: plain list with totals</div>
+    <div class="n-detail">Split the bill · not blocking · A: illustration and "Split evenly" · B: plain list with totals</div>
   </div>
   <div class="n-act"><button class="btn sm secondary">A</button><button class="btn sm ghost">B</button><button class="btn sm ghost">Later</button></div>
 </li>

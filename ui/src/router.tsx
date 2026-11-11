@@ -1,8 +1,8 @@
-// Console routes (UI-SPEC "Screens and Layout"), code-based TanStack Router:
+// Console routes (local-console: Host-scoped navigation), code-based TanStack Router:
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
-//   /h/$hostId/phases[/$phaseId] → Phases and Phase detail
-//   /h/$hostId/needs-you[/$itemId] → Needs You and the approved-version-changed change view
+//   /h/$hostId/changes[/$changeId] → Changes and Change detail
+//   /h/$hostId/needs-you[/$itemId] → Needs You and the approved-version-changed drift view
 //   /h/$hostId/trust → Trust (the last doctor report)
 //   /signed-out      → signed-out, used-link and blocked screens, without AppShell
 // Host ids from the address bar are checked against the slug rule and against GET /api/hosts
@@ -20,19 +20,15 @@ import {
 } from '@tanstack/react-router';
 import { type ComponentProps, type MouseEvent, useEffect } from 'react';
 import { hostsQuery } from './api';
-import { ChangeViewPage } from './pages/ChangeViewPage';
+import { HOST_ID_RE, isChangeId } from './ids';
+import { ChangeDetailPage } from './pages/ChangeDetailPage';
+import { ChangesPage } from './pages/ChangesPage';
+import { DriftViewPage } from './pages/DriftViewPage';
 import { MissionPage } from './pages/MissionPage';
-import { NEEDS_YOU_ITEM_ID_RE, NeedsYouPage } from './pages/NeedsYouPage';
-import { PhaseDetailPage } from './pages/PhaseDetailPage';
-import { PhasesPage } from './pages/PhasesPage';
+import { isNeedsYouItemId, NeedsYouPage } from './pages/NeedsYouPage';
 import { SignedOutPage } from './pages/SignedOutPage';
 import { TrustPage } from './pages/TrustPage';
 import { AppFrame } from './shell/AppFrame';
-
-/** Host ids: lowercase slug, 1-32 characters, never starting with a dash (src/core/ids.ts). */
-const HOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-/** Phase ids: two-digit phase, optional decimal sub-phase (src/core/ids.ts). */
-const PHASE_ID_RE = /^\d{2}(\.\d+)?$/;
 
 export const LAST_HOST_KEY = 'counterpoint.lastHost';
 
@@ -128,31 +124,35 @@ function MissionRoute() {
   return <MissionPage hostId={hostId} />;
 }
 
-const phasesRoute = createRoute({
+const changesRoute = createRoute({
   getParentRoute: () => hostRoute,
-  path: '/phases',
-  component: PhasesRoute,
+  path: '/changes',
+  component: ChangesRoute,
 });
 
-function PhasesRoute() {
+function ChangesRoute() {
   const { hostId } = hostRoute.useParams();
-  return <PhasesPage hostId={hostId} />;
+  return <ChangesPage hostId={hostId} />;
 }
 
-const phaseRoute = createRoute({
+const changeRoute = createRoute({
   getParentRoute: () => hostRoute,
-  path: '/phases/$phaseId',
+  path: '/changes/$changeId',
   beforeLoad: ({ params }) => {
-    if (!PHASE_ID_RE.test(params.phaseId)) {
-      throw redirect({ to: '/h/$hostId/phases', params: { hostId: params.hostId }, replace: true });
+    if (!isChangeId(params.changeId)) {
+      throw redirect({
+        to: '/h/$hostId/changes',
+        params: { hostId: params.hostId },
+        replace: true,
+      });
     }
   },
-  component: PhaseRoute,
+  component: ChangeRoute,
 });
 
-function PhaseRoute() {
-  const { hostId, phaseId } = phaseRoute.useParams();
-  return <PhaseDetailPage key={`${hostId}/${phaseId}`} hostId={hostId} phaseId={phaseId} />;
+function ChangeRoute() {
+  const { hostId, changeId } = changeRoute.useParams();
+  return <ChangeDetailPage key={`${hostId}/${changeId}`} hostId={hostId} changeId={changeId} />;
 }
 
 const needsYouRoute = createRoute({
@@ -166,11 +166,11 @@ function NeedsYouRoute() {
   return <NeedsYouPage hostId={hostId} />;
 }
 
-const changeViewRoute = createRoute({
+const driftViewRoute = createRoute({
   getParentRoute: () => hostRoute,
   path: '/needs-you/$itemId',
   beforeLoad: ({ params }) => {
-    if (!NEEDS_YOU_ITEM_ID_RE.test(params.itemId)) {
+    if (!isNeedsYouItemId(params.itemId)) {
       throw redirect({
         to: '/h/$hostId/needs-you',
         params: { hostId: params.hostId },
@@ -178,12 +178,12 @@ const changeViewRoute = createRoute({
       });
     }
   },
-  component: ChangeViewRoute,
+  component: DriftViewRoute,
 });
 
-function ChangeViewRoute() {
-  const { hostId, itemId } = changeViewRoute.useParams();
-  return <ChangeViewPage key={`${hostId}/${itemId}`} hostId={hostId} itemId={itemId} />;
+function DriftViewRoute() {
+  const { hostId, itemId } = driftViewRoute.useParams();
+  return <DriftViewPage key={`${hostId}/${itemId}`} hostId={hostId} itemId={itemId} />;
 }
 
 const trustRoute = createRoute({
@@ -215,10 +215,10 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   hostRoute.addChildren([
     missionRoute,
-    phasesRoute,
-    phaseRoute,
+    changesRoute,
+    changeRoute,
     needsYouRoute,
-    changeViewRoute,
+    driftViewRoute,
     trustRoute,
   ]),
   signedOutRoute,

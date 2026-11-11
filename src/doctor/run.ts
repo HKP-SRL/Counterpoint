@@ -1,26 +1,26 @@
-// `counterpoint doctor` (FOUND-03, FOUND-04): tools, signing-key hygiene, the host's integrity
+// `counterpoint doctor`: tools, signing-key hygiene, the host's integrity
 // baseline and the live sandbox probe, written as one `counterpoint/doctor/v1` report.
 //
 // The probe runs against the owner's real protected directories (the trusted key's folder,
 // ~/.ssh, gh's config, the Counterpoint home) and the host's real git common dir, through the
-// same settings builder the runner uses, with canaries only (01-04/01-05). A probe failure is a
-// hard doctor fail and nothing else: the console and approvals keep working (CONTEXT
-// discretion; Phase 2 refuses to spawn builders while it fails).
+// same settings builder the runner uses, with canaries only. A probe failure is a
+// hard doctor fail and nothing else: the console and approvals keep working (the build
+// runner of first-unattended-run refuses to spawn builders while it fails).
 //
-// The Sandbox isolation settings check (01-25, replacement 2 for the scrub opt-out): doctor reads
+// The Sandbox isolation settings check (replacement 2 for the scrub opt-out): doctor reads
 // every settings source an agent session loads (the launch settings, the user file, the
 // server-managed cache and the managed sources; src/doctor/settings-sources.ts) and fails when any
 // of them turns sandbox isolation off (src/core/security/sandbox-isolation.ts). While that check
 // does not pass, no probe row counts as Blocked: each measured Blocked row is stored Not checked.
 //
-// The Agent permission mode check (01-22): doctor records the permission mode the probe's
+// The Agent permission mode check: doctor records the permission mode the probe's
 // treatment session really ran in, from claude's own `system/init` events (every attempt) and a
 // stderr cross-check (sessionModeEvidence), and fails anything but AGENT_PERMISSION_MODE, the mode
 // the argv launches with. A claude upgrade or a settings source that silently overrides the mode
-// (claude 2.1.321 forced `default` under the scrub, 01-18/01-21) then fails doctor.
+// (claude 2.1.321 forced `default` under the scrub) then fails doctor.
 //
-// The accepted risk (01-19, WINDOWS.md #1): doctor reads the owner's per-machine accepted-risk
-// record once (src/core/security/accepted-risks.ts) and copies it into the report's
+// The accepted risk (doctor: Owner-recorded accepted risk): doctor reads the owner's per-machine
+// accepted-risk record once (src/core/security/accepted-risks.ts) and copies it into the report's
 // `acceptedRisks`. The verdict and the output come from the same records: the gh row keeps its
 // measured `REACHABLE`, and the risk applies only when the verdict layer finds the row reached
 // through the Keychain lookup alone (appliedAcceptedRisks). An unreadable record counts as none.
@@ -75,7 +75,7 @@ export interface ProbeSummary {
   /** Artifacts of an earlier killed probe that this run removed before starting. */
   staleLeftovers: readonly string[];
   /**
-   * What the treatment session reported about its permission mode (01-22): one entry per init
+   * What the treatment session reported about its permission mode: one entry per init
    * event of every attempt, and the stderr mode notices (sessionModeEvidence).
    */
   agentSession: { modes: Array<string | null>; notices: string[] };
@@ -222,7 +222,8 @@ const NOT_COUNTED =
 
 /**
  * The Sandbox isolation settings check over the launch settings this run's sessions use and every
- * settings file source. Never throws: a launch profile that cannot be built is an unreadable source.
+ * settings file source. Never throws: a launch profile that cannot be built is an unreadable
+ * source.
  */
 async function sandboxIsolationCheck(
   protectedPaths: ProtectedPaths,
@@ -404,9 +405,9 @@ const PROBE_WORD = {
   'not-checked': 'NOT CHECKED',
 } as const;
 const WORD_WIDTH = 'NOT CHECKED'.length;
-/** The mode line of a report written before 01-22 (`NOT CHECKED` fills the word column). */
+/** The mode line of a report written before the mode check (`NOT CHECKED` fills the word column). */
 const AGENT_MODE_NOT_RECORDED = '  NOT CHECKED  Agent permission mode: not recorded in this report';
-/** The isolation line of a report written before 01-25 (`NOT CHECKED` fills the word column). */
+/** The isolation line of a report written before the isolation check (`NOT CHECKED` fills the word column). */
 const ISOLATION_NOT_RECORDED =
   '  NOT CHECKED  Sandbox isolation settings: not recorded in this report';
 
@@ -436,7 +437,7 @@ const RISK_NOT_NEEDED =
 const dayOf = (iso: string) => iso.slice(0, 10);
 
 /**
- * The verdict line, in the UI-SPEC words. `recorded` is the accepted-risk record read now; the
+ * The verdict line, in the Trust page's words. `recorded` is the accepted-risk record read now; the
  * verdict is `accepted-risk` only when it still holds the entry the report recorded.
  */
 export function doctorVerdict(
@@ -467,14 +468,14 @@ export function doctorVerdict(
 }
 
 /**
- * The UI-SPEC CLI contract: groups `Tools`, `Signing key`, `Sandbox probe`; one line per check
- * (`PASS` / `FAIL` / `NOT CHECKED`, probe rows `BLOCKED` / `REACHABLE` / `NOT CHECKED`), an
- * indented `Fix:` line under a failure, then the verdict. The `Sandbox probe` group starts with
- * the Agent permission mode check (01-22), then the Sandbox isolation settings check (01-25), then
- * the probe rows; a report from before either shows that check as `NOT CHECKED ... not recorded in
- * this report`.
+ * The CLI report layout (doctor: Grouped report with a strict exit code): groups `Tools`, `Signing
+ * key`, `Sandbox probe`; one line per check (`PASS` / `FAIL` / `NOT CHECKED`, probe rows `BLOCKED`
+ * / `REACHABLE` / `NOT CHECKED`), an indented `Fix:` line under a failure, then the verdict. The
+ * `Sandbox probe` group starts with the Agent permission mode check, then the Sandbox isolation
+ * settings check, then the probe rows; a report from before either shows that check as `NOT CHECKED
+ * ... not recorded in this report`.
  *
- * With the accepted risk applied (01-19), the gh row keeps `REACHABLE` and gains an indented
+ * With the accepted risk applied, the gh row keeps `REACHABLE` and gains an indented
  * `Accepted risk gh-keychain, recorded {date}: {reason}` line, and the verdict names the risk and
  * how to withdraw it. A record that was in force but did not apply gets one line saying why.
  */

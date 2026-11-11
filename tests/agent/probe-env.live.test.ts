@@ -1,5 +1,5 @@
-// The live environment listing of one sandboxed Bash command on the owner's real `claude` (01-26,
-// replacement 3 of 3 for the scrub opt-out, STATE.md [Owner] 2026-11-10).
+// The live environment listing of one sandboxed Bash command on the owner's real `claude`
+// (replacement 3 of 3 for the scrub opt-out, owner decision 2026-11-10).
 //
 // Gated by COUNTERPOINT_LIVE_PROBE=1: it needs a signed-in `claude` and spends a few cents of
 // haiku. One session runs the production launch profile (buildAgentSandboxSettings, unchanged,
@@ -18,20 +18,20 @@
 // listing ran before any evaluator edit (the owner's ordering rule).
 //
 // Evidence first: stream.jsonl, stderr.txt, session.json and env-listing.json are written to
-// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-26-rerun2/ before any
-// assertion, so a failing run keeps its evidence. Only names, lengths, shapes and host classes are
-// recorded.
+// .tmp/live-env/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-env-listing-rerun2/ before
+// any assertion, so a failing run keeps its evidence. Only names, lengths, shapes and host classes
+// are recorded.
 //
-// Rerun (01-26 revision, after the owner scoped the row on 2026-11-10): the profile carries the
+// Rerun (after the owner scoped the row on 2026-11-10): the profile carries the
 // credential env deny entries (CREDENTIAL_ENV_DENY), recorded as `launchedCredentials`, and the
 // listing records `findings`, `excepted` (the owner's sandbox-proxy-login exception), `unexcepted`
 // and `deniedPresent`. They are recorded, not asserted: the plan's stop rule decides.
 //
-// Rerun 2 (after the owner's decision on the rerun's halt, STATE.md [Owner] 2026-11-10,
+// Rerun 2 (after the owner's decision on the rerun's halt, owner decision 2026-11-10,
 // "CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception"): CLOUDSDK_PROXY_PASSWORD is no
 // longer denied; the listing classes CLOUDSDK_PROXY_ADDRESS as a host (`proxyAddress`), and the
-// exception covers the password only beside a loopback address. The earlier folders,
-// evidence-01-26-live and evidence-01-26-rerun, stay as they are.
+// exception covers the password only beside a loopback address. The earlier runs'
+// evidence folders stay as they are.
 import { randomBytes } from 'node:crypto';
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -59,9 +59,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEBUG_DIR = join(REPO_ROOT, '.tmp', 'live-env');
 const EVIDENCE_DIR = join(
   process.env.CP_TEST_SCRATCH ?? join(REPO_ROOT, '.tmp'),
-  // Rerun 2 (01-26): the first listing's folder (evidence-01-26-live) and the first rerun's
-  // (evidence-01-26-rerun) stay as they are.
-  'evidence-01-26-rerun2',
+  // Rerun 2: the first listing's and the first rerun's evidence folders stay as they are.
+  'evidence-env-listing-rerun2',
 );
 const EVALUATOR = 'src/agent/probe-evaluator.ts';
 const NOTICE_RE = /permission mode|auto mode/i;
@@ -305,7 +304,8 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live environment l
     mkdirSync(EVIDENCE_DIR, { recursive: true });
     cpSync(DEBUG_DIR, EVIDENCE_DIR, { recursive: true });
 
-    // --- Assertions -------------------------------------------------------------------------------
+    // --- Assertions
+    // -------------------------------------------------------------------------------
     expect.soft(evaluator.uncommittedEdit, 'uncommitted evaluator edit').toBe(false);
     expect.soft(evaluator.blob, 'evaluator blob').toBe(evaluator.headBlob);
     expect.soft(session.permissionMode, 'init permissionMode').toBe(AGENT_PERMISSION_MODE);

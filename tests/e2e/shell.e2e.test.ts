@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 // (playwright-core's published types name DOM element types.)
 //
-// The console shell in a real browser against the real daemon (01-09): sign-in through the
+// The console shell in a real browser against the real daemon: sign-in through the
 // printed one-time link, the AppShell chrome, Light/Dark/System with the first-paint script under
 // the strict CSP, the mobile drawer, the signed-out variants, and the live stream: an event
 // invalidates the host list, a stopped daemon pauses live updates, a restarted one signs out.

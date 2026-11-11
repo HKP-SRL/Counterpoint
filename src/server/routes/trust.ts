@@ -1,16 +1,17 @@
-// GET /api/hosts/:hostId/doctor (FOUND-03 display): the last `counterpoint doctor` report for a
+// GET /api/hosts/:hostId/doctor (doctor: Trust page): the last `counterpoint doctor` report for a
 // host, read from `hosts/{id}/doctor.json` in the Counterpoint home. The route is read-only: the
 // console never runs the probe, so the Trust page has no privileged action.
 //
-// The report lives in the 0700 home that agent sandboxes deny (T-01-40). It is opened with
-// O_NOFOLLOW (a symlink planted in its place is refused), must be a regular file of bounded size,
-// and must parse as the `counterpoint/doctor/v1` schema for this host; anything else is reported
-// as `unreadable`, never as a verdict.
+// The report lives in the 0700 home that agent sandboxes deny (agents cannot plant a pass). It is
+// opened with O_NOFOLLOW (a symlink planted in its place is refused), must be a regular file of
+// bounded size, and must parse as the `counterpoint/doctor/v1` schema for this host; anything else
+// is reported as `unreadable`, never as a verdict.
 //
-// The verdict is three-way (01-19): `pass`, `accepted-risk` or `fail`. The owner's accepted-risk
-// record is read on every request (an unreadable record counts as none), so a
-// `counterpoint revoke-risk` applies at once without a doctor rerun; `acceptedRisks` lists the
-// entries that applied to this report. The route only reads: nothing here writes the record.
+// The verdict is three-way (doctor: Owner-recorded accepted risk): `pass`, `accepted-risk` or
+// `fail`. The owner's accepted-risk record is read on every request (an unreadable record counts as
+// none), so a `counterpoint revoke-risk` applies at once without a doctor rerun; `acceptedRisks`
+// lists the entries that applied to this report. The route only reads: nothing here writes the
+// record.
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Hono } from 'hono';

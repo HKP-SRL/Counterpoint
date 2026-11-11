@@ -1,14 +1,23 @@
-// Identifier rules. Every host id and phase id is checked against these patterns before it is
-// used in a path, an argv array or a displayed command (RESEARCH Pitfall 8).
+// Identifier rules. Every host id and change id is checked against these patterns before it is
+// used in a path, an argv array or a displayed command (an unchecked id could
+// otherwise inject a path segment or an option).
 
 /** Host ids: lowercase slug, 1-32 characters, never starting with a dash. */
 export const HOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-/** Phase ids: two-digit integer phase, optional decimal sub-phase (`02`, `01.1`, `10.12`). */
-export const PHASE_ID_RE = /^\d{2}(\.\d+)?$/;
+/**
+ * Change ids (openspec-host-adapter design decision 1): the change's kebab-case directory name,
+ * lowercase letters and digits in dash-separated words (`qr-menu-browsing`). Also limited to
+ * CHANGE_ID_MAX characters and never `archive`, the folder finished changes move into: use
+ * isChangeId, not this alone.
+ */
+export const CHANGE_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const CHANGE_ID_MAX = 64;
+/** The one name that matches CHANGE_ID_RE but is never a change. */
+const RESERVED_CHANGE_IDS: ReadonlySet<string> = new Set(['archive']);
 
-// Sandbox-probe artifact names: the one source of truth for the probe (01-04) and the
-// integrity snapshot (01-08), which must recognise exactly the names the probe creates.
+// Sandbox-probe artifact names: the one source of truth for the doctor probe and the integrity
+// snapshot, which must recognise exactly the names the probe creates.
 
 /** A probe nonce: 16 random bytes as lowercase hex. */
 export const PROBE_NONCE_RE = /^[0-9a-f]{32}$/;
@@ -24,9 +33,9 @@ export const PROBE_OUTSIDE_ARTIFACT_RE = /^cp-[0-9a-f]{32}-(w|e)$/;
 const ECHO_LIMIT = 40;
 
 export class InvalidIdError extends Error {
-  readonly kind: 'host' | 'phase';
+  readonly kind: 'host' | 'change';
 
-  constructor(kind: 'host' | 'phase', value: unknown) {
+  constructor(kind: 'host' | 'change', value: unknown) {
     super(`Invalid ${kind} id ${preview(value)}.`);
     this.name = 'InvalidIdError';
     this.kind = kind;
@@ -43,8 +52,13 @@ export function isHostId(value: unknown): value is string {
   return typeof value === 'string' && HOST_ID_RE.test(value);
 }
 
-export function isPhaseId(value: unknown): value is string {
-  return typeof value === 'string' && PHASE_ID_RE.test(value);
+export function isChangeId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= CHANGE_ID_MAX &&
+    CHANGE_ID_RE.test(value) &&
+    !RESERVED_CHANGE_IDS.has(value)
+  );
 }
 
 export function assertHostId(value: unknown): string {
@@ -52,14 +66,17 @@ export function assertHostId(value: unknown): string {
   return value;
 }
 
-export function assertPhaseId(value: unknown): string {
-  if (!isPhaseId(value)) throw new InvalidIdError('phase', value);
+export function assertChangeId(value: unknown): string {
+  if (!isChangeId(value)) throw new InvalidIdError('change', value);
   return value;
 }
 
-/** The approval item id for a phase: `phase-{phaseId}`. */
-export function approvalItemId(phaseId: string): string {
-  return `phase-${assertPhaseId(phaseId)}`;
+/**
+ * The approval item id for a change: the change id itself (openspec-host-adapter design
+ * decision 1; the statement's `item.type` says what kind of item it is).
+ */
+export function approvalItemId(changeId: string): string {
+  return assertChangeId(changeId);
 }
 
 /**

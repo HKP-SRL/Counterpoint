@@ -1,13 +1,15 @@
-// The runway snapshot (GET /api/hosts/{id}/runway, MISN-01), shared by the Mission page and the
-// approval dialog. The server recomputes it from git at the base tip; the console only shows it.
+// The runway snapshot (GET /api/hosts/{id}/runway, runway: Runway is the Mission headline),
+// shared by the Mission page and the approval dialog. The server recomputes it from git at the
+// base tip; the console only shows it.
 // `runway` and `approval` events invalidate it (live.ts FAMILY_TO_KEYS).
 import { keepPreviousData, queryOptions } from '@tanstack/react-query';
 import { apiGet, queryKeys } from './api';
+import { isChangeId } from './ids';
 
 export type RunwayItem = {
-  phaseId: string;
-  name: string;
-  planCount: number;
+  changeId: string;
+  title: string;
+  taskCount: number;
   signedAt: string;
   unreadable: boolean;
 };
@@ -16,12 +18,10 @@ export type RunwaySnapshot = {
   hostId: string;
   tip: string | null;
   count: number;
-  planCount: number;
+  taskCount: number;
   changedCount: number;
   items: RunwayItem[];
 };
-
-const PHASE_ID_RE = /^\d{2}(\.\d+)?$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -29,12 +29,12 @@ const count = (value: unknown): number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 
 function parseItem(value: unknown): RunwayItem | null {
-  if (!isRecord(value) || typeof value.phaseId !== 'string') return null;
-  if (!PHASE_ID_RE.test(value.phaseId) || typeof value.signedAt !== 'string') return null;
+  if (!isRecord(value) || !isChangeId(value.changeId)) return null;
+  if (typeof value.signedAt !== 'string') return null;
   return {
-    phaseId: value.phaseId,
-    name: typeof value.name === 'string' ? value.name : '',
-    planCount: count(value.planCount),
+    changeId: value.changeId,
+    title: typeof value.title === 'string' && value.title !== '' ? value.title : value.changeId,
+    taskCount: count(value.taskCount),
     signedAt: value.signedAt,
     unreadable: value.unreadable === true,
   };
@@ -47,7 +47,7 @@ async function fetchRunway(hostId: string, signal?: AbortSignal): Promise<Runway
     hostId,
     tip: typeof raw.tip === 'string' ? raw.tip : null,
     count: count(raw.count),
-    planCount: count(raw.planCount),
+    taskCount: count(raw.taskCount),
     changedCount: count(raw.changedCount),
     items: Array.isArray(raw.items)
       ? raw.items.map(parseItem).filter((item): item is RunwayItem => item !== null)
@@ -62,10 +62,10 @@ export const runwayQuery = (hostId: string) =>
     placeholderData: keepPreviousData,
   });
 
-export function phasesText(n: number): string {
-  return n === 1 ? '1 phase' : `${n} phases`;
+export function changesText(n: number): string {
+  return n === 1 ? '1 change' : `${n} changes`;
 }
 
-export function plansCountText(n: number): string {
-  return n === 1 ? '1 plan' : `${n} plans`;
+export function tasksCountText(n: number): string {
+  return n === 1 ? '1 task' : `${n} tasks`;
 }

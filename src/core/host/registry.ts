@@ -1,8 +1,9 @@
-// Host registration (D-06): one daemon serves every registered repository.
+// Host registration (daemon-lifecycle: One daemon per machine serves every host).
 //
-// Core never names a framework or its files (ADPT-02). The framework id comes from a detector the
-// caller injects (the composition root supplies it), and the store comes in through a minimal
-// interface, so this module depends on neither the daemon nor any adapter.
+// Core never names a framework or its files (host-planning: Framework adapter boundary). The
+// framework id comes from a detector the caller injects (the composition root supplies it), and the
+// store comes in through a minimal interface, so this module depends on neither the daemon nor any
+// adapter.
 import { realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { GitError, runGit } from '../git/run.ts';

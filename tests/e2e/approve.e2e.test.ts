@@ -1,7 +1,8 @@
 /// <reference lib="dom" />
 // (playwright-core's published types name DOM element types.)
 //
-// Approving a phase from the console end to end (01-13, success criterion 4): the real daemon on
+// Approving a change from the console end to end (signed-approvals: Console prepares, terminal
+// signs; Dialog sees the landing): the real daemon on
 // a scratch copy of the synthetic host, a throwaway unprotected key trusted through the library
 // (the trust-key command refuses unprotected keys) and an integrity baseline. The console
 // previews and hands over the command; the real CLI signs in a pseudo-terminal
@@ -20,7 +21,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
-import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
+import {
+  commitChange,
+  type FixtureRepo,
+  materializeFixtureRepo,
+  SYNTHETIC,
+} from '../helpers/fixture-repo.ts';
 import { makeThrowawayKey } from '../helpers/keys.ts';
 import { gitIn, makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 
@@ -35,24 +41,8 @@ const DESKTOP = { width: 1280, height: 900 };
 const LINK_RE =
   /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:\d+\/login\?code=[A-Za-z0-9_-]{43})$/m;
 
-const PLAN_02_1 = `---
-phase: 02.1-inserted-thing
-plan: 01
-type: execute
-wave: 1
-depends_on: []
-files_modified:
-  - src/inserted/thing.ts
-autonomous: true
-requirements: [SYN-04]
----
-
-<tasks>
-<task type="auto">
-  <name>Task 1: Insert the thing</name>
-</task>
-</tasks>
-`;
+/** Gives the synthetic `no-tasks` change a tasks file, which makes it Ready to approve. */
+const NO_TASKS_TASKS = '# Tasks\n\n- [ ] 1.1 Write the thing\n';
 
 function cliEnv(home: string): Record<string, string> {
   const env: Record<string, string> = { COUNTERPOINT_HOME: home };
@@ -96,7 +86,7 @@ async function cliInTerminal(args: readonly string[], home: string, cwd: string)
   return { exitCode: result.exitCode ?? -1, output: `${result.stdout}\n${result.stderr}` };
 }
 
-describe('approve a phase from the console', () => {
+describe('approve a change from the console', () => {
   let home: string;
   let repo: FixtureRepo;
   let hostId = '';
@@ -117,14 +107,13 @@ describe('approve a phase from the console', () => {
     await main().getByRole('heading', { name: 'Mission' }).waitFor({ timeout: 15_000 });
   }
 
-  async function openPhase(phaseId: string, name: string) {
-    await page.goto(`${origin}/h/${hostId}/phases/${phaseId}`);
-    const title = new RegExp(`^Phase ${phaseId.replace('.', '\\.')}: ${name}`);
-    await main().getByRole('heading', { name: title }).waitFor({ timeout: 15_000 });
+  async function openChange(changeId: string, title: string) {
+    await page.goto(`${origin}/h/${hostId}/changes/${changeId}`);
+    await main().getByRole('heading', { name: title, exact: true }).waitFor({ timeout: 15_000 });
   }
 
   async function openDialog() {
-    await main().getByRole('button', { name: 'Approve phase' }).click();
+    await main().getByRole('button', { name: 'Approve change' }).click();
     await dialog().waitFor({ timeout: 10_000 });
   }
 
@@ -179,34 +168,40 @@ describe('approve a phase from the console', () => {
     expect(
       await card
         .getByText(
-          'Nothing approved yet. Open a planned phase and approve it to start your runway.',
+          'Nothing approved yet. Open a ready change and approve it to start your runway.',
           { exact: true },
         )
         .count(),
     ).toBe(1);
-    expect(await card.getByRole('link', { name: 'Browse phases' }).count()).toBe(1);
+    expect(await card.getByRole('link', { name: 'Browse changes' }).count()).toBe(1);
   });
 
-  it('previews what Phase 02 would sign and hands over the one-line command', async () => {
-    await openPhase('02', 'Ready Thing');
+  it('previews what ready-thing would sign and hands over the one-line command', async () => {
+    await openChange(SYNTHETIC.ready, 'Ready thing');
     await openDialog();
     const d = dialog();
-    await d.getByRole('heading', { name: 'Approve Phase 02: Ready Thing' }).waitFor();
-    const command = `counterpoint approve ${hostId} 02`;
+    await d.getByRole('heading', { name: 'Approve Ready thing' }).waitFor();
+    const command = `counterpoint approve ${hostId} ${SYNTHETIC.ready}`;
     await d.getByText(command, { exact: true }).waitFor({ timeout: 15_000 });
 
-    // Six inputs plus the Draft and Gates rows (and the header row).
+    // Five files plus the Draft and Gates rows (and the header row).
     const table = d.getByRole('table');
-    expect(await table.getByRole('row').count()).toBe(1 + 6 + 2);
+    expect(await table.getByRole('row').count()).toBe(1 + 5 + 2);
+    expect(await table.getByText('Task checkboxes are not part of the signature.').count()).toBe(1);
     expect(await table.getByText('Draft: none yet', { exact: true }).count()).toBe(1);
     expect(await table.getByText('Gates: no gate config yet', { exact: true }).count()).toBe(1);
     expect(await d.getByText("What you're signing", { exact: true }).count()).toBe(1);
-    expect(await d.getByText('2 plans', { exact: true }).count()).toBe(1);
+    expect(await d.getByText('4 tasks', { exact: true }).count()).toBe(1);
+    // The owner step is shown before signing, and does not block it.
+    expect(await d.getByText('One step only you can do', { exact: true }).count()).toBe(1);
+    expect(await d.getByText('Owner: create the Supabase project', { exact: true }).count()).toBe(
+      1,
+    );
     expect(await d.getByText(/^Statement [0-9a-f]{12}$/).count()).toBe(1);
     expect(
       await d
         .getByText(
-          'Run this in your terminal. It asks for your passphrase, then signs a commit on master that adds only .counterpoint/approvals/phase-02.json. Your uncommitted work is not touched.',
+          'Run this in your terminal. It asks for your passphrase, then signs a commit on master that adds only .counterpoint/approvals/ready-thing.json. Your uncommitted work is not touched.',
           { exact: true },
         )
         .count(),
@@ -224,39 +219,41 @@ describe('approve a phase from the console', () => {
 
   it('flips to landed when the real CLI signs in a terminal, without touching the checkout', async () => {
     const statusBefore = await gitIn(repo.root, ['status', '--porcelain']);
-    const signed = await cliInTerminal(['approve', hostId, '02'], home, repo.root);
+    const signed = await cliInTerminal(['approve', hostId, SYNTHETIC.ready], home, repo.root);
     expect(signed.output).toContain('You are signing');
     expect(signed.output).toContain('Signed and verified. Runway is now 1.');
     expect(signed.exitCode).toBe(0);
 
     const d = dialog();
     await d.getByText('Signed. Runway is now 1.').first().waitFor({ timeout: 15_000 });
-    expect(await d.getByRole('button', { name: 'Back to phases' }).count()).toBe(1);
+    expect(await d.getByRole('button', { name: 'Back to changes' }).count()).toBe(1);
     expect(await d.getByRole('button', { name: 'Copy command' }).count()).toBe(0);
     expect(await gitIn(repo.root, ['status', '--porcelain'])).toBe(statusBefore);
     await closeDialog();
   });
 
-  it('shows the runway headline at 1 with the Phase 02 row, and On runway on Phases', async () => {
+  it('shows the runway headline at 1 with the ready-thing row, and On runway on Changes', async () => {
     await openMission();
     const card = main().getByLabel('Runway', { exact: true });
     await card.getByRole('heading', { name: '1', exact: true }).waitFor({ timeout: 15_000 });
     expect(
       await card
-        .getByText('1 phase · 2 plans approved and ready ahead of the builder', { exact: true })
+        .getByText('1 change on the runway · 4 tasks approved and ready ahead of the builder', {
+          exact: true,
+        })
         .count(),
     ).toBe(1);
-    expect(await card.getByText('Ready Thing', { exact: true }).count()).toBe(1);
-    expect(await card.getByText('02', { exact: true }).count()).toBe(1);
+    expect(await card.getByText('Ready thing', { exact: true }).count()).toBe(1);
+    expect(await card.getByText(SYNTHETIC.ready, { exact: true }).count()).toBe(1);
 
     await page
       .getByRole('navigation', { name: 'Main' })
-      .getByRole('link', { name: 'Phases' })
+      .getByRole('link', { name: 'Changes' })
       .click();
-    await main().getByRole('heading', { name: 'Phases' }).waitFor({ timeout: 15_000 });
+    await main().getByRole('heading', { name: 'Changes' }).waitFor({ timeout: 15_000 });
     const row = main()
       .getByRole('row')
-      .filter({ has: page.getByRole('link', { name: /^Phase 02:/ }) });
+      .filter({ has: page.getByRole('link', { name: /\(ready-thing\)$/ }) });
     await row.getByText('On runway', { exact: true }).waitFor({ timeout: 15_000 });
     expect(await row.getByText(/On runway · signed/).count()).toBe(1);
     expect(await main().getByText('On runway (1)', { exact: true }).count()).toBe(1);
@@ -268,19 +265,14 @@ describe('approve a phase from the console', () => {
   });
 
   it('marks the dialog stale and disables Copy command when the base tip moves first', async () => {
-    // Make Phase 02.1 ready in the scratch copy (the frozen fixture is not edited).
-    await commitChange(
-      repo.root,
-      '.planning/phases/02.1-inserted-thing/02.1-01-PLAN.md',
-      PLAN_02_1,
-    );
-    await openPhase('02.1', 'Inserted Thing');
-    await main().getByRole('button', { name: 'Approve phase' }).waitFor({ timeout: 15_000 });
+    // Make no-tasks ready in the scratch copy.
+    await commitChange(repo.root, `openspec/changes/${SYNTHETIC.noTasks}/tasks.md`, NO_TASKS_TASKS);
+    const command = `counterpoint approve ${hostId} ${SYNTHETIC.noTasks}`;
+    await openChange(SYNTHETIC.noTasks, 'No tasks yet');
+    await main().getByRole('button', { name: 'Approve change' }).waitFor({ timeout: 15_000 });
     await openDialog();
     const d = dialog();
-    await d
-      .getByText(`counterpoint approve ${hostId} 02.1`, { exact: true })
-      .waitFor({ timeout: 15_000 });
+    await d.getByText(command, { exact: true }).waitFor({ timeout: 15_000 });
 
     await commitChange(repo.root, 'notes/unrelated.txt', 'an unrelated commit\n');
     await d
@@ -290,14 +282,10 @@ describe('approve a phase from the console', () => {
       )
       .waitFor({ timeout: 15_000 });
     expect(await d.getByRole('button', { name: 'Copy command' }).isDisabled()).toBe(true);
-    expect(await d.getByText(`counterpoint approve ${hostId} 02.1`, { exact: true }).count()).toBe(
-      0,
-    );
+    expect(await d.getByText(command, { exact: true }).count()).toBe(0);
 
     await d.getByRole('button', { name: 'Prepare approval again' }).click();
-    await d
-      .getByText(`counterpoint approve ${hostId} 02.1`, { exact: true })
-      .waitFor({ timeout: 15_000 });
+    await d.getByText(command, { exact: true }).waitFor({ timeout: 15_000 });
     expect(await d.getByRole('button', { name: 'Copy command' }).isDisabled()).toBe(false);
     await closeDialog();
   });
@@ -319,7 +307,7 @@ describe('approve a phase from the console', () => {
     await expect
       .poll(() =>
         main()
-          .getByRole('button', { name: 'Approve phase' })
+          .getByRole('button', { name: 'Approve change' })
           .evaluate((node) => node === document.activeElement),
       )
       .toBe(true);

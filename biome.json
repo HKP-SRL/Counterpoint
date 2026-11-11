@@ -13,7 +13,7 @@
       "!**/.tmp",
       "!**/tests/fixtures",
       "!**/.claude",
-      "!**/.planning",
+      "!docs",
       "!**/*.md"
     ]
   },
@@ -36,7 +36,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/**", "!src/compose.ts", "!src/adapters/gsd/**"],
+      "includes": ["src/**", "!src/compose.ts", "!src/adapters/openspec/**"],
       "linter": {
         "rules": {
           "style": {
@@ -45,8 +45,8 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/adapters/gsd", "**/adapters/gsd/**"],
-                    "message": "only src/compose.ts may import the GSD adapter"
+                    "group": ["**/adapters/openspec", "**/adapters/openspec/**"],
+                    "message": "only src/compose.ts may import the OpenSpec adapter"
                   }
                 ]
               }

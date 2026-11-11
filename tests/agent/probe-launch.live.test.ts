@@ -1,5 +1,5 @@
-// Live launch facts of the one production launch profile on the owner's real `claude` (01-21,
-// extended in 01-24 for the scrub opt-out: agentEnv sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to `0`,
+// Live launch facts of the one production launch profile on the owner's real `claude` (later
+// extended for the scrub opt-out: agentEnv sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB to `0`,
 // and the profile sets `sandbox.autoAllowBashIfSandboxed: false` as replacement 1).
 //
 // Gated by COUNTERPOINT_LIVE_PROBE=1: it needs a signed-in `claude` and spends a few cents of
@@ -8,7 +8,8 @@
 // repo); the owner's real directories are never targeted. The probe directory itself is a scratch
 // directory too (CP_TEST_SCRATCH), never os.tmpdir().
 //
-// It answers these launch questions, not the evaluator's verdicts (01-23 asserts those):
+// It answers these launch questions, not the evaluator's verdicts (the live probe test asserts
+// those):
 // - does claude really run the profile in `--permission-mode auto` under the scrub opt-out (each
 //   init `permissionMode`, and no permission-mode or auto-mode notice on stderr);
 // - did both launched requests carry the scrub value `0` and only the allow-listed variable names
@@ -582,7 +583,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live launch profil
     writeFileSync(join(DEBUG_DIR, 'step-records.json'), `${JSON.stringify(records, null, 2)}\n`);
 
     // --- Launch facts ---------------------------------------------------------------------------
-    // Both sessions reached a result and attempted every planned step (RESEARCH Pitfall 1).
+    // Both sessions reached a result and attempted every planned step.
     expect.soft(treatment.result, treatment.stderr).not.toBeNull();
     expect.soft(control.result, control.stderr).not.toBeNull();
     const missing = (steps: readonly ProbeStep[], events: readonly StreamEvent[]) => {
@@ -614,7 +615,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live launch profil
     expect.soft(facts.notices.control, 'control notices').toEqual([]);
 
     // Both launched requests carried the scrub opt-out, only the allow-listed variable names,
-    // sandbox auto-allow off and the outside-write block (01-24).
+    // sandbox auto-allow off and the outside-write block.
     const expectedEnvNames = [
       ...AGENT_ENV_ALLOW.filter((name) => typeof process.env[name] === 'string'),
       'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB',

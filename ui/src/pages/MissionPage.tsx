@@ -1,8 +1,8 @@
-// Mission (`/h/{hostId}`): the host's headline page (MISN-01/MISN-02, UI-SPEC "Screens and
-// Layout" Mission, E1 and E2).
+// Mission (`/h/{hostId}`): the host's headline page (runway: Runway is the Mission headline;
+// needs-you: Approved version changed).
 //
 // 1. A warning Banner when approvals changed since signing, linking to Needs You.
-// 2. The runway card (full width, first): how many phases are signed, verified at the base tip
+// 2. The runway card (full width, first): how many changes are signed, verified at the base tip
 //    and not yet built, i.e. approved work ahead of the builder. The figure is recomputed from
 //    git by the server on every read; `runway` and `approval` events refetch it and the new number
 //    is announced politely.
@@ -33,7 +33,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery } from '@tanstack/react-query';
 import { type ReactNode, useEffect, useRef } from 'react';
 import { hostsQuery } from '../api';
-import { phasesText, plansCountText, type RunwaySnapshot, runwayQuery } from '../runway';
+import { changesText, type RunwaySnapshot, runwayQuery, tasksCountText } from '../runway';
 import { NeedsYouEmpty, NeedsYouLoading, NeedsYouRow, needsYouQuery } from './NeedsYouPage';
 import { ageText, doctorQuery, ResultBadge, trustVerdict } from './TrustPage';
 
@@ -42,13 +42,13 @@ const TABULAR = { fontVariantNumeric: 'tabular-nums' } as const;
 /** The Needs You card shows at most this many rows; the rest are one link away. */
 export const NEEDS_YOU_CARD_ROWS = 5;
 
-/** The UI-SPEC `lg` width breakpoint (Astryx default map), where the cards go side by side. */
+/** The `lg` width breakpoint (Astryx default map), where the cards go side by side. */
 const LG_QUERY = '(min-width: 1024px)';
 
 export function changedBannerText(k: number): string {
   return k === 1
-    ? '1 approved phase changed since you signed it'
-    : `${k} approved phases changed since you signed them`;
+    ? '1 approved change was edited since you signed it'
+    : `${k} approved changes were edited since you signed them`;
 }
 
 function RunwayLoading() {
@@ -75,43 +75,41 @@ function RunwayFigure({ hostId, runway }: { hostId: string; runway: RunwaySnapsh
         </Heading>
         {runway.count === 0 ? (
           <Text type="supporting" color="secondary">
-            Nothing approved yet. Open a planned phase and approve it to start your runway.
+            Nothing approved yet. Open a ready change and approve it to start your runway.
           </Text>
         ) : (
           <Text type="supporting" color="secondary" hasTabularNumbers>
-            {runway.planCount === 1
-              ? `${phasesText(runway.count)} · 1 plan approved and ready ahead of the builder`
-              : `${phasesText(runway.count)} · ${runway.planCount} plans approved and ready ahead of the builder`}
+            {`${changesText(runway.count)} on the runway · ${tasksCountText(runway.taskCount)} approved and ready ahead of the builder`}
           </Text>
         )}
       </VStack>
       {runway.count === 0 ? (
-        <Link href={`/h/${hostId}/phases`}>Browse phases</Link>
+        <Link href={`/h/${hostId}/changes`}>Browse changes</Link>
       ) : (
-        // Grows with the page: no inner scroll and no cap (E1 overflow).
-        <List hasDividers={items.length > 1} aria-label="Phases on the runway">
+        // Grows with the page: no inner scroll and no cap, however long the runway.
+        <List hasDividers={items.length > 1} aria-label="Changes on the runway">
           {items.map((item) => (
             <ListItem
-              key={item.phaseId}
-              href={`/h/${hostId}/phases/${item.phaseId}`}
+              key={item.changeId}
+              href={`/h/${hostId}/changes/${item.changeId}`}
               label={
                 <HStack gap={2} vAlign="center">
-                  <Text type="code" hasTabularNumbers>
-                    {item.phaseId}
-                  </Text>
                   <Text maxLines={1} hasTruncateTooltip>
-                    {item.name}
+                    {item.title}
+                  </Text>
+                  <Text type="code" color="secondary" textWrap="nowrap">
+                    {item.changeId}
                   </Text>
                 </HStack>
               }
               description={
                 <Text type="supporting" color="secondary" hasTabularNumbers>
-                  {`${plansCountText(item.planCount)} · signed `}
+                  {`${tasksCountText(item.taskCount)} · signed `}
                   <Timestamp value={item.signedAt} hasTooltip />
                 </Text>
               }
-              // A phase whose files can't be read keeps its row (it still counts until its
-              // inputs change) and says so (E1 partial).
+              // A change whose files can't be read keeps its row (it still counts until its
+              // files change) and says so.
               endContent={
                 item.unreadable ? (
                   <Badge
@@ -149,7 +147,7 @@ function NeedsYouCard({ hostId, hostName }: { hostId: string; hostName: string }
   } else if (snapshot.items.length === 0) {
     body = <NeedsYouEmpty headingLevel={3} />;
   } else {
-    // The server serves the items newest first; the card shows the first five (E2 overflow).
+    // The server serves the items newest first; the card shows the first five.
     const shown = snapshot.items.slice(0, NEEDS_YOU_CARD_ROWS);
     body = (
       <VStack gap={3}>
@@ -237,7 +235,7 @@ function TrustCard({ hostId, hostName }: { hostId: string; hostName: string }) {
     const verdict = trustVerdict(answer, report, hostName);
     body = (
       <VStack gap={2}>
-        {/* The verdict wraps inside the card and is never truncated (E2 long-text). */}
+        {/* The verdict wraps inside the card and is never truncated, however long. */}
         <HStack gap={2} vAlign="start" wrap="wrap">
           <ResultBadge look={verdict.badge} />
           <Text weight="semibold">{verdict.title}</Text>
@@ -316,11 +314,11 @@ export function MissionPage({ hostId }: { hostId: string }) {
   const errorBanner = query.isError ? (
     <Banner
       status="error"
-      title="Couldn't load phases"
+      title="Couldn't load the runway"
       description="Counterpoint's daemon didn't answer."
       endContent={
         <Button
-          label="Try loading phases again"
+          label="Try loading the runway again"
           variant="secondary"
           isLoading={query.isFetching}
           onClick={() => void query.refetch()}
@@ -329,7 +327,7 @@ export function MissionPage({ hostId }: { hostId: string }) {
     />
   ) : null;
 
-  // Directly above the runway card whenever an approval changed since signing (E1 partial).
+  // Directly above the runway card whenever an approval changed since signing.
   const changedBanner =
     runway !== undefined && runway.changedCount > 0 ? (
       <Banner

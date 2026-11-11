@@ -1,4 +1,4 @@
-// Signed-out and blocked screens (`/signed-out`, UI-SPEC Copywriting Contract). Rendered without
+// Signed-out and blocked screens (`/signed-out`, fixed console copy). Rendered without
 // AppShell, centered on the body background. The `reason` query value only selects one of three
 // fixed variants and is never rendered; a missing or unknown reason is "not signed in".
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';

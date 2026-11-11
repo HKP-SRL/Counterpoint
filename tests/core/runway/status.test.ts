@@ -1,131 +1,119 @@
 import { describe, expect, it } from 'vitest';
-import type { PhaseFacts, PlanFacts } from '../../../src/core/framework/port.ts';
-import { derivePhaseStatus, phasePrerequisites } from '../../../src/core/runway/status.ts';
+import type { ChangeFacts } from '../../../src/core/framework/port.ts';
+import { deriveChangeStatus, isBuilt, ownerSteps } from '../../../src/core/runway/status.ts';
 
-function plan(overrides: Partial<PlanFacts> = {}): PlanFacts {
+function change(overrides: Partial<ChangeFacts> = {}): ChangeFacts {
   return {
-    id: '02-01',
-    file: 'plans/02-01.md',
-    wave: 1,
+    id: 'ready-thing',
+    dir: 'openspec/changes/ready-thing',
+    archived: false,
+    archivedOn: null,
+    title: 'Ready thing',
+    why: null,
+    created: '2026-10-01',
     dependsOn: [],
-    autonomous: true,
-    objective: null,
-    filesModified: [],
-    userSetup: [],
-    hasSummary: false,
-    ...overrides,
-  };
-}
-
-function phase(overrides: Partial<PhaseFacts> = {}): PhaseFacts {
-  return {
-    id: '02',
-    number: [2],
-    name: 'Thing',
-    inserted: false,
-    dir: 'phases/02-thing',
-    goal: null,
-    dependsOn: null,
-    requirements: null,
-    hasContext: true,
-    plans: [plan()],
+    artifacts: { proposal: true, design: false, tasks: true, specs: [] },
+    tasks: { total: 3, done: 1, ownerSteps: [] },
     unreadable: null,
     ...overrides,
   };
 }
 
-const unreadable = { file: 'phases/02-thing/02-01.md', reason: 'bad YAML' };
+const unreadable = { file: 'openspec/changes/ready-thing/.openspec.yaml', reason: 'bad YAML' };
 
-describe('derivePhaseStatus', () => {
-  it('reports an unreadable phase as unreadable, whatever else is true', () => {
-    expect(derivePhaseStatus(phase({ unreadable }))).toEqual({
+describe('deriveChangeStatus', () => {
+  it('reports an unreadable change as unreadable, whatever else is true', () => {
+    expect(deriveChangeStatus(change({ unreadable }))).toEqual({
       status: 'unreadable',
       notReadyReason: null,
     });
-    expect(derivePhaseStatus(phase({ unreadable }), 'on-runway').status).toBe('unreadable');
+    expect(deriveChangeStatus(change({ unreadable }), 'on-runway').status).toBe('unreadable');
+    expect(deriveChangeStatus(change({ unreadable, archived: true })).status).toBe('unreadable');
   });
 
-  it('reports a phase whose every plan has a summary as built', () => {
-    const built = phase({
-      plans: [plan({ hasSummary: true }), plan({ id: '02-02', hasSummary: true })],
+  it('reports an archived change as built, even with open tasks or no proposal', () => {
+    const archived = change({
+      archived: true,
+      archivedOn: '2026-09-01',
+      artifacts: { proposal: false, design: false, tasks: false, specs: [] },
+      tasks: { total: 0, done: 0, ownerSteps: [] },
     });
-    expect(derivePhaseStatus(built)).toEqual({ status: 'built', notReadyReason: null });
+    expect(deriveChangeStatus(archived)).toEqual({ status: 'built', notReadyReason: null });
+    expect(deriveChangeStatus(archived, 'changed').status).toBe('built');
   });
 
-  it('is not built while any plan lacks a summary', () => {
-    const partial = phase({ plans: [plan({ hasSummary: true }), plan({ id: '02-02' })] });
-    expect(derivePhaseStatus(partial).status).toBe('ready');
+  it('reports a change whose every task is done as built, over any overlay', () => {
+    const done = change({ tasks: { total: 2, done: 2, ownerSteps: [] } });
+    expect(deriveChangeStatus(done)).toEqual({ status: 'built', notReadyReason: null });
+    expect(deriveChangeStatus(done, 'on-runway').status).toBe('built');
   });
 
-  it('reports context plus at least one plan as ready', () => {
-    expect(derivePhaseStatus(phase())).toEqual({ status: 'ready', notReadyReason: null });
+  it('is not built while any task is open, nor with no tasks at all', () => {
+    expect(
+      deriveChangeStatus(change({ tasks: { total: 2, done: 1, ownerSteps: [] } })).status,
+    ).toBe('ready');
+    expect(isBuilt(change({ tasks: { total: 0, done: 0, ownerSteps: [] } }))).toBe(false);
   });
 
-  it('reports context without plans as not planned, reason no-plans', () => {
-    expect(derivePhaseStatus(phase({ plans: [] }))).toEqual({
+  it('applies the approval overlay to an unbuilt, readable change', () => {
+    expect(deriveChangeStatus(change(), 'on-runway')).toEqual({
+      status: 'on-runway',
+      notReadyReason: null,
+    });
+    expect(deriveChangeStatus(change(), 'changed').status).toBe('changed');
+    // The overlay wins even when the change would otherwise not be ready.
+    const bare = change({ artifacts: { proposal: false, design: false, tasks: false, specs: [] } });
+    expect(deriveChangeStatus(bare, 'changed').status).toBe('changed');
+  });
+
+  it('reports a proposal plus at least one task as ready', () => {
+    expect(deriveChangeStatus(change())).toEqual({ status: 'ready', notReadyReason: null });
+    expect(deriveChangeStatus(change(), null).status).toBe('ready');
+  });
+
+  it('reports a change without a proposal as not planned (no-proposal), before no-tasks', () => {
+    const noProposal = change({
+      artifacts: { proposal: false, design: false, tasks: false, specs: [] },
+      tasks: { total: 0, done: 0, ownerSteps: [] },
+    });
+    expect(deriveChangeStatus(noProposal)).toEqual({
       status: 'not-planned',
-      notReadyReason: 'no-plans',
+      notReadyReason: 'no-proposal',
     });
   });
 
-  it('reports a phase without context as not planned, reason no-context', () => {
-    expect(derivePhaseStatus(phase({ hasContext: false }))).toEqual({
+  it('reports a proposal without tasks as not planned (no-tasks)', () => {
+    const noTasks = change({
+      artifacts: { proposal: true, design: true, tasks: true, specs: ['menu'] },
+      tasks: { total: 0, done: 0, ownerSteps: [] },
+    });
+    expect(deriveChangeStatus(noTasks)).toEqual({
       status: 'not-planned',
-      notReadyReason: 'no-context',
+      notReadyReason: 'no-tasks',
     });
-    expect(derivePhaseStatus(phase({ hasContext: false, plans: [], dir: null }))).toEqual({
-      status: 'not-planned',
-      notReadyReason: 'no-context',
-    });
-  });
-
-  it.each(['on-runway', 'changed'] as const)('lets the %s overlay win over ready', (overlay) => {
-    expect(derivePhaseStatus(phase(), overlay)).toEqual({ status: overlay, notReadyReason: null });
-  });
-
-  it.each(['on-runway', 'changed'] as const)('does not let %s win over built', (overlay) => {
-    const built = phase({ plans: [plan({ hasSummary: true })] });
-    expect(derivePhaseStatus(built, overlay).status).toBe('built');
-  });
-
-  it('ignores a null overlay', () => {
-    expect(derivePhaseStatus(phase(), null).status).toBe('ready');
   });
 });
 
-describe('phasePrerequisites', () => {
-  it('dedupes user setup by service across plans and counts non-autonomous plans', () => {
-    const p = phase({
-      plans: [
-        plan({
-          autonomous: false,
-          userSetup: [
-            { service: 'docker', why: 'local stack', envVars: ['DB_URL'] },
-            { service: 'google-oauth', why: null, envVars: ['CLIENT_ID'] },
-          ],
-        }),
-        plan({
-          id: '02-02',
-          userSetup: [{ service: 'docker', why: 'again', envVars: ['DB_URL', 'SECRET'] }],
-        }),
-        plan({ id: '02-03', autonomous: false }),
-      ],
+describe('ownerSteps', () => {
+  it('returns the owner steps in task order without repeats', () => {
+    const facts = change({
+      tasks: {
+        total: 4,
+        done: 0,
+        ownerSteps: [
+          'Owner: create the project',
+          'Owner: add the key',
+          'Owner: create the project',
+        ],
+      },
     });
-    expect(phasePrerequisites(p)).toEqual({
-      userSetup: [
-        { service: 'docker', why: 'local stack', envVars: ['DB_URL', 'SECRET'] },
-        { service: 'google-oauth', why: null, envVars: ['CLIENT_ID'] },
-      ],
-      nonAutonomous: 2,
-      total: 3,
-    });
+    expect(ownerSteps(facts)).toEqual(['Owner: create the project', 'Owner: add the key']);
   });
 
-  it('is empty for a phase without plans', () => {
-    expect(phasePrerequisites(phase({ plans: [] }))).toEqual({
-      userSetup: [],
-      nonAutonomous: 0,
-      total: 0,
-    });
+  it('is empty when there are none, and never aliases the facts', () => {
+    const facts = change();
+    expect(ownerSteps(facts)).toEqual([]);
+    ownerSteps(facts).push('x');
+    expect(facts.tasks.ownerSteps).toEqual([]);
   });
 });

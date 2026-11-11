@@ -1,4 +1,5 @@
-// ssh-keygen signing and verification for approvals (APPR-01, APPR-04).
+// ssh-keygen signing and verification for approvals (signed-approvals: Signing at a terminal
+// with a clean environment; Verification from git, failing closed).
 //
 // ssh-keygen is called by absolute path, never resolved from PATH and never through git's
 // `gpg.ssh.program` (repository config must not choose the program that signs or verifies).

@@ -1,5 +1,5 @@
-// The Needs You API (MISN-02, APPR-02, D-04). Read-only, behind the session guard like every
-// /api route.
+// The Needs You API (needs-you: One inbox; Change view reads like a PR review). Read-only, behind
+// the session guard like every /api route.
 //
 //   GET /api/hosts/:hostId/needs-you                     { items } newest first
 //   GET /api/hosts/:hostId/needs-you/:itemId             { item, lead, changes, command } or
@@ -9,17 +9,18 @@
 //
 // Everything is recomputed from git at the base tip through the approval views (cached per tip);
 // nothing here is stored, dismissed or hidden. An item that resolved (re-signed, or inputs back to
-// the signed state) is simply no longer there: 404 `gone`, with `resolved: true` when the phase's
+// the signed state) is simply no longer there: 404 `gone`, with `resolved: true` when the change's
 // approval is on the runway again.
 //
-// The diff endpoint is not a file reader (T-01-52): the host id, the item id and the requested
-// path are validated before any git call, and the path must be one of the item's change rows
-// (the gate-config row included). Diffs come from git and travel as plain text (T-01-50, T-01-54).
+// The diff endpoint is not a file reader (it must not become a way to read arbitrary files): the
+// host id, the item id and the requested path are validated before any git call, and the path must
+// be one of the item's change rows (the gate-config row included). Diffs come from git and travel
+// as plain text (never rendered as HTML, never a path outside the repo).
 import { mkdirSync } from 'node:fs';
 import type { Hono } from 'hono';
 import { homePaths } from '../../core/host/home.ts';
-import { HOST_ID_RE } from '../../core/ids.ts';
-import { changedInputDiff, changeView } from '../../core/runway/needs-you.ts';
+import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
+import { changedInputDiff, driftView } from '../../core/runway/needs-you.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { HostRuntime, HostRuntimes } from '../hosts.ts';
 
@@ -29,9 +30,6 @@ export interface NeedsYouRoutesOptions {
   home: string;
   approvals: ApprovalViews;
 }
-
-/** Needs You item ids in Phase 1: `phase-{NN}` with an optional decimal sub-phase. */
-export const NEEDS_YOU_ITEM_ID_RE = /^phase-\d{2}(\.\d+)?$/;
 
 const MAX_DIFF_PATH = 1024;
 
@@ -53,13 +51,13 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
     return runtimes.get(hostId) ?? 'unknown';
   };
 
-  /** The item, its changed approval and its change view; null when it is not an item now. */
+  /** The item, its changed approval and its drift view; null when it is not an item now. */
   const resolveItem = async (runtime: HostRuntime, itemId: string) => {
     const snapshot = await approvals.needsYou(runtime);
     const item = snapshot.items.find((candidate) => candidate.id === itemId);
-    const changed = snapshot.changed.find((candidate) => candidate.phaseId === item?.phaseId);
+    const changed = snapshot.changed.find((candidate) => candidate.changeId === item?.changeId);
     if (item === undefined || changed === undefined || snapshot.tip === null) return null;
-    const view = changeView({
+    const view = driftView({
       item,
       statement: changed.statement,
       changes: changed.changes,
@@ -71,8 +69,8 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
     return { item, changed, view, tip: snapshot.tip };
   };
 
-  const gone = async (runtime: HostRuntime, phaseId: string) => {
-    const state = await approvals.state(runtime, phaseId).catch(() => null);
+  const gone = async (runtime: HostRuntime, changeId: string) => {
+    const state = await approvals.state(runtime, changeId).catch(() => null);
     return { state: 'gone' as const, resolved: state?.state === 'on-runway' };
   };
 
@@ -93,11 +91,11 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
     const runtime = runtimeFor(c.req.param('hostId'));
     const itemId = c.req.param('itemId');
     if (runtime === 'invalid') return c.json({ error: 'invalid host id' }, 400);
-    if (!NEEDS_YOU_ITEM_ID_RE.test(itemId)) return c.json({ error: 'invalid item id' }, 400);
+    if (!isChangeId(itemId)) return c.json({ error: 'invalid item id' }, 400);
     if (runtime === 'unknown') return c.json({ error: 'not found' }, 404);
 
     const found = await resolveItem(runtime, itemId);
-    if (found === null) return c.json(await gone(runtime, itemId.slice('phase-'.length)), 404);
+    if (found === null) return c.json(await gone(runtime, itemId), 404);
     return c.json({
       hostId: runtime.host.id,
       item: found.item,
@@ -112,7 +110,7 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
     const itemId = c.req.param('itemId');
     const path = c.req.query('path');
     if (runtime === 'invalid') return c.json({ error: 'invalid host id' }, 400);
-    if (!NEEDS_YOU_ITEM_ID_RE.test(itemId)) return c.json({ error: 'invalid item id' }, 400);
+    if (!isChangeId(itemId)) return c.json({ error: 'invalid item id' }, 400);
     if (typeof path !== 'string' || path === '' || path.length > MAX_DIFF_PATH) {
       return c.json({ error: 'invalid path' }, 400);
     }
@@ -121,8 +119,8 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
     }
 
     const found = await resolveItem(runtime, itemId);
-    if (found === null) return c.json(await gone(runtime, itemId.slice('phase-'.length)), 404);
-    // Only paths on this item's change list are ever diffed (T-01-52).
+    if (found === null) return c.json(await gone(runtime, itemId), 404);
+    // Only paths on this item's change list are ever diffed (no arbitrary file reads).
     if (!found.view.changes.some((row) => row.path === path)) {
       return c.json({ error: 'path is not one of this item’s changes' }, 400);
     }
@@ -136,7 +134,7 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
         changes: found.changed.changes,
         gatesChange: found.changed.gatesChange,
         tip: found.tip,
-        phaseId: found.item.phaseId,
+        changeId: found.item.changeId,
         path,
         tmpDir: scratch(),
       });

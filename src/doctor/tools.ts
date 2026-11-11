@@ -1,4 +1,4 @@
-// Doctor: tool presence and versions (FOUND-03).
+// Doctor: tool presence and versions.
 //
 // Every external program doctor runs goes through one injectable CommandRunner: an argument
 // array (never a shell), stdin ignored, a 10 s timeout, and no rejection on a non-zero exit, so a
@@ -8,9 +8,9 @@ import type { Check } from '../core/security/doctor-report.ts';
 
 const COMMAND_TIMEOUT_MS = 10_000;
 
-/** git 2.34 is the first release with SSH signature support (RESEARCH A8). */
+/** git 2.34 is the first release with SSH signature support. */
 export const MIN_GIT_VERSION = [2, 34] as const;
-/** OpenSSH 8.1 is the first release with the `ssh-keygen -Y` verbs (RESEARCH A8). */
+/** OpenSSH 8.1 is the first release with the `ssh-keygen -Y` verbs. */
 export const MIN_OPENSSH_VERSION = [8, 1] as const;
 
 export interface CommandResult {

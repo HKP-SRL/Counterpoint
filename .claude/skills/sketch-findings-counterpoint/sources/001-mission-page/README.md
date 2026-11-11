@@ -13,7 +13,7 @@ The owner likes the idea of a board but suspects it is unnecessary. Agents move 
 Which Mission page layout feels most like a solo dev's mission control? It must answer "can I walk away?" before anything else.
 
 ## How to View
-open .planning/sketches/001-mission-page/index.html
+open docs/sketches/001-mission-page/index.html
 
 Use the dark bar at the top to switch **Variant** and **State** (Idle, In flight, Holding, Landed, Alarm).
 **Simulate night** advances the run on its own: plans finish, gates run, cards move to Review.
@@ -41,4 +41,4 @@ The bottom-right toolbar switches light/dark, viewport width and annotation mode
 - Round 2 (D/E): does the flight path make the night feel alive and readable? Is purple-for-live enough life, or does E's ambience feel better? Does the landing estimate ("lands ≈05:34") help you decide whether to walk away?
 
 ## Data used
-Realistic Cena phases (3 QR menu browsing through 9 Staff roles), PRs #38 to #44, gates Typecheck, Lint, Unit tests, E2E, Build. Run 22:10 to 07:00. Everything is mocked; no backend.
+Realistic Cena work (3 QR menu browsing through 9 Staff roles), PRs #38 to #44, gates Typecheck, Lint, Unit tests, E2E, Build. Run 22:10 to 07:00. Everything is mocked; no backend.

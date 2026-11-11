@@ -15,7 +15,7 @@ export interface HostRow extends HostRecord {
 }
 
 const MIGRATIONS: readonly string[] = [
-  // 1: Phase 1 tables.
+  // 1: the first tables (hosts, sign-in, events).
   `
   CREATE TABLE hosts (
     id TEXT PRIMARY KEY,

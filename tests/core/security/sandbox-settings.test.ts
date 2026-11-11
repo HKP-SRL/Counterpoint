@@ -1,5 +1,5 @@
 // Unit tests for the agent sandbox-settings builder, the agent environment allow-list, the
-// `claude -p` argv builder and the doctor report schema (01-04 Task 1, FOUND-03/FOUND-04).
+// `claude -p` argv builder and the doctor report schema.
 import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -128,10 +128,10 @@ describe('buildAgentSandboxSettings', () => {
     expect(buildAgentSandboxSettings(rest).settings.sandbox.autoAllowBashIfSandboxed).toBe(false);
   });
 
-  it('denies the credential env vars, with and without a workdir (scrub replacement 3, 01-26)', () => {
+  it('denies the credential env vars, with and without a workdir (scrub replacement 3)', () => {
     const { workdir: _omit, ...rest } = paths;
     // CLOUDSDK_PROXY_PASSWORD left the list: the rerun showed the deny does not reach it, and it
-    // joined the sandbox-proxy-login exception (STATE.md [Owner] 2026-11-10).
+    // joined the sandbox-proxy-login exception (owner decision 2026-11-10).
     const expected = { envVars: [{ name: 'CLAUDE_CODE_MESSAGING_TOKEN', mode: 'deny' }] };
     expect(CREDENTIAL_ENV_DENY).toEqual(['CLAUDE_CODE_MESSAGING_TOKEN']);
     expect(buildAgentSandboxSettings(paths).settings.sandbox.credentials).toEqual(expected);
@@ -191,7 +191,7 @@ describe('buildAgentSandboxSettings', () => {
     ]);
     expect(profile.allowedTools).toEqual([...AGENT_TOOLS]);
     expect(profile.workdir).toBe(work);
-    // Deny rules win over allow rules, so the workdir's .claude stays unwritable (T-01-67).
+    // Deny rules win over allow rules, so the workdir's .claude stays unwritable.
     expect(settings.permissions.deny).toContain(`Edit(/${work}/.claude/**)`);
   });
 
@@ -371,7 +371,7 @@ describe('agentEnv', () => {
     expect(Object.keys(env).sort()).toEqual(
       [...AGENT_ENV_ALLOW, 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'].sort(),
     );
-    // The owner's scrub opt-out (STATE.md [Owner] 2026-11-10): the value is exactly '0'.
+    // The owner's scrub opt-out (owner decision 2026-11-10): the value is exactly '0'.
     expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('0');
     expect(env.PATH).toBe(parent.PATH);
   });
@@ -569,7 +569,7 @@ describe('DoctorReport', () => {
     expect(reportVerdict(DoctorReport.parse(report))).toBe('fail');
   });
 
-  it('parses an older report without sandboxIsolation, and fails it (01-25)', () => {
+  it('parses an older report without sandboxIsolation, and fails it', () => {
     const { sandboxIsolation: _dropped, ...older } = validReport();
     const parsed = DoctorReport.parse(older);
     expect(parsed.schema).toBe('counterpoint/doctor/v1');
@@ -586,7 +586,7 @@ describe('DoctorReport', () => {
     },
   );
 
-  it('parses an older report without agentMode, and fails it (01-22)', () => {
+  it('parses an older report without agentMode, and fails it', () => {
     const { agentMode: _dropped, ...older } = validReport();
     const parsed = DoctorReport.parse(older);
     expect(parsed.schema).toBe('counterpoint/doctor/v1');
@@ -595,7 +595,7 @@ describe('DoctorReport', () => {
   });
 
   it.each(['fail', 'not-checked'] as const)(
-    'fails when the agent permission mode check is %s (01-22)',
+    'fails when the agent permission mode check is %s',
     (result) => {
       const report = validReport();
       const agentMode = { ...report.agentMode, result, effective: 'default' };
@@ -603,7 +603,7 @@ describe('DoctorReport', () => {
     },
   );
 
-  it('rejects an agentMode with another id or without expected (01-22)', () => {
+  it('rejects an agentMode with another id or without expected', () => {
     const report = validReport();
     expect(
       DoctorReport.safeParse({ ...report, agentMode: { ...report.agentMode, id: 'mode' } }).success,
@@ -619,7 +619,7 @@ describe('DoctorReport', () => {
   });
 
   it('fails a report that holds only the seven pre-gap probe rows', () => {
-    // A report written before 01-17 has no outside-workdir row (nor 01-26's credential-env row):
+    // A report written before the outside-workdir row has neither it nor the credential-env row:
     // it still parses as schema v1, and it can never pass.
     const report = validReport();
     report.probe = report.probe.filter(
@@ -631,8 +631,8 @@ describe('DoctorReport', () => {
     expect(reportVerdict(parsed)).toBe('fail');
   });
 
-  it('fails a report that holds only the eight pre-01-26 probe rows', () => {
-    // A report written before 01-26 has no credential-env row: it still parses as schema v1,
+  it('fails a report that holds only the eight probe rows before credential-env', () => {
+    // A report written before the credential-env row has none: it still parses as schema v1,
     // and it can never pass.
     const report = validReport();
     report.probe = report.probe.filter((row) => row.id !== 'credential-env');

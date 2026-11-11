@@ -1,9 +1,11 @@
 // The framework port. Core owns these types; a framework adapter implements them (dependency
-// inversion, ADPT-02). Nothing in core knows which spec-driven framework a host uses: everything
-// framework-specific (file names, layouts, parsing) lives behind `FrameworkAdapter`.
+// inversion; host-planning: Framework adapter boundary). Nothing in core knows which spec-driven
+// framework a host uses: everything framework-specific (file names, layouts, parsing) lives behind
+// `FrameworkAdapter`.
 //
 // Adapters never touch a working tree. They read committed content through `GitFileReader`, so
-// what they report is exactly what is on the base branch tip (D-03).
+// what they report is exactly what is on the base branch tip (host-planning: Committed
+// content only).
 
 /** One entry of a git tree listing. */
 export interface TreeEntry {
@@ -27,82 +29,73 @@ export interface GitFileReader {
   read(commit: string, path: string): Promise<Uint8Array | null>;
 }
 
-/** A one-time setup step a plan declares (an external service, its env vars). */
-export interface UserSetupItem {
-  service: string;
-  why: string | null;
-  envVars: string[];
-}
-
-/** What the adapter knows about one plan of a phase. */
-export interface PlanFacts {
-  id: string;
-  /** Repository-relative path of the plan file. */
-  file: string;
-  wave: number | null;
-  dependsOn: string[];
-  autonomous: boolean;
-  objective: string | null;
-  filesModified: string[];
-  userSetup: UserSetupItem[];
-  /** True when the plan's completion record exists next to it (the plan was built). */
-  hasSummary: boolean;
-}
-
 /** Why a file could not be used. `file` is repository-relative; `reason` is one short line. */
 export interface UnreadableFile {
   file: string;
   reason: string;
 }
 
-/** What the adapter knows about one phase. */
-export interface PhaseFacts {
-  /** Display and URL id: major zero-padded to two digits (`01`, `01.1`, `02`). */
+/** Which of a change's planning artifacts exist. */
+export interface ChangeArtifacts {
+  proposal: boolean;
+  design: boolean;
+  tasks: boolean;
+  /** The capability paths under the change's `specs/` folder (`menu`, `ordering/kitchen`). */
+  specs: string[];
+}
+
+/** Task progress of a change, counted the way the framework counts its own checkboxes. */
+export interface ChangeTasks {
+  total: number;
+  done: number;
+  /** Unchecked tasks whose text starts with `Owner:`: steps only the owner can do. */
+  ownerSteps: string[];
+}
+
+/** What the adapter knows about one change (openspec-host-adapter design decision 3). */
+export interface ChangeFacts {
+  /** The change name: display, URL and approval id (kebab-case, at most 64 characters). */
   id: string;
-  /** The phase number as an integer tuple (`01.1` → [1, 1]). Never a floating-point value. */
-  number: number[];
-  name: string;
-  /** True for a phase inserted between existing ones. */
-  inserted: boolean;
-  /** Repository-relative directory of the phase, or null when it has none yet. */
-  dir: string | null;
-  goal: string | null;
-  dependsOn: string | null;
-  requirements: string | null;
-  /** True when the phase's discussion record (its context document) exists. */
-  hasContext: boolean;
-  plans: PlanFacts[];
-  /** Set when a file of this phase failed to read or parse; other phases are unaffected. */
+  /** Repository-relative directory of the change. */
+  dir: string;
+  /** True for a finished change moved into the archive. */
+  archived: boolean;
+  /** The archive date (`YYYY-MM-DD`) for an archived change, else null. */
+  archivedOn: string | null;
+  /** The proposal's first top-level heading, else the id. */
+  title: string;
+  /** The proposal's "Why" section, trimmed and capped; null when there is none. */
+  why: string | null;
+  /** The change's creation date (`YYYY-MM-DD`), null when absent or invalid. */
+  created: string | null;
+  /** Ids of the changes this one depends on, as written. */
+  dependsOn: string[];
+  artifacts: ChangeArtifacts;
+  tasks: ChangeTasks;
+  /** Set when a file of this change failed to read or parse; other changes are unaffected. */
   unreadable: UnreadableFile | null;
 }
 
 /** Everything the adapter reports about a host's planning truth at one commit. */
-export interface PlanSnapshot {
+export interface ChangeSnapshot {
   /** The adapter id that produced this snapshot. */
   framework: string;
   commit: string;
-  phases: PhaseFacts[];
-  /** Set when the host's top-level planning document itself could not be read. */
+  /** Active changes in build order, then archived changes, newest first. */
+  changes: ChangeFacts[];
+  /** Set when the host's planning root itself could not be read. */
   unreadable: UnreadableFile | null;
 }
 
-export type ApprovalInputKind =
-  | 'context'
-  | 'plan'
-  | 'research'
-  | 'ui-spec'
-  | 'spec'
-  | 'ai-spec'
-  | 'roadmap-section';
+export type ApprovalInputKind = 'proposal' | 'design' | 'tasks' | 'spec' | 'metadata' | 'other';
 
 /** One input an approval covers. */
 export interface ApprovalInput {
   /** Logical input id recorded in the approval statement. */
   path: string;
   /**
-   * The repository file the bytes come from: equal to `path` for a plain file, the underlying
-   * file for a derived input (such as a normalized section), so core can map any input to a real
-   * file without knowing the framework.
+   * The repository file the bytes come from: equal to `path` for every input today, kept apart so
+   * core can map any input to a real file without knowing the framework.
    */
   sourcePath: string;
   label: string;
@@ -118,51 +111,27 @@ export interface FrameworkAdapter {
   id: string;
   /** True when the commit carries this framework's planning layout. */
   detect(reader: GitFileReader, commit: string): Promise<boolean>;
-  snapshot(reader: GitFileReader, commit: string): Promise<PlanSnapshot>;
-  /** The inputs an approval of `phaseId` covers. Throws PhaseNotFoundError for an unknown id. */
-  approvalInputs(reader: GitFileReader, commit: string, phaseId: string): Promise<ApprovalInput[]>;
+  snapshot(reader: GitFileReader, commit: string): Promise<ChangeSnapshot>;
+  /** The inputs an approval of `changeId` covers. Throws ChangeNotFoundError for an unknown id. */
+  approvalInputs(reader: GitFileReader, commit: string, changeId: string): Promise<ApprovalInput[]>;
 }
 
-export class PhaseNotFoundError extends Error {
-  readonly phaseId: string;
+export class ChangeNotFoundError extends Error {
+  readonly changeId: string;
 
-  constructor(phaseId: string) {
-    super(`Phase ${JSON.stringify(phaseId.slice(0, 40))} was not found.`);
-    this.name = 'PhaseNotFoundError';
-    this.phaseId = phaseId;
+  constructor(changeId: string) {
+    super(`Change ${JSON.stringify(changeId.slice(0, 64))} was not found.`);
+    this.name = 'ChangeNotFoundError';
+    this.changeId = changeId;
   }
 }
 
-/**
- * Orders phase numbers as integer tuples: element by element, and on a shared prefix the shorter
- * tuple first. So [1] < [1, 1] < [1, 9] < [1, 10] < [2].
- */
-export function comparePhaseNumbers(a: readonly number[], b: readonly number[]): number {
-  const shared = Math.min(a.length, b.length);
-  for (let i = 0; i < shared; i++) {
-    const diff = (a[i] as number) - (b[i] as number);
-    if (diff !== 0) return diff < 0 ? -1 : 1;
-  }
-  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
-}
-
-/** The phase id for a number: major zero-padded to two digits, minors as written. */
-export function formatPhaseId(number: readonly number[]): string {
-  const [major, ...minors] = number;
-  if (major === undefined) throw new RangeError('A phase number needs at least one part.');
-  return [String(major).padStart(2, '0'), ...minors.map(String)].join('.');
-}
-
-const PHASE_NUMBER_RE = /^(\d{1,6})(?:\.(\d{1,6}))?$/;
-
-/**
- * Parses `1`, `01`, `1.1`, `01.1`, `1.10` into an integer tuple; null for anything else.
- * Each segment is parsed as a base-10 integer, so `1.10` stays distinct from `1.1`.
- */
-export function parsePhaseNumber(text: string): number[] | null {
-  const match = PHASE_NUMBER_RE.exec(text);
-  if (!match) return null;
-  const parts = [Number.parseInt(match[1] as string, 10)];
-  if (match[2] !== undefined) parts.push(Number.parseInt(match[2], 10));
-  return parts;
+/** The change named `changeId`: the active one, else an archived one of that name. */
+export function findChange<T extends Pick<ChangeFacts, 'id' | 'archived'>>(
+  changes: readonly T[],
+  changeId: string,
+): T | undefined {
+  return (
+    changes.find((c) => c.id === changeId && !c.archived) ?? changes.find((c) => c.id === changeId)
+  );
 }

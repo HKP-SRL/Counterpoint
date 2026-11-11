@@ -1,23 +1,20 @@
 // Approval preparation: recompute the statement at the base tip and say exactly what a signature
-// would bind (RESEARCH Pattern 4, recompute-and-print).
+// would bind (signed-approvals: Console prepares, terminal signs): recompute, then print.
 //
-// The tip is the LOCAL `refs/heads/{base}` (D-03): the owner pushes when ready. The phase must be
-// Ready to approve (D-01: context and at least one plan, not built, readable). Inputs come from
-// the framework adapter the caller passes in (core never names an adapter), the gates slot from
-// the host config at the same tip. Nothing here writes anything; the same tip always gives
-// byte-identical statement bytes.
+// The tip is the LOCAL `refs/heads/{base}` (host-planning: Committed content only): the owner
+// pushes when ready. The change must be Ready to approve (openspec-host-adapter design decision 5:
+// a proposal and at least one task, not built, readable). Inputs come from the framework adapter
+// the caller passes in (core never names an adapter), the gates slot from the host config at the
+// same tip. Nothing here writes anything; the same tip always gives byte-identical statement bytes.
 import {
+  ChangeNotFoundError,
   type FrameworkAdapter,
+  findChange,
   type GitFileReader,
-  PhaseNotFoundError,
 } from '../framework/port.ts';
 import { UnsafeTreeEntryError } from '../git/reader.ts';
-import { approvalItemId, assertHostId, assertPhaseId } from '../ids.ts';
-import {
-  derivePhaseStatus,
-  type PhasePrerequisites,
-  phasePrerequisites,
-} from '../runway/status.ts';
+import { approvalItemId, assertChangeId, assertHostId } from '../ids.ts';
+import { deriveChangeStatus, type NotReadyReason, ownerSteps } from '../runway/status.ts';
 import { BRANCH_RE } from './commit.ts';
 import { GatesConfigError, gatesDigest } from './gates.ts';
 import {
@@ -30,7 +27,7 @@ import {
 
 export type PrepareRefusal =
   | { ok: false; reason: 'no-base' | 'not-found' | 'built' }
-  | { ok: false; reason: 'not-ready'; notReadyReason: 'no-context' | 'no-plans' }
+  | { ok: false; reason: 'not-ready'; notReadyReason: NotReadyReason }
   | { ok: false; reason: 'unreadable'; file: string; detail: string }
   | { ok: false; reason: 'gates-config'; detail: string };
 
@@ -49,13 +46,14 @@ export interface PreparedApproval {
   bytes: Uint8Array;
   /** First 12 hex of sha256(canonical statement). */
   fingerprint: string;
-  /** `phase-{NN}`. */
+  /** The change id (openspec-host-adapter design decision 1). */
   itemId: string;
-  /** `.counterpoint/approvals/phase-{NN}.json`. */
+  /** `.counterpoint/approvals/{change}.json`. */
   itemPath: string;
   tip: string;
-  phase: { id: string; name: string; planCount: number };
-  prerequisites: PhasePrerequisites;
+  change: { id: string; title: string; taskCount: number };
+  /** Unchecked `Owner:` tasks, shown before signing; they never block approval. */
+  ownerSteps: string[];
   /** Inputs in statement order, with their display labels. */
   inputs: PreparedInput[];
 }
@@ -63,12 +61,12 @@ export interface PreparedApproval {
 export async function prepareApproval(options: {
   hostId: string;
   baseBranch: string;
-  phaseId: string;
+  changeId: string;
   reader: GitFileReader;
   adapter: FrameworkAdapter;
 }): Promise<PreparedApproval | PrepareRefusal> {
   const hostId = assertHostId(options.hostId);
-  const phaseId = assertPhaseId(options.phaseId);
+  const changeId = assertChangeId(options.changeId);
   const { reader, adapter, baseBranch } = options;
   if (!BRANCH_RE.test(baseBranch)) return { ok: false, reason: 'no-base' };
 
@@ -76,8 +74,8 @@ export async function prepareApproval(options: {
   if (tip === null) return { ok: false, reason: 'no-base' };
 
   const snapshot = await adapter.snapshot(reader, tip);
-  const phase = snapshot.phases.find((p) => p.id === phaseId);
-  if (!phase) {
+  const change = findChange(snapshot.changes, changeId);
+  if (!change) {
     if (snapshot.unreadable !== null) {
       return {
         ok: false,
@@ -89,13 +87,13 @@ export async function prepareApproval(options: {
     return { ok: false, reason: 'not-found' };
   }
 
-  const status = derivePhaseStatus(phase);
-  if (status.status === 'unreadable' && phase.unreadable !== null) {
+  const status = deriveChangeStatus(change);
+  if (status.status === 'unreadable' && change.unreadable !== null) {
     return {
       ok: false,
       reason: 'unreadable',
-      file: phase.unreadable.file,
-      detail: phase.unreadable.reason,
+      file: change.unreadable.file,
+      detail: change.unreadable.reason,
     };
   }
   if (status.status === 'built') return { ok: false, reason: 'built' };
@@ -103,15 +101,15 @@ export async function prepareApproval(options: {
     return {
       ok: false,
       reason: 'not-ready',
-      notReadyReason: status.notReadyReason ?? 'no-context',
+      notReadyReason: status.notReadyReason ?? 'no-proposal',
     };
   }
 
   let inputs: Awaited<ReturnType<FrameworkAdapter['approvalInputs']>>;
   try {
-    inputs = await adapter.approvalInputs(reader, tip, phaseId);
+    inputs = await adapter.approvalInputs(reader, tip, changeId);
   } catch (error) {
-    if (error instanceof PhaseNotFoundError) return { ok: false, reason: 'not-found' };
+    if (error instanceof ChangeNotFoundError) return { ok: false, reason: 'not-found' };
     if (error instanceof UnsafeTreeEntryError) {
       return { ok: false, reason: 'unreadable', file: error.path, detail: error.message };
     }
@@ -128,18 +126,18 @@ export async function prepareApproval(options: {
     throw error;
   }
 
-  const statement = buildStatement({ hostId, phaseId, baseBranch, tip, inputs, gates });
+  const statement = buildStatement({ hostId, changeId, baseBranch, tip, inputs, gates });
   const byPath = new Map(inputs.map((input) => [input.path, input]));
   return {
     ok: true,
     statement,
     bytes: new TextEncoder().encode(serializeStatement(statement)),
     fingerprint: statementFingerprint(statement),
-    itemId: approvalItemId(phaseId),
-    itemPath: approvalPath(phaseId),
+    itemId: approvalItemId(changeId),
+    itemPath: approvalPath(changeId),
     tip,
-    phase: { id: phase.id, name: phase.name, planCount: phase.plans.length },
-    prerequisites: phasePrerequisites(phase),
+    change: { id: change.id, title: change.title, taskCount: change.tasks.total },
+    ownerSteps: ownerSteps(change),
     inputs: statement.inputs.files.map((file) => {
       const source = byPath.get(file.path);
       return {

@@ -1,4 +1,4 @@
-// The settings-source reader (01-25, replacement 2 for the scrub opt-out) over scratch locations
+// The settings-source reader (replacement 2 for the scrub opt-out) over scratch locations
 // only, and a source scan that keeps every test off the real settings sources.
 //
 // Every reader case here passes scratch SettingsSourceLocations built in this file. The

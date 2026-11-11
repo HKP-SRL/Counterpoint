@@ -1,27 +1,28 @@
-// The one agent launch profile (RESEARCH Pattern 3): sandbox settings plus the tool list. The
-// doctor probe launches exactly this output as its treatment session, and the Phase 2 runner
+// The one agent launch profile: sandbox settings plus the tool list. The
+// doctor probe launches exactly this output as its treatment session, and the build runner
 // launches builders with it, so a probe pass is a statement about the production configuration.
 //
-// Recipe verified on claude 2.1.319 / macOS (RESEARCH "Sandbox spike"):
+// Recipe verified on claude 2.1.319 / macOS by the sandbox spike:
 // - Every read-protected directory gets a `Read(//abs/**)` + `Edit(//abs/**)` deny twin. Read
 //   deny rules cover the Read tool, Grep, symlinks and (merged by Claude Code) Bash.
 //   `sandbox.filesystem.denyRead` is kept as a second layer for Bash.
 // - The host's git common dir gets `Edit(//G/**)` plus `denyWrite` for config, hooks and info.
-// - `allowWrite` is empty: Phase 1's only agent (the doctor probe) writes nothing in the git dir,
-//   so no grant can expose shared refs, objects or the base branch ref (T-01-64). Phase 2 adds a
-//   narrow builder grant as an explicit input; the deny rules above still win over it.
+// - `allowWrite` is empty: today's only agent (the doctor probe) writes nothing in the git dir,
+//   so no grant can expose shared refs, objects or the base branch ref. The builder
+//   (first-unattended-run) adds a narrow grant as an explicit input; the deny rules above still
+//   win over it.
 // - Permission rules use the `//abs` prefix form; `sandbox.filesystem.*` uses plain absolute
 //   paths. Every path is absolute and realpath-resolved (`/tmp` is `/private/tmp` on macOS).
 //
-// File edits (WINDOWS.md #2, 01-17; auto mode since 01-21). Sessions run in
+// File edits (agent-sandbox: File edits confined to the session folder). Sessions run in
 // `--permission-mode auto` (claude-argv.ts), where a classifier decides calls no rule covers, so
 // no confinement may rest on the mode. `permissions.blockWritesOutsideWorkingDirectories: true`
 // (claude >= 2.1.314) confines the Write, Edit and NotebookEdit tools to the working folder in
 // every permission mode, and no allow rule lifts it; the profile always emits it, with or without
 // a workdir (fail closed). It also refuses writes to Claude Code settings files inside the working
-// folder, and it removes the `EnterWorktree`/`ExitWorktree` tools (Phase 2 builders run inside
+// folder, and it removes the `EnterWorktree`/`ExitWorktree` tools (builders run inside
 // Counterpoint-made worktrees and do not need them). Claude-managed exempt files (plan files, the
-// scratchpad, a background session's tmp, auto-memory `.md`) stay writable: the T-01-70 residual.
+// scratchpad, a background session's tmp, auto-memory `.md`) stay writable: an accepted residual.
 // The block does not limit shell commands: `sandbox.filesystem.allowWrite: []` (Seatbelt) still
 // confines Bash. The profile's tool list (AGENT_TOOLS) names no file-edit tool, and the allow side
 // is builder output: with a workdir it is exactly `Edit(//{workdir}/**)` (Edit rules apply to
@@ -29,37 +30,37 @@
 // before allow rules in every mode, so the workdir's `.claude/` folder and every protected
 // directory stay unwritable.
 //
-// Sandbox auto-allow (replacement 1 for the scrub, 01-24). Claude Code's default
+// Sandbox auto-allow (replacement 1 for the scrub). Claude Code's default
 // (`autoAllowBashIfSandboxed: true`) runs sandboxed Bash commands without the permission prompt
 // flow. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` kept that off; agent sessions now opt out of the scrub
 // (agent-env.ts), so the profile sets `sandbox.autoAllowBashIfSandboxed: false` explicitly, with or
 // without a workdir. With it off, an unlisted sandboxed command goes through the permission rules
 // and, in auto mode, the classifier. The `--settings` flag outranks user, project and local
-// settings but not managed settings; doctor checks managed sources for it (01-25).
+// settings but not managed settings; doctor checks managed sources for it.
 //
-// Credential env vars (replacement 3 for the scrub, 01-26). With the scrub off, a sandboxed Bash
-// command sees what Claude Code itself exports to it. 01-26's first live listing on claude
+// Credential env vars (replacement 3 for the scrub). With the scrub off, a sandboxed Bash
+// command sees what Claude Code itself exports to it. The first live listing on claude
 // 2.1.321 found two credential-named variables there: `CLAUDE_CODE_MESSAGING_TOKEN` (the
 // per-session messaging token the env-vars docs name) and `CLOUDSDK_PROXY_PASSWORD`. The profile
 // denies `CLAUDE_CODE_MESSAGING_TOKEN` through a `sandbox.credentials.envVars` entry with
-// `mode: "deny"`, with or without a workdir (STATE.md [Owner] 2026-11-10, "Credential-env row
-// scoped to the real requirement"). The sandboxing docs (https://code.claude.com/docs/en/sandboxing,
-// section `sandbox.credentials`, read 2026-11-10): for deny entries "environment variables are
-// unset before each sandboxed command runs"; the variable protection holds even when filesystem
-// isolation is off; "There is no built-in credential deny list, so only the files and variables
-// you list are restricted"; and Claude Code ignores `credentials` entries from project and local
-// settings only, so this `--settings` profile's entries apply. 01-26's rerun showed the entry
-// take effect for `CLAUDE_CODE_MESSAGING_TOKEN`, but not for `CLOUDSDK_PROXY_PASSWORD`: Claude Code
-// sets the `CLOUDSDK_PROXY_*` gcloud proxy config (ADDRESS, PORT, TYPE, USERNAME, PASSWORD) after
-// deny entries apply, like the proxy URLs. So `CLOUDSDK_PROXY_PASSWORD` is no longer denied; it
-// joined the owner's `sandbox-proxy-login` exception, conditioned on `CLOUDSDK_PROXY_ADDRESS`
-// being a loopback host (STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the
-// sandbox-proxy-login exception"). The sandbox proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
-// `ALL_PROXY` and related) are how sandboxed commands reach the network ("Claude Code runs the
-// sandbox proxy on your machine, outside the sandbox, and directs commands to it with ..."), so
-// they are not denied either; the probe's credential-env row accepts them only as that loopback
-// exception (src/agent/env-listing.ts SANDBOX_PROXY_EXCEPTION), and fails if the denied name
-// reappears.
+// `mode: "deny"`, with or without a workdir (owner decision 2026-11-10, "Credential-env row
+// scoped to the real requirement"). The sandboxing docs
+// (https://code.claude.com/docs/en/sandboxing, section `sandbox.credentials`, read 2026-11-10): for
+// deny entries "environment variables are unset before each sandboxed command runs"; the variable
+// protection holds even when filesystem isolation is off; "There is no built-in credential deny
+// list, so only the files and variables you list are restricted"; and Claude Code ignores
+// `credentials` entries from project and local settings only, so this `--settings` profile's
+// entries apply. The rerun showed the entry take effect for `CLAUDE_CODE_MESSAGING_TOKEN`, but not
+// for `CLOUDSDK_PROXY_PASSWORD`: Claude Code sets the `CLOUDSDK_PROXY_*` gcloud proxy config
+// (ADDRESS, PORT, TYPE, USERNAME, PASSWORD) after deny entries apply, like the proxy URLs. So
+// `CLOUDSDK_PROXY_PASSWORD` is no longer denied; it joined the owner's `sandbox-proxy-login`
+// exception, conditioned on `CLOUDSDK_PROXY_ADDRESS` being a loopback host (owner decision
+// 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception"). The sandbox proxy
+// variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and related) are how sandboxed commands reach
+// the network ("Claude Code runs the sandbox proxy on your machine, outside the sandbox, and
+// directs commands to it with ..."), so they are not denied either; the probe's credential-env row
+// accepts them only as that loopback exception (src/agent/env-listing.ts SANDBOX_PROXY_EXCEPTION),
+// and fails if the denied name reappears.
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
@@ -105,15 +106,15 @@ export interface AgentSettings {
       denyWrite: string[];
       allowWrite: string[];
     };
-    /** Credential env vars unset before each sandboxed command runs (01-26). */
+    /** Credential env vars unset before each sandboxed command runs. */
     credentials?: { envVars: Array<{ name: string; mode: 'deny' }> };
   };
 }
 
 /**
- * The credential env vars the launch profile denies to sandboxed commands (01-26). The first
+ * The credential env vars the launch profile denies to sandboxed commands. The first
  * listing flagged two by name; `CLOUDSDK_PROXY_PASSWORD` left this list after the rerun showed
- * the deny does not reach it (STATE.md [Owner] 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the
+ * the deny does not reach it (owner decision 2026-11-10, "CLOUDSDK_PROXY_PASSWORD joins the
  * sandbox-proxy-login exception"). Order is the emitted order.
  */
 export const CREDENTIAL_ENV_DENY = ['CLAUDE_CODE_MESSAGING_TOKEN'] as const;

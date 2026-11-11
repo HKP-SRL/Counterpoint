@@ -5,15 +5,15 @@
 // GITHUB_TOKEN, no ANTHROPIC_API_KEY, no COUNTERPOINT_* variables, no NODE_OPTIONS.
 //
 // The subprocess scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) is set to `0`: the owner's opt-out
-// (STATE.md [Owner] 2026-11-10). On claude 2.1.321 the scrub forced `--permission-mode auto` down
-// to `default` in every session (01-21 evidence, WINDOWS.md #3), so agents never ran in the auto
+// (owner decision 2026-11-10). On claude 2.1.321 the scrub forced `--permission-mode auto` down
+// to `default` in every session (seen live), so agents never ran in the auto
 // mode the owner chose. What the scrub gave, and the Counterpoint-owned replacement for each:
 // - sandbox auto-allow off: the launch profile sets `sandbox.autoAllowBashIfSandboxed: false`
-//   explicitly (sandbox-settings.ts, replacement 1, 01-24);
+//   explicitly (sandbox-settings.ts, replacement 1);
 // - filesystem isolation that holds even when a settings source sets
-//   `sandbox.filesystem.disabled`: doctor's sandbox isolation settings check (replacement 2, 01-25);
+//   `sandbox.filesystem.disabled`: doctor's sandbox isolation settings check (replacement 2);
 // - credential stripping of the environments of the subprocesses Claude Code starts (Bash
-//   commands, hooks, stdio MCP servers): the probe's credential-env row (replacement 3, 01-26).
+//   commands, hooks, stdio MCP servers): the probe's credential-env row (replacement 3).
 //
 // Because only the allow-list crosses from the parent, anything credential-shaped in an agent's
 // Bash environment came from Claude Code itself; that is what the credential-env row looks for.

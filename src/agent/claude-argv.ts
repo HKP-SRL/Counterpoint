@@ -1,8 +1,8 @@
-// The argument array for a headless `claude -p` session (RESEARCH "recommended agent launch
-// profile"). Every flag here is mandatory:
+// The argument array for a headless `claude -p` session (agent-sandbox: One launch profile for
+// every agent session). Every flag here is mandatory:
 // - `--setting-sources user`: a project `.claude/settings.json` hook planted by an agent ran
 //   unsandboxed in `-p` mode during research; only the owner's user settings load.
-// - `--strict-mcp-config`: only MCP servers passed explicitly (none in Phase 1).
+// - `--strict-mcp-config`: only MCP servers passed explicitly (none so far).
 // - `--permission-mode auto` + `--permission-prompts none` (owner decision, 2026-11-10): the
 //   permission rules decide first; a call no rule covers goes to Claude Code's auto-mode
 //   classifier; anything that would still fall back to a prompt is denied automatically, so
@@ -28,7 +28,7 @@ export interface ClaudeArgvInput {
   /** Explicit tool allow-list, e.g. `['Bash', 'Read']`. */
   allowedTools: readonly string[];
   prompt: string;
-  /** Extra directories (absolute). Phase 1 passes none. */
+  /** Extra directories (absolute). Nothing passes any yet. */
   addDirs?: readonly string[];
 }
 

@@ -13,8 +13,8 @@ import type { EventBus } from '../core/store/events.ts';
 import { type ApprovalViews, createApprovalViews } from './approval-views.ts';
 import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
 import { mountApprovalRoutes } from './routes/approvals.ts';
+import { mountChangeRoutes } from './routes/changes.ts';
 import { mountNeedsYouRoutes } from './routes/needs-you.ts';
-import { mountPhaseRoutes } from './routes/phases.ts';
 import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
 
@@ -73,8 +73,9 @@ export function createApp(options: AppOptions): Hono {
   const getPort = () => port;
   const indexFile = join(options.uiDir, 'index.html');
 
-  // Guard chain, in this order (RESEARCH Item 6): exact Host `127.0.0.1:${port}` → security
-  // headers → Origin / Fetch Metadata / JSON body on non-GET /api → session on every /api.
+  // Guard chain, in this order (local-console: Exact Host allowlist; Origin and content checks):
+  // exact Host `127.0.0.1:${port}` → security headers → Origin / Fetch Metadata / JSON body on
+  // non-GET /api → session on every /api.
   app.use('*', hostGuard(getPort));
   app.use('*', securityHeaders());
   app.use('/api/*', mutationGuard(getPort));
@@ -88,9 +89,9 @@ export function createApp(options: AppOptions): Hono {
   });
   app.use('/api/*', sessionGuard(options.store));
 
-  // The one-time sign-in exchange (D-07). Outside /api and the session check, behind the Host
-  // check. The query string carries the code, so it is never logged. Only a real GET consumes a
-  // code: HEAD (link previews, prefetch) must not burn the owner's link.
+  // The one-time sign-in exchange (local-console: One-time sign-in). Outside /api and the session
+  // check, behind the Host check. The query string carries the code, so it is never logged. Only a
+  // real GET consumes a code: HEAD (link previews, prefetch) must not burn the owner's link.
   app.get('/login', (c) => {
     c.header('Cache-Control', 'no-store');
     if (c.req.method !== 'GET') return c.body(null, 405);
@@ -125,7 +126,7 @@ export function createApp(options: AppOptions): Hono {
   const approvals =
     options.approvals ??
     (options.home === undefined ? undefined : createApprovalViews({ home: options.home }));
-  mountPhaseRoutes(app, { runtimes, ...(approvals === undefined ? {} : { approvals }) });
+  mountChangeRoutes(app, { runtimes, ...(approvals === undefined ? {} : { approvals }) });
   if (options.home !== undefined) {
     mountTrustRoutes(app, { home: options.home, store: options.store });
     if (approvals !== undefined) {

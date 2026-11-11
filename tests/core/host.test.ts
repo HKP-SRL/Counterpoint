@@ -19,14 +19,14 @@ import {
 } from '../../src/core/host/registry.ts';
 import {
   approvalItemId,
+  assertChangeId,
   assertHostId,
-  assertPhaseId,
+  CHANGE_ID_RE,
   HOST_ID_RE,
   hostIdFromName,
   InvalidIdError,
+  isChangeId,
   isHostId,
-  isPhaseId,
-  PHASE_ID_RE,
   PROBE_CANARY_RE,
   PROBE_GIT_ARTIFACT_RE,
   PROBE_NONCE_RE,
@@ -71,22 +71,37 @@ describe('HOST_ID_RE', () => {
   });
 });
 
-describe('PHASE_ID_RE', () => {
+describe('change ids', () => {
   it.each([
-    ['02', true],
-    ['01.1', true],
-    ['10.12', true],
-    ['99', true],
-    ['2', false],
-    ['002', false],
-    ['02.', false],
-    ['1.1', false],
-    ['02.1.1', false],
-    ['02\n', false],
-    ['../02', false],
+    ['qr-menu-browsing', true],
+    ['owner-ui-on-astryx', true],
+    ['a', true],
+    ['2fa', true],
+    ['v2-import', true],
+    ['a'.repeat(64), true],
+    ['a'.repeat(65), false],
+    [`${'ab-'.repeat(21)}ab`, false],
+    ['archive', false],
+    ['Archive', false],
+    ['-x', false],
+    ['x-', false],
+    ['a--b', false],
+    ['qr_menu', false],
+    ['QR-menu', false],
+    ['qr menu', false],
+    ['2026-11-01-menu-import', true],
+    ['../x', false],
+    ['x\n', false],
+    ['', false],
   ])('%j -> %s', (value, ok) => {
-    expect(PHASE_ID_RE.test(value)).toBe(ok);
-    expect(isPhaseId(value)).toBe(ok);
+    expect(isChangeId(value)).toBe(ok);
+  });
+
+  it('CHANGE_ID_RE alone is only the shape: length and the archive folder are isChangeId rules', () => {
+    expect(CHANGE_ID_RE.test('archive')).toBe(true);
+    expect(CHANGE_ID_RE.test('a'.repeat(65))).toBe(true);
+    expect(isChangeId(42)).toBe(false);
+    expect(isChangeId(null)).toBe(false);
   });
 });
 
@@ -95,16 +110,17 @@ describe('id assertions', () => {
     expect(assertHostId('cena')).toBe('cena');
   });
 
-  it('assertPhaseId returns a valid id', () => {
-    expect(assertPhaseId('01.1')).toBe('01.1');
+  it('assertChangeId returns a valid id', () => {
+    expect(assertChangeId('qr-menu-browsing')).toBe('qr-menu-browsing');
   });
 
   it.each([['../x'], ['Cena'], [42], [undefined]])('assertHostId rejects %j', (value) => {
     expect(() => assertHostId(value)).toThrow(InvalidIdError);
   });
 
-  it.each([['2'], ['1.1'], [null]])('assertPhaseId rejects %j', (value) => {
-    expect(() => assertPhaseId(value)).toThrow(InvalidIdError);
+  it.each([['archive'], ['Qr'], ['a'.repeat(65)], [null]])('assertChangeId rejects %j', (value) => {
+    expect(() => assertChangeId(value)).toThrow(InvalidIdError);
+    expect(() => assertChangeId(value)).toThrow(/^Invalid change id /);
   });
 
   it('echoes at most 40 characters of a rejected input', () => {
@@ -122,10 +138,10 @@ describe('id assertions', () => {
     expect(message).not.toContain('TAIL');
   });
 
-  it('approvalItemId prefixes a validated phase id', () => {
-    expect(approvalItemId('02')).toBe('phase-02');
-    expect(approvalItemId('01.1')).toBe('phase-01.1');
-    expect(() => approvalItemId('2')).toThrow(InvalidIdError);
+  it('approvalItemId is the validated change id itself', () => {
+    expect(approvalItemId('qr-menu-browsing')).toBe('qr-menu-browsing');
+    expect(() => approvalItemId('archive')).toThrow(InvalidIdError);
+    expect(() => approvalItemId('../x')).toThrow(InvalidIdError);
   });
 });
 
@@ -496,7 +512,7 @@ function fakeStore(initial: HostRecord[] = []): HostRegistryStore & { hosts: Hos
   };
 }
 
-const detectGsd = async () => 'gsd';
+const detectOpenSpec = async () => 'openspec';
 const detectNone = () => 'none';
 
 async function repoWithBranch(prefix: string, branch: string): Promise<string> {
@@ -536,13 +552,13 @@ describe('registerHost', () => {
   it('registers a repo with only master', async () => {
     const repo = await repoWithBranch('rm', 'master');
     const store = fakeStore();
-    const host = await registerHost(store, { cwd: repo, detectFramework: detectGsd });
+    const host = await registerHost(store, { cwd: repo, detectFramework: detectOpenSpec });
     expect(host).toEqual({
       id: hostIdFromName(basename(repo)),
       root: realpathSync(repo),
       gitCommonDir: realpathSync(join(repo, '.git')),
       baseBranch: 'master',
-      adapter: 'gsd',
+      adapter: 'openspec',
     });
     expect(store.hosts).toEqual([host]);
   });
@@ -552,7 +568,7 @@ describe('registerHost', () => {
     await gitIn(repo, ['branch', 'main']);
     await gitIn(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
     await gitIn(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
-    const host = await registerHost(fakeStore(), { cwd: repo, detectFramework: detectGsd });
+    const host = await registerHost(fakeStore(), { cwd: repo, detectFramework: detectOpenSpec });
     expect(host.baseBranch).toBe('main');
   });
 
@@ -561,7 +577,7 @@ describe('registerHost', () => {
     mkdirSync(join(repo, 'deep', 'er'), { recursive: true });
     const host = await registerHost(fakeStore(), {
       cwd: join(repo, 'deep', 'er'),
-      detectFramework: detectGsd,
+      detectFramework: detectOpenSpec,
     });
     expect(host.root).toBe(realpathSync(repo));
   });
@@ -572,7 +588,7 @@ describe('registerHost', () => {
     const host = await registerHost(fakeStore(), {
       cwd: repo,
       base: 'release',
-      detectFramework: detectGsd,
+      detectFramework: detectOpenSpec,
     });
     expect(host.baseBranch).toBe('release');
   });
@@ -583,7 +599,7 @@ describe('registerHost', () => {
       const repo = await repoWithBranch('rx', 'master');
       const store = fakeStore();
       await expect(
-        registerHost(store, { cwd: repo, base, detectFramework: detectGsd }),
+        registerHost(store, { cwd: repo, base, detectFramework: detectOpenSpec }),
       ).rejects.toThrow(
         `Couldn't find ${basename(repo)}'s base branch. Run counterpoint again with --base <branch>.`,
       );
@@ -594,7 +610,7 @@ describe('registerHost', () => {
   it('refuses when no base branch can be detected', async () => {
     const repo = await repoWithBranch('rd', 'develop');
     await expect(
-      registerHost(fakeStore(), { cwd: repo, detectFramework: detectGsd }),
+      registerHost(fakeStore(), { cwd: repo, detectFramework: detectOpenSpec }),
     ).rejects.toThrow(`Couldn't find ${basename(repo)}'s base branch.`);
   });
 
@@ -602,27 +618,27 @@ describe('registerHost', () => {
     // Scratch dirs sit inside this checkout, so use the filesystem root (read-only use).
     const dir = '/';
     await expect(
-      registerHost(fakeStore(), { cwd: dir, detectFramework: detectGsd }),
+      registerHost(fakeStore(), { cwd: dir, detectFramework: detectOpenSpec }),
     ).rejects.toThrow('is not inside a git repository');
   });
 
   it('stores whatever framework id the injected detector returns', async () => {
     const repo = await repoWithBranch('rf', 'main');
     const calls: Array<[string, string]> = [];
-    const gsd = await registerHost(fakeStore(), {
+    const detected = await registerHost(fakeStore(), {
       cwd: repo,
       detectFramework: async (root, baseBranch) => {
         calls.push([root, baseBranch]);
-        return 'gsd';
+        return 'openspec';
       },
     });
-    expect(gsd.adapter).toBe('gsd');
+    expect(detected.adapter).toBe('openspec');
     expect(calls).toEqual([[realpathSync(repo), 'main']]);
     const none = await registerHost(fakeStore(), { cwd: repo, detectFramework: detectNone });
     expect(none.adapter).toBe('none');
   });
 
-  it.each([[''], ['GSD'], ['../gsd'], ['a'.repeat(33)], ['gsd\n']])(
+  it.each([[''], ['OpenSpec'], ['../openspec'], ['a'.repeat(33)], ['openspec\n']])(
     'refuses a detector result %j that fails the framework id pattern',
     async (bad) => {
       const repo = await repoWithBranch('ri', 'main');
@@ -645,9 +661,9 @@ describe('registerHost', () => {
         adapter: 'none',
       },
     ]);
-    const host = await registerHost(store, { cwd: repo, detectFramework: detectGsd });
+    const host = await registerHost(store, { cwd: repo, detectFramework: detectOpenSpec });
     expect(host.id).toBe('kept-id');
-    expect(host.adapter).toBe('gsd');
+    expect(host.adapter).toBe('openspec');
     expect(store.hosts).toHaveLength(1);
   });
 
@@ -662,11 +678,11 @@ describe('registerHost', () => {
       adapter: 'none',
     });
     const store = fakeStore([other(derived)]);
-    expect((await registerHost(store, { cwd: repo, detectFramework: detectGsd })).id).toBe(
+    expect((await registerHost(store, { cwd: repo, detectFramework: detectOpenSpec })).id).toBe(
       `${derived}-2`,
     );
     const store3 = fakeStore([other(derived), other(`${derived}-2`)]);
-    expect((await registerHost(store3, { cwd: repo, detectFramework: detectGsd })).id).toBe(
+    expect((await registerHost(store3, { cwd: repo, detectFramework: detectOpenSpec })).id).toBe(
       `${derived}-3`,
     );
   });

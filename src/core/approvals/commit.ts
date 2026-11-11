@@ -1,5 +1,6 @@
-// The approval commit (APPR-01): a commit on the base branch that adds or replaces exactly one
-// file, `.counterpoint/approvals/{item}.json`, signed with the owner's SSH key.
+// The approval commit (signed-approvals: One-file signed commit on the base branch): a commit on
+// the base branch that adds or replaces exactly one file, `.counterpoint/approvals/{item}.json`,
+// signed with the owner's SSH key.
 //
 // Built with plumbing only (hash-object, ls-tree/mktree, commit-tree): no checkout and no index
 // of its own, so nothing in the owner's checkout changes while it is built. The signature from
@@ -28,9 +29,10 @@ import {
   updateRefCas,
   worktreeList,
 } from '../git/plumbing.ts';
+import { isChangeId } from '../ids.ts';
 
-/** The only paths an approval commit may write. */
-export const APPROVAL_PATH_RE = /^\.counterpoint\/approvals\/phase-\d{2}(\.\d+)?\.json$/;
+/** The only paths an approval commit may write: `.counterpoint/approvals/{change}.json`. */
+export const APPROVAL_PATH_RE = /^\.counterpoint\/approvals\/([a-z0-9]+(?:-[a-z0-9]+)*)\.json$/;
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 /** Base branch names accepted for approvals (no leading dash, no `..`, no `//`). */
@@ -53,8 +55,14 @@ export class SignedCommitError extends Error {
   }
 }
 
+/** True for `.counterpoint/approvals/{change}.json` where the name is a valid change id. */
+export function isApprovalPath(itemPath: string): boolean {
+  const match = APPROVAL_PATH_RE.exec(itemPath);
+  return match !== null && isChangeId(match[1]);
+}
+
 function assertApprovalPath(itemPath: string): void {
-  if (!APPROVAL_PATH_RE.test(itemPath)) throw new Error('Not an approval file path.');
+  if (!isApprovalPath(itemPath)) throw new Error('Not an approval file path.');
 }
 
 function assertSha(value: string, what: string): void {

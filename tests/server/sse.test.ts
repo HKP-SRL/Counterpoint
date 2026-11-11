@@ -1,4 +1,5 @@
-// The live-events outbox and GET /api/events (UI-SPEC Interaction Contract 2, T-01-10).
+// The live-events outbox and GET /api/events (local-console: Live updates over one event
+// stream): replay by Last-Event-ID, and no event leaks file contents.
 import type { IncomingMessage, Server } from 'node:http';
 import { request } from 'node:http';
 import { serve } from '@hono/node-server';
@@ -186,12 +187,23 @@ afterAll(async () => {
 
 describe('events outbox', () => {
   it('names the event families', () => {
-    expect(EVENT_FAMILIES).toEqual(['host', 'phase', 'approval', 'runway', 'needs-you', 'doctor']);
+    expect(EVENT_FAMILIES).toEqual([
+      'host',
+      'planning',
+      'approval',
+      'runway',
+      'needs-you',
+      'doctor',
+    ]);
   });
 
   it('appendEvent returns increasing seq values', () => {
     const db = openStore(makeScratchDir('outbox'));
-    const a = appendEvent(db, { hostId: 'cena', family: 'phase', payload: { phaseId: '02' } });
+    const a = appendEvent(db, {
+      hostId: 'cena',
+      family: 'planning',
+      payload: { changeId: 'ready-thing' },
+    });
     const b = appendEvent(db, { hostId: 'cena', family: 'runway' });
     const c = appendEvent(db, { hostId: null, family: 'doctor' });
     expect(a).toBeGreaterThan(0);
@@ -203,11 +215,11 @@ describe('events outbox', () => {
   it('listEventsSince returns only later events, in seq order, up to the limit', () => {
     const db = openStore(makeScratchDir('outbox'));
     const seqs = [1, 2, 3, 4, 5].map((n) =>
-      appendEvent(db, { hostId: 'cena', family: 'phase', payload: { n } }),
+      appendEvent(db, { hostId: 'cena', family: 'planning', payload: { n } }),
     );
     const later = listEventsSince(db, seqs[1] as number);
     expect(later.map((event) => event.seq)).toEqual(seqs.slice(2));
-    expect(later[0]).toMatchObject({ hostId: 'cena', family: 'phase', payload: { n: 3 } });
+    expect(later[0]).toMatchObject({ hostId: 'cena', family: 'planning', payload: { n: 3 } });
     expect(listEventsSince(db, 0, 2).map((event) => event.seq)).toEqual(seqs.slice(0, 2));
     db.close();
   });
@@ -228,8 +240,8 @@ describe('POST /control/notify', () => {
 
   it.each([
     ['an unknown family', { hostId: 'cena', family: 'shell' }],
-    ['an invalid host id', { hostId: '../etc', family: 'phase' }],
-    ['extra fields', { hostId: 'cena', family: 'phase', payload: { file: 'secret' } }],
+    ['an invalid host id', { hostId: '../etc', family: 'planning' }],
+    ['extra fields', { hostId: 'cena', family: 'planning', payload: { file: 'secret' } }],
     ['a missing family', { hostId: 'cena' }],
   ])('rejects %s with 400', async (_label, body) => {
     expect((await notify(body)).status).toBe(400);
@@ -239,7 +251,7 @@ describe('POST /control/notify', () => {
     const res = await control.request('http://counterpoint.control/control/notify', {
       method: 'POST',
       headers: { host: 'counterpoint.control', 'content-type': 'application/json' },
-      body: JSON.stringify({ hostId: 'cena', family: 'phase' }),
+      body: JSON.stringify({ hostId: 'cena', family: 'planning' }),
     });
     expect(res.status).toBe(401);
   });
@@ -272,7 +284,7 @@ describe('GET /api/events', () => {
 
   it('replays events after Last-Event-ID first, then streams live ones', async () => {
     const seqs = [1, 2, 3, 4, 5].map((n) =>
-      appendEvent(store, { hostId: 'cena', family: 'phase', payload: { n } }),
+      appendEvent(store, { hostId: 'cena', family: 'planning', payload: { n } }),
     );
     const after = seqs[2] as number;
     const stream = await openStream({ cookie, 'last-event-id': String(after) });
@@ -282,7 +294,7 @@ describe('GET /api/events', () => {
     await stream.waitFor(() => familyFrames(stream).length >= 2);
     const replayed = familyFrames(stream).slice(0, 2);
     expect(replayed.map((frame) => Number(frame.id))).toEqual(seqs.slice(3));
-    expect(replayed.map((frame) => frame.event)).toEqual(['phase', 'phase']);
+    expect(replayed.map((frame) => frame.event)).toEqual(['planning', 'planning']);
     expect(JSON.parse(replayed[0]?.data ?? '{}')).toEqual({ hostId: 'cena', n: 4 });
 
     const res = await notify({ hostId: 'cena', family: 'runway' });
@@ -303,7 +315,7 @@ describe('GET /api/events', () => {
   });
 
   it('without Last-Event-ID streams only new events', async () => {
-    appendEvent(store, { hostId: 'cena', family: 'phase' });
+    appendEvent(store, { hostId: 'cena', family: 'planning' });
     const stream = await openStream({ cookie });
     await stream.waitFor(() => stream.frames.length >= 1);
     const res = await notify({ hostId: 'cena', family: 'needs-you' });

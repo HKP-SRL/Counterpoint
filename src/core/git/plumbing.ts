@@ -1,4 +1,5 @@
-// Git plumbing wrappers for the approval mechanics (APPR-01).
+// Git plumbing wrappers for the approval mechanics (signed-approvals: One-file signed commit on
+// the base branch).
 //
 // Everything goes through runGit (absolute git, allow-listed environment, hooks and fsmonitor
 // disabled). On top of that, every call here also:

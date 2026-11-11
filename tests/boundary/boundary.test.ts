@@ -1,10 +1,12 @@
-// The core/adapter boundary (ADPT-02) as a meta-test, so the rule can never silently stop working.
+// The core/adapter boundary (host-planning: Framework adapter boundary) as a meta-test, so the rule
+// can never silently stop working.
 //
 // 1. Import restrictions: the repo's own biome.json is copied into a scratch project together with
 //    deliberate violators, and the repo's own Biome binary must report every one of them.
 // 2. Framework path literals: no `.ts` file under src/core may name a framework's files
-//    (`.planning`, `ROADMAP`). Core learns framework facts only through the port: registration via
-//    detectFramework, inputs via approvalInputs and their sourcePath.
+//    (`openspec/`, `.openspec.yaml`, `proposal.md`, `tasks.md`). Core learns framework facts only
+//    through the port: registration via detectFramework, inputs via approvalInputs and their
+//    sourcePath.
 import { copyFileSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,45 +18,47 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BIOME = join(REPO_ROOT, 'node_modules', '.bin', 'biome');
 
 const CORE_MESSAGE = 'core must not import adapters';
-const COMPOSE_MESSAGE = 'only src/compose.ts may import the GSD adapter';
+const COMPOSE_MESSAGE = 'only src/compose.ts may import the OpenSpec adapter';
 
 const ALLOWED: Record<string, string> = {
   'src/core/framework/port.ts': 'export interface Port {\n  id: string;\n}\n',
-  'src/adapters/gsd/index.ts':
+  'src/adapters/openspec/index.ts':
     "import type { Port } from '../../core/framework/port.ts';\n\n" +
-    "export const adapter: Port = { id: 'gsd' };\n",
+    "export const adapter: Port = { id: 'openspec' };\n",
   'src/compose.ts':
-    "import { adapter } from './adapters/gsd/index.ts';\n\nexport const adapters = [adapter];\n",
+    "import { adapter } from './adapters/openspec/index.ts';\n\nexport const adapters = [adapter];\n",
 };
 
 /** Every import form from core into adapters, plus a non-compose module importing the adapter. */
 const VIOLATORS: Record<string, { source: string; message: string }> = {
   'src/core/relative.ts': {
-    source: "import { adapter } from '../adapters/gsd/index.ts';\n\nexport const a = adapter;\n",
+    source:
+      "import { adapter } from '../adapters/openspec/index.ts';\n\nexport const a = adapter;\n",
     message: CORE_MESSAGE,
   },
   'src/core/type-only.ts': {
     source:
-      "import type { adapter } from '../adapters/gsd/index.ts';\n\n" +
+      "import type { adapter } from '../adapters/openspec/index.ts';\n\n" +
       'export type A = typeof adapter;\n',
     message: CORE_MESSAGE,
   },
   'src/core/dynamic.ts': {
     source:
       'export async function load(): Promise<unknown> {\n' +
-      "  return import('../adapters/gsd/index.ts');\n}\n",
+      "  return import('../adapters/openspec/index.ts');\n}\n",
     message: CORE_MESSAGE,
   },
   'src/core/reexport.ts': {
-    source: "export * from '../adapters/gsd/index.ts';\n",
+    source: "export * from '../adapters/openspec/index.ts';\n",
     message: CORE_MESSAGE,
   },
   'src/core/alias.ts': {
-    source: "import { adapter } from '#adapters/gsd';\n\nexport const a = adapter;\n",
+    source: "import { adapter } from '#adapters/openspec';\n\nexport const a = adapter;\n",
     message: CORE_MESSAGE,
   },
   'src/server/x.ts': {
-    source: "import { adapter } from '../adapters/gsd/index.ts';\n\nexport const a = adapter;\n",
+    source:
+      "import { adapter } from '../adapters/openspec/index.ts';\n\nexport const a = adapter;\n",
     message: COMPOSE_MESSAGE,
   },
 };
@@ -100,7 +104,7 @@ interface LiteralHit {
   text: string;
 }
 
-const FRAMEWORK_LITERAL_RE = /ROADMAP|\.planning/;
+const FRAMEWORK_LITERAL_RE = /openspec\/|\.openspec\.yaml|proposal\.md|tasks\.md/;
 
 function tsFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
@@ -173,18 +177,18 @@ describe('framework path literals stay out of core', () => {
     writeFileIn(
       dir,
       'src/core/deep/leak.ts',
-      "export const ok = 1;\n\nexport const roadmap = '.planning/ROADMAP.md';\n",
+      "export const ok = 1;\n\nexport const config = 'openspec/config.yaml';\n",
     );
     const hits = frameworkLiterals(dir, 'src/core');
     expect(hits).toEqual([
       {
         file: 'src/core/deep/leak.ts',
         line: 3,
-        text: "export const roadmap = '.planning/ROADMAP.md';",
+        text: "export const config = 'openspec/config.yaml';",
       },
     ]);
     expect(describeHits(hits)).toBe(
-      "src/core/deep/leak.ts:3: export const roadmap = '.planning/ROADMAP.md';",
+      "src/core/deep/leak.ts:3: export const config = 'openspec/config.yaml';",
     );
   });
 });

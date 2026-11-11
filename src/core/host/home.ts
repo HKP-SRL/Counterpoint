@@ -1,4 +1,5 @@
-// The Counterpoint home (D-08): where the store, token, logs and trust material live.
+// The Counterpoint home (daemon-lifecycle: Home must exist before start): where the store, token,
+// logs and trust material live.
 //
 // Resolution: COUNTERPOINT_HOME, else the platform default. A missing home is refused and never
 // created here; only `counterpoint init` creates it, so state can never silently land on the

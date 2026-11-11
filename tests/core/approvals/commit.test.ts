@@ -1,6 +1,7 @@
-// Approval commit mechanics (APPR-01): plumbing-built tree and commit, ssh-keygen signature
-// embedded as gpgsig, compare-and-swap landing that leaves the owner's checkout untouched apart
-// from the one approval file. Scratch repos and throwaway keys only.
+// Approval commit mechanics (signed-approvals: One-file signed commit on the base branch):
+// plumbing-built tree and commit, ssh-keygen signature embedded as gpgsig, compare-and-swap landing
+// that leaves the owner's checkout untouched apart from the one approval file. Scratch repos and
+// throwaway keys only.
 import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -8,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   buildApprovalCommit,
   embedSignature,
+  isApprovalPath,
   landApprovalCommit,
   signAndLand,
   splitSignedCommit,
@@ -24,7 +26,7 @@ import {
   writeFileIn,
 } from '../../helpers/scratch.ts';
 
-const ITEM = '.counterpoint/approvals/phase-01.json';
+const ITEM = '.counterpoint/approvals/first-change.json';
 const ident = { name: 'Owner', email: 'owner@example.invalid', date: '1700000000 +0000' };
 const encoder = new TextEncoder();
 
@@ -43,7 +45,7 @@ afterAll(removeScratchDirs);
 const sign = (payload: Uint8Array) => signPayload({ payload, privateKeyPath: key.privateKeyPath });
 
 function statement(text = 'v1'): Uint8Array {
-  return encoder.encode(`{"item":"phase-01","note":"${text}"}\n`);
+  return encoder.encode(`{"item":"first-change","note":"${text}"}\n`);
 }
 
 async function baseRepo(branch = 'master'): Promise<string> {
@@ -64,7 +66,7 @@ async function land(dir: string, bytes = statement(), itemPath = ITEM, branch = 
     baseBranch: branch,
     itemPath,
     fileBytes: bytes,
-    message: 'counterpoint: approve phase 01\n',
+    message: 'counterpoint: approve change first-change\n',
     ident,
     sign,
   });
@@ -116,7 +118,7 @@ describe('signAndLand', () => {
     );
     expect(await gitIn(dir, ['diff-tree', '-r', '--name-status', tip0, tip1])).toBe(`A\t${ITEM}`);
     expect(await gitIn(dir, ['status', '--porcelain'])).toBe(before);
-    expect(readFileSync(join(dir, ITEM), 'utf8')).toBe('{"item":"phase-01","note":"v1"}\n');
+    expect(readFileSync(join(dir, ITEM), 'utf8')).toBe('{"item":"first-change","note":"v1"}\n');
     expect(readFileSync(join(dir, 'README.md'), 'utf8')).toBe('edited by the owner\n');
   });
 
@@ -126,19 +128,19 @@ describe('signAndLand', () => {
     writeFileIn(dir, ITEM, '{"old":true}\n');
     const tip0 = await commitAll(dir, 'existing counterpoint files');
 
-    const result = await land(dir, statement('p2'), '.counterpoint/approvals/phase-02.json');
+    const result = await land(dir, statement('p2'), '.counterpoint/approvals/second-change.json');
     expect(result.ok).toBe(true);
     const files = (await gitIn(dir, ['ls-tree', '-r', '--name-only', 'master'])).split('\n');
     expect(files.sort()).toEqual(
       [
-        '.counterpoint/approvals/phase-01.json',
-        '.counterpoint/approvals/phase-02.json',
+        '.counterpoint/approvals/first-change.json',
+        '.counterpoint/approvals/second-change.json',
         '.counterpoint/config.yaml',
         'README.md',
       ].sort(),
     );
     expect(await gitIn(dir, ['diff-tree', '-r', '--name-status', tip0, 'master'])).toBe(
-      'A\t.counterpoint/approvals/phase-02.json',
+      'A\t.counterpoint/approvals/second-change.json',
     );
     expect(await gitIn(dir, ['status', '--porcelain'])).toBe('');
   });
@@ -186,7 +188,7 @@ describe('signAndLand', () => {
       baseTip: tip0,
       itemPath: ITEM,
       fileBytes: statement(),
-      message: 'counterpoint: approve phase 01\n',
+      message: 'counterpoint: approve change first-change\n',
       ident,
     });
     const signed = embedSignature(built.payload, await sign(built.payload));
@@ -222,7 +224,7 @@ describe('signAndLand', () => {
       return { built, signed: embedSignature(built.payload, await sign(built.payload)) };
     };
     const a = await build(ITEM);
-    const b = await build('.counterpoint/approvals/phase-02.json');
+    const b = await build('.counterpoint/approvals/second-change.json');
     const landOne = (x: typeof a, itemPath: string) =>
       landApprovalCommit({
         root: dir,
@@ -235,10 +237,10 @@ describe('signAndLand', () => {
     const first = await landOne(a, ITEM);
     expect(first.ok).toBe(true);
     const tip1 = await rev(dir, 'master');
-    const second = await landOne(b, '.counterpoint/approvals/phase-02.json');
+    const second = await landOne(b, '.counterpoint/approvals/second-change.json');
     expect(second).toEqual({ ok: false, reason: 'base-moved' });
     expect(await rev(dir, 'master')).toBe(tip1);
-    expect(existsSync(join(dir, '.counterpoint/approvals/phase-02.json'))).toBe(false);
+    expect(existsSync(join(dir, '.counterpoint/approvals/second-change.json'))).toBe(false);
   });
 
   it.each([
@@ -328,7 +330,7 @@ describe('signAndLand', () => {
       `M\t${ITEM}`,
     );
     expect(await gitIn(dir, ['status', '--porcelain'])).toBe('');
-    expect(readFileSync(join(dir, ITEM), 'utf8')).toBe('{"item":"phase-01","note":"v2"}\n');
+    expect(readFileSync(join(dir, ITEM), 'utf8')).toBe('{"item":"first-change","note":"v2"}\n');
   });
 
   it('produces a commit plain git verify-commit accepts (sanity check only)', async () => {
@@ -484,5 +486,21 @@ describe('ssh-keygen signer', () => {
       }
     }
     expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe('isApprovalPath', () => {
+  it.each([
+    ['.counterpoint/approvals/first-change.json', true],
+    ['.counterpoint/approvals/qr-menu-browsing.json', true],
+    ['.counterpoint/approvals/archive.json', false],
+    [`.counterpoint/approvals/${'a'.repeat(65)}.json`, false],
+    ['.counterpoint/approvals/Bad_Name.json', false],
+    ['.counterpoint/approvals/../config.yaml', false],
+    ['.counterpoint/approvals/x/y.json', false],
+    ['.counterpoint/config.yaml', false],
+    ['approvals/first-change.json', false],
+  ])('%s -> %s', (path, ok) => {
+    expect(isApprovalPath(path)).toBe(ok);
   });
 });

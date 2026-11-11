@@ -1,6 +1,6 @@
-// The console's one live stream (UI-SPEC Interaction Contract 2). A single EventSource on
-// GET /api/events turns each event family into TanStack Query invalidations, so pages refetch
-// their snapshot only when something changed; the browser never polls.
+// The console's one live stream (local-console: Live updates over one event stream). A single
+// EventSource on GET /api/events turns each event family into TanStack Query invalidations, so
+// pages refetch their snapshot only when something changed; the browser never polls.
 //
 // Reconnects: the browser retries on its own and resends `Last-Event-ID`, so the server replays
 // what was missed. If the stream is closed for good (a non-200 answer, e.g. 401 after the daemon
@@ -11,12 +11,13 @@ import { useAnnounce } from '@astryxdesign/core/hooks';
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { ApiError, apiGet, queryKeys } from './api';
+import { HOST_ID_RE } from './ids';
 
 export type ConnectionState = 'connected' | 'reconnecting';
 
 export const EVENT_FAMILIES = [
   'host',
-  'phase',
+  'planning',
   'approval',
   'runway',
   'needs-you',
@@ -27,19 +28,19 @@ export type EventFamily = (typeof EVENT_FAMILIES)[number];
 /** Which cached queries each event family makes stale, for the event's host. */
 export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly QueryKey[]> = {
   host: () => [queryKeys.hosts],
-  // A `phase` event means the base tip moved. The runway and Needs You are derived from the tip
-  // too, and the watcher only publishes `runway` / `needs-you` when their value differs from its
-  // own last pass: a change and its revert inside one poll leave a page that fetched the middle
+  // A `planning` event means the base tip moved. The runway and Needs You are derived from the
+  // tip too, and the watcher only publishes `runway` / `needs-you` when their value differs from
+  // its own last pass: an edit and its revert inside one poll leave a page that fetched the middle
   // state stale. Refetching them on every tip move closes that gap (the server caches per tip).
-  phase: (hostId) => [
-    queryKeys.phases(hostId),
-    queryKeys.phase(hostId),
+  planning: (hostId) => [
+    queryKeys.changes(hostId),
+    queryKeys.change(hostId),
     queryKeys.runway(hostId),
     queryKeys.needsYou(hostId),
   ],
   approval: (hostId) => [
-    queryKeys.phase(hostId),
-    queryKeys.phases(hostId),
+    queryKeys.change(hostId),
+    queryKeys.changes(hostId),
     queryKeys.runway(hostId),
     queryKeys.needsYou(hostId),
   ],
@@ -48,7 +49,6 @@ export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly Qu
   doctor: (hostId) => [queryKeys.doctor(hostId)],
 };
 
-const HOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const SEQ_RE = /^\d{1,15}$/;
 const REOPEN_AFTER_PROBE_MS = 1_000;
 const REOPEN_AFTER_FAILURE_MS = 3_000;

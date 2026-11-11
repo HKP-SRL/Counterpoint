@@ -1,4 +1,5 @@
-// One-time sign-in codes, sessions and the GET /login exchange (D-07, FOUND-02).
+// One-time sign-in codes, sessions and the GET /login exchange (local-console: One-time
+// sign-in).
 import { createHash } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {

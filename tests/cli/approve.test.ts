@@ -1,11 +1,11 @@
-// `counterpoint approve {host} {phase}` driven as a function: scratch home, scratch copy of the
+// `counterpoint approve {host} {change}` driven as a function: scratch home, scratch copy of the
 // synthetic host, a throwaway unprotected ed25519 key trusted through the library (the trust-key
 // command itself refuses unprotected keys), an integrity baseline, an injected TTY flag and an
 // optional signing seam. Nothing here touches ~/.ssh, ssh-agent, the Keychain, the real
 // Counterpoint home or a real host repository.
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGsdAdapter } from '../../src/adapters/gsd/index.ts';
+import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import { approveCommand } from '../../src/cli/approve.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { signPayload } from '../../src/core/approvals/ssh.ts';
@@ -17,8 +17,8 @@ import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpe
 import { makeThrowawayKey, type ThrowawayKey } from '../helpers/keys.ts';
 import { gitIn, makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
-const APPROVAL = '.counterpoint/approvals/phase-02.json';
-const CONTEXT = '.planning/phases/02-ready-thing/02-CONTEXT.md';
+const APPROVAL = '.counterpoint/approvals/ready-thing.json';
+const PROPOSAL = 'openspec/changes/ready-thing/proposal.md';
 const SUCCESS = "Signed and verified. Runway is now 1. Not pushed: push master when you're ready.";
 
 let key: ThrowawayKey;
@@ -47,7 +47,7 @@ async function setup(options: { trust?: boolean; baseline?: boolean } = {}): Pro
       root: repo.root,
       gitCommonDir: join(repo.root, '.git'),
       baseBranch: 'master',
-      adapter: 'gsd',
+      adapter: 'openspec',
     });
   } finally {
     store.close();
@@ -73,7 +73,7 @@ async function run(
   const code = await approveCommand({
     home,
     hostId: 'synthetic',
-    phaseId: '02',
+    changeId: 'ready-thing',
     isTTY: true,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
@@ -103,7 +103,7 @@ describe('approveCommand: success', () => {
   it('prints what is signed, lands a verified commit and keeps the owner’s work untouched', async () => {
     const s = await setup();
     // Owner's uncommitted work in the checkout.
-    writeFileIn(s.repo.root, CONTEXT, 'work in progress\n');
+    writeFileIn(s.repo.root, PROPOSAL, 'work in progress\n');
     writeFileIn(s.repo.root, 'scratch-notes.txt', 'untracked\n');
     const statusBefore = await gitIn(s.repo.root, ['status', '--porcelain']);
     const tipBefore = await master(s.repo.root);
@@ -113,13 +113,14 @@ describe('approveCommand: success', () => {
     expect(result.code).toBe(0);
 
     expect(result.out).toContain('You are signing');
-    expect(result.out).toContain('Phase 02: Ready Thing');
+    expect(result.out).toContain('Change ready-thing: Ready thing');
     expect(result.out).toContain(`Base: master at ${tipBefore}`);
     expect(result.out).toContain('Draft: none');
     expect(result.out).toContain('Gates: none yet');
     expect(result.out).toMatch(/Statement [0-9a-f]{12}/);
-    expect(result.out).toContain('1 of 2 plans need you present (not autonomous).');
-    expect(result.out).toContain('google-oauth');
+    expect(result.out).toContain('Owner steps (you do these by hand):');
+    expect(result.out).toContain('- Owner: create the Supabase project');
+    expect(result.out).toContain('(normalized: cp-openspec-tasks/v1)');
     expect(result.out).toContain('Signing as Counterpoint Test <test@counterpoint.invalid>');
     expect(result.out).toContain(SUCCESS);
 
@@ -127,7 +128,7 @@ describe('approveCommand: success', () => {
     const statement = JSON.parse(await gitIn(s.repo.root, ['show', `master:${APPROVAL}`])) as {
       inputs: { files: { digest: string }[]; combined: string };
     };
-    expect(statement.inputs.files).toHaveLength(6);
+    expect(statement.inputs.files).toHaveLength(5);
     for (const file of statement.inputs.files) expect(result.out).toContain(file.digest);
 
     // One new commit on master that adds only the approval file; nothing pushed, owner's work kept.
@@ -142,11 +143,18 @@ describe('approveCommand: success', () => {
     expect(result.notices).toEqual([{ hostId: 'synthetic', family: 'approval' }]);
   });
 
+  it('commits with the change in the message', async () => {
+    const s = await setup();
+    expect((await run(s.home)).code).toBe(0);
+    const subject = await gitIn(s.repo.root, ['log', '-1', '--format=%s', 'master']);
+    expect(subject.trim()).toBe('counterpoint: approve change ready-thing');
+  });
+
   it('re-signing after an input changed replaces the approval file and is on-runway again', async () => {
     const s = await setup();
     expect((await run(s.home)).code).toBe(0);
-    const original = await gitIn(s.repo.root, ['show', `master:${CONTEXT}`]);
-    await commitChange(s.repo.root, CONTEXT, `${original}\nA new decision.\n`);
+    const original = await gitIn(s.repo.root, ['show', `master:${PROPOSAL}`]);
+    await commitChange(s.repo.root, PROPOSAL, `${original}\nA new reason.\n`);
 
     const again = await run(s.home);
     expect(again.code).toBe(0);
@@ -164,9 +172,9 @@ describe('approveCommand: success', () => {
       hostId: 'synthetic',
       root: s.repo.root,
       baseBranch: 'master',
-      phaseId: '02',
+      changeId: 'ready-thing',
       reader: createGitFileReader(s.repo.root),
-      adapter: createGsdAdapter(),
+      adapter: createOpenSpecAdapter(),
       trust,
       tmpDir: makeScratchDir('atmp'),
     });
@@ -175,14 +183,14 @@ describe('approveCommand: success', () => {
 });
 
 describe('approveCommand: refusals before anything is signed', () => {
-  it('refuses a malformed host id or phase id', async () => {
+  it('refuses a malformed host id or change id', async () => {
     const s = await setup();
     const badHost = await refused(s, { hostId: 'Bad Host!' });
     expect(badHost.code).toBe(2);
     expect(badHost.err).toContain('Invalid host id');
-    const badPhase = await refused(s, { phaseId: '2' });
-    expect(badPhase.code).toBe(2);
-    expect(badPhase.err).toContain('Invalid phase id');
+    const badChange = await refused(s, { changeId: 'Bad_Change' });
+    expect(badChange.code).toBe(2);
+    expect(badChange.err).toContain('Invalid change id');
   });
 
   it('refuses an unknown project', async () => {
@@ -218,14 +226,21 @@ describe('approveCommand: refusals before anything is signed', () => {
   });
 
   it.each([
-    ['03', 'Phase 03 has no CONTEXT.md yet.'],
-    ['02.1', 'Phase 02.1 has context but no plans yet.'],
-    ['01', 'Phase 01 is already built. Approval is not offered.'],
-    ['04', "Couldn't read Phase 04:"],
-    ['09', 'Phase 09 is not in'],
-  ])('refuses phase %s with a specific message', async (phaseId, message) => {
+    [
+      'no-proposal',
+      'Not ready to approve. no-proposal has no proposal.md yet. Run /opsx:propose in synthetic, commit, then come back.',
+    ],
+    [
+      'no-tasks',
+      'Not ready to approve. no-tasks has no tasks.md yet. You sign the exact tasks the builder will run. Run /opsx:propose or add tasks in synthetic, commit, then come back.',
+    ],
+    ['built-thing', 'built-thing is already built. Approval is not offered.'],
+    ['old-thing', 'old-thing is already built. Approval is not offered.'],
+    ['broken-yaml', "Couldn't read broken-yaml: openspec/changes/broken-yaml/.openspec.yaml"],
+    ['no-such-change', "no-such-change is not a change in synthetic's planning on master."],
+  ])('refuses change %s with a specific message', async (changeId, message) => {
     const s = await setup();
-    const result = await refused(s, { phaseId });
+    const result = await refused(s, { changeId });
     expect(result.err).toContain(message);
     expect(result.out).not.toContain('You are signing');
   });

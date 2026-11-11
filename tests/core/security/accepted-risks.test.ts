@@ -1,4 +1,4 @@
-// The accepted-risk record (01-19) and the verdict matrix it feeds. Scratch homes only: nothing
+// The accepted-risk record and the verdict matrix it feeds. Scratch homes only: nothing
 // here touches the owner's real Counterpoint home.
 import {
   chmodSync,
@@ -233,7 +233,7 @@ function matrixReport(options: MatrixOptions = {}): DoctorReport {
 
 const ghRow = (report: DoctorReport) => report.probe.find((row) => row.id === 'gh') as ProbeTarget;
 
-describe('reportVerdict and appliedAcceptedRisks (01-19)', () => {
+describe('reportVerdict and appliedAcceptedRisks', () => {
   it('reads Keychain-only gh evidence as reachedOnlyByKeychain', () => {
     expect(reachedOnlyByKeychain(ghRow(matrixReport()))).toBe(true);
   });

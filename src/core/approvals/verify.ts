@@ -1,6 +1,7 @@
-// Approval verification (APPR-01, APPR-04): recomputed from git every time, failing closed.
+// Approval verification (signed-approvals: Verification from git, failing closed): recomputed
+// from git every time.
 //
-// Steps 1-4 of the RESEARCH algorithm (step 5, comparing input digests, lands in 01-12):
+// Steps 1-4 of the verification algorithm (step 5, comparing input digests, is in runway.ts):
 // 1. The last first-parent commit C at the base tip that touched .counterpoint/approvals/{item}.json.
 // 2. C has exactly one parent (read from the commit object itself) and changes exactly that one
 //    file (A or M); the file at the tip is the one C wrote.
@@ -21,6 +22,7 @@ import {
   revParse,
   revParseMaybe,
 } from '../git/plumbing.ts';
+import { isChangeId } from '../ids.ts';
 import {
   BRANCH_RE,
   isArmoredSignature,
@@ -31,7 +33,6 @@ import {
 import { verifySignature } from './ssh.ts';
 import { checkAllowedSignersFile, OWNER_PRINCIPAL } from './trust-store.ts';
 
-const ITEM_ID_RE = /^phase-\d{2}(\.\d+)?$/;
 const MAX_APPROVAL_BYTES = 64 * 1024;
 
 export type InvalidApprovalReason =
@@ -87,7 +88,7 @@ export async function verifyApprovalCommit(options: {
 }): Promise<ApprovalCommitState> {
   const { root, itemId, trust } = options;
   try {
-    if (!ITEM_ID_RE.test(itemId)) return invalid('bad-item-id');
+    if (!isChangeId(itemId)) return invalid('bad-item-id');
     if (!BRANCH_RE.test(options.baseBranch)) return invalid('error', 'Invalid base branch name.');
 
     const signers = checkAllowedSignersFile(trust.allowedSignersPath, trust.fingerprint);

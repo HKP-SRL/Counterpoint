@@ -1,5 +1,4 @@
-// Doctor: checks on the trusted approval key (FOUND-03, RESEARCH Item 3; CONTEXT discretion
-// "signing key").
+// Doctor: checks on the trusted approval key (doctor: Approval key hygiene).
 //
 // The approval key must be a dedicated, passphrase-protected key that nothing can use without
 // the owner typing the passphrase: not loaded in ssh-agent, and not loadable from the Keychain.

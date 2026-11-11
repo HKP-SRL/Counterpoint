@@ -89,8 +89,8 @@ export function createControlApp(options: ControlAppOptions): Hono {
     await next();
   });
 
-  // `runway` (MISN-01) and `needsYou` (MISN-02) per host once the daemon can compute them; the
-  // CLI's `status` prints `runway {n}` and `needs you {m}`.
+  // `runway` (runway) and `needsYou` (needs-you: One inbox) per host once the daemon can compute
+  // them; the CLI's `status` prints `runway {n}` and `needs you {m}`.
   app.get('/control/status', async (c) => {
     const { runwayCount, needsYouCount } = options;
     const hosts = await Promise.all(
@@ -139,8 +139,8 @@ export function createControlApp(options: ControlAppOptions): Hono {
     }
   });
 
-  // A fresh one-time sign-in link (D-07). Only the owner's CLI, holding the 0600 token, gets here;
-  // the link is printed to the owner's terminal and never logged.
+  // A fresh one-time sign-in link (local-console: One-time sign-in). Only the owner's CLI, holding
+  // the 0600 token, gets here; the link is printed to the owner's terminal and never logged.
   app.post('/control/login-code', (c) => {
     const code = mintLoginCode(options.store);
     return c.json({ url: `http://127.0.0.1:${options.port}/login?code=${code}` });

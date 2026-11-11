@@ -1,16 +1,16 @@
-// Approval state and the runway (MISN-01), recomputed from git every time and never stored as a
-// flag (RESEARCH verification algorithm, step 5 on top of verifyApprovalCommit's steps 1-4).
+// Approval state and the runway (runway: Runway recomputed from git), never stored as a flag:
+// step 5 of the verification algorithm, on top of verifyApprovalCommit's steps 1-4.
 //
 // An approval is `on-runway` only when its signed commit verifies against the trusted key, its
-// statement parses with the strict schema and names this host and this phase, every signed input
+// statement parses with the strict schema and names this host and this change, every signed input
 // digest equals the digest recomputed at the base tip (no input modified, added or removed), and
 // the gate-config slot equals the one recomputed at the tip. Anything else is `changed` (the
 // signature is fine but what it covers moved on) or `invalid` (the signature or statement cannot
 // be trusted). Reverting an edit returns an item to the runway with no re-sign, because nothing
 // here remembers the earlier verdict. Without a trusted key every approval is `invalid`.
 //
-// The runway is the on-runway approvals of phases that are not built: approved work ahead of the
-// builder.
+// The runway is the on-runway approvals of changes that are not built: approved work ahead of the
+// builder. An approval of an archived change is finished work and is neither runway nor drift.
 import { GatesConfigError, gatesDigest } from '../approvals/gates.ts';
 import {
   APPROVALS_DIR,
@@ -23,12 +23,13 @@ import type { Trust } from '../approvals/trust-store.ts';
 import { type InvalidApprovalReason, verifyApprovalCommit } from '../approvals/verify.ts';
 import {
   type ApprovalInput,
+  ChangeNotFoundError,
   type FrameworkAdapter,
+  findChange,
   type GitFileReader,
-  PhaseNotFoundError,
 } from '../framework/port.ts';
-import { approvalItemId, assertHostId, assertPhaseId, isPhaseId } from '../ids.ts';
-import { derivePhaseStatus } from './status.ts';
+import { approvalItemId, assertChangeId, assertHostId, isChangeId } from '../ids.ts';
+import { isBuilt } from './status.ts';
 
 export interface InputChange {
   path: string;
@@ -169,13 +170,13 @@ async function currentInputs(
   adapter: FrameworkAdapter,
   reader: GitFileReader,
   tip: string,
-  phaseId: string,
+  changeId: string,
 ): Promise<ApprovalInput[]> {
   try {
-    return await adapter.approvalInputs(reader, tip, phaseId);
+    return await adapter.approvalInputs(reader, tip, changeId);
   } catch (error) {
-    // The phase is gone from the planning truth: every signed input counts as removed.
-    if (error instanceof PhaseNotFoundError) return [];
+    // The change is gone from the planning truth: every signed input counts as removed.
+    if (error instanceof ChangeNotFoundError) return [];
     throw error;
   }
 }
@@ -189,13 +190,13 @@ async function currentGates(reader: GitFileReader, tip: string): Promise<GatesSl
   }
 }
 
-/** The state of the approval of `phaseId` at the base tip, recomputed from git. */
+/** The state of the approval of `changeId` at the base tip, recomputed from git. */
 export async function approvalState(
-  options: RunwayOptions & { phaseId: string },
+  options: RunwayOptions & { changeId: string },
 ): Promise<ApprovalState> {
   const hostId = assertHostId(options.hostId);
-  const phaseId = assertPhaseId(options.phaseId);
-  const itemId = approvalItemId(phaseId);
+  const changeId = assertChangeId(options.changeId);
+  const itemId = approvalItemId(changeId);
   const { reader, adapter } = options;
 
   try {
@@ -227,7 +228,7 @@ export async function approvalState(
     if (statement.host !== hostId) {
       return { state: 'invalid', reason: 'host-mismatch', commit: verified.commit };
     }
-    if (statement.item.id !== phaseId) {
+    if (statement.item.id !== changeId) {
       return { state: 'invalid', reason: 'item-mismatch', commit: verified.commit };
     }
 
@@ -239,7 +240,7 @@ export async function approvalState(
     };
     const { changes, gatesChange } = compareInputs(
       statement,
-      await currentInputs(adapter, reader, verified.tip, phaseId),
+      await currentInputs(adapter, reader, verified.tip, changeId),
       await currentGates(reader, verified.tip),
     );
     if (changes.length === 0 && gatesChange === null) return { state: 'on-runway', ...facts };
@@ -251,30 +252,30 @@ export async function approvalState(
 }
 
 export interface RunwayEntry {
-  phaseId: string;
-  name: string | null;
-  planCount: number;
+  changeId: string;
+  title: string | null;
+  taskCount: number;
   commit: string;
   signedAt: string;
 }
 
 export interface Runway {
   tip: string | null;
-  /** On-runway phases that are not built. */
+  /** On-runway changes that are not built. */
   count: number;
-  /** Plans across those phases. */
-  planCount: number;
+  /** Tasks across those changes. */
+  taskCount: number;
   onRunway: RunwayEntry[];
-  /** Approved phases whose signed inputs or gate config moved on; `statement` is what was signed. */
+  /** Approved changes whose signed inputs or gate config moved on; `statement` is what was signed. */
   changed: (RunwayEntry & {
     statement: ApprovalStatement;
     changes: InputChange[];
     gatesChange: GatesChange | null;
   })[];
-  invalid: { phaseId: string; reason: ApprovalInvalidReason; detail?: string }[];
+  invalid: { changeId: string; reason: ApprovalInvalidReason; detail?: string }[];
 }
 
-const APPROVAL_FILE_RE = /^phase-(.+)\.json$/;
+const APPROVAL_FILE_RE = /^(.+)\.json$/;
 
 /** Every approval file at the base tip, evaluated; the runway is the on-runway, not-built ones. */
 export async function computeRunway(options: RunwayOptions): Promise<Runway> {
@@ -282,7 +283,7 @@ export async function computeRunway(options: RunwayOptions): Promise<Runway> {
   const empty: Runway = {
     tip: null,
     count: 0,
-    planCount: 0,
+    taskCount: 0,
     onRunway: [],
     changed: [],
     invalid: [],
@@ -290,21 +291,23 @@ export async function computeRunway(options: RunwayOptions): Promise<Runway> {
   const tip = await reader.resolve(`refs/heads/${options.baseBranch}`);
   if (tip === null) return empty;
 
-  const phaseIds = (await reader.list(tip, APPROVALS_DIR))
+  const changeIds = (await reader.list(tip, APPROVALS_DIR))
     .filter((entry) => entry.type === 'blob')
     .map((entry) => APPROVAL_FILE_RE.exec(entry.name)?.[1])
-    .filter((id): id is string => id !== undefined && isPhaseId(id));
-  if (phaseIds.length === 0) return { ...empty, tip };
+    .filter((id): id is string => id !== undefined && isChangeId(id));
+  if (changeIds.length === 0) return { ...empty, tip };
 
   const snapshot = await adapter.snapshot(reader, tip);
   const runway: Runway = { ...empty, tip };
-  for (const phaseId of phaseIds) {
-    const phase = snapshot.phases.find((p) => p.id === phaseId) ?? null;
-    const state = await approvalState({ ...options, phaseId });
+  for (const changeId of changeIds) {
+    const change = findChange(snapshot.changes, changeId) ?? null;
+    // An archived change is done: its approval has nothing left to run and nothing to review.
+    if (change?.archived) continue;
+    const state = await approvalState({ ...options, changeId });
     const entry = (s: SignedFacts): RunwayEntry => ({
-      phaseId,
-      name: phase?.name ?? null,
-      planCount: phase?.plans.length ?? 0,
+      changeId,
+      title: change?.title ?? null,
+      taskCount: change?.tasks.total ?? 0,
       commit: s.commit,
       signedAt: s.signedAt,
     });
@@ -313,7 +316,7 @@ export async function computeRunway(options: RunwayOptions): Promise<Runway> {
         break;
       case 'invalid':
         runway.invalid.push({
-          phaseId,
+          changeId,
           reason: state.reason,
           ...(state.detail === undefined ? {} : { detail: state.detail }),
         });
@@ -327,12 +330,12 @@ export async function computeRunway(options: RunwayOptions): Promise<Runway> {
         });
         break;
       case 'on-runway': {
-        // Built phases have nothing left to run: an approval of one is not runway.
-        if (phase !== null && derivePhaseStatus(phase).status === 'built') break;
+        // Built changes have nothing left to run: an approval of one is not runway.
+        if (change !== null && isBuilt(change)) break;
         const e = entry(state);
         runway.onRunway.push(e);
         runway.count += 1;
-        runway.planCount += e.planCount;
+        runway.taskCount += e.taskCount;
         break;
       }
     }

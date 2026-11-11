@@ -1,6 +1,6 @@
-// Theme preference (FOUND-06): Light, Dark or System, persisted in localStorage and applied
-// through Astryx's `<Theme mode>`. `/theme-init.js` applies the same choice before first paint,
-// so the two must agree on the storage key and the accepted values.
+// Theme preference (local-console: Light, dark and system themes): Light, Dark or System, persisted
+// in localStorage and applied through Astryx's `<Theme mode>`. `/theme-init.js` applies the same
+// choice before first paint, so the two must agree on the storage key and the accepted values.
 //
 // Logic ported from the Cena mission console (mission-theme.ts / use-mission-theme.ts), without
 // its class toggling, cookie persistence or inline boot script: Astryx owns the attribute on

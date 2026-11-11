@@ -3,7 +3,7 @@
 // Counterpoint drives the owner's own `claude` binary (non-`--bare`, so the subscription login
 // and user settings work). Everything else about the session comes from the argv built by
 // buildClaudeArgv. The process gets an allow-listed environment (agentEnv), stdin is ignored
-// (RESEARCH Pitfall 9: claude otherwise waits 3 s for stdin), and the raw stream is appended to a
+// (claude otherwise waits 3 s for stdin), and the raw stream is appended to a
 // log file so a verdict can always be traced back to what the session actually printed.
 import { accessSync, appendFileSync, constants, mkdirSync, realpathSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
@@ -81,11 +81,11 @@ function parseLine(line: string): StreamEvent {
   return { type: 'unknown', raw: line };
 }
 
-/** A stderr line that speaks about the permission mode or auto mode (01-22). */
+/** A stderr line that speaks about the permission mode or auto mode. */
 const MODE_NOTICE_RE = /permission mode|auto mode/i;
 
 /**
- * The permission modes a session really ran in, as claude itself reports them (01-22): one entry
+ * The permission modes a session really ran in, as claude itself reports them: one entry
  * per `system/init` event, in order (a retried session has two), holding its `permissionMode`
  * when that is a string and `null` otherwise. `notices` are the trimmed, non-empty stderr lines
  * that mention the permission mode or auto mode (claude 2.1.321 printed `⚠ Permission mode forced

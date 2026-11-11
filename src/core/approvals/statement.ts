@@ -1,31 +1,31 @@
-// The approval statement (APPR-02): the file a runway approval signs, committed at
-// `.counterpoint/approvals/phase-{NN}.json` on the base branch.
+// The approval statement (signed-approvals: Statement format): the file a runway approval signs,
+// committed at `.counterpoint/approvals/{change}.json` on the base branch.
 //
-// Format chosen by the owner at the 01-12 checkpoint (option "item4", RESEARCH Item 4), frozen
-// from the first real approval on:
+// Format `counterpoint/approval/v2` (openspec-host-adapter design decision 7; v1 statements are
+// no longer read):
 //
-//   schema  counterpoint/approval/v1
+//   schema  counterpoint/approval/v2
 //   kind    runway
 //   host    the host id
-//   item    { type: phase, id: NN }
+//   item    { type: change, id: <change name> }
 //   base    { branch, commit }            the base branch and the tip the statement was built at
 //   inputs  { algorithm: sha256, files: [{ path, kind, digest, normalization? }], combined }
-//   draft   { state: none, digest: null } filled by a later phase without a schema change
+//   draft   { state: none, digest: null } filled by a later change without a schema change
 //   gates   { state: absent | present, digest }
 //
-// Each file digest is `sha256:` + hex of the input's exact bytes as committed (a derived input is
-// digested after its named normalizer). Files are sorted by path bytes; `combined` is the sha256
-// of the canonical JSON of the files array, so listing order never changes it. The file on disk
-// is pretty JSON with sorted keys and a trailing LF; there is no preparation timestamp, so the
-// same inputs at the same tip always give byte-identical bytes and the same fingerprint.
+// Each file digest is `sha256:` + hex of the input's exact bytes as committed (a normalized input
+// is digested after its named normalizer). Files are sorted by path bytes; `combined` is the
+// sha256 of the canonical JSON of the files array, so listing order never changes it. The file on
+// disk is pretty JSON with sorted keys and a trailing LF; there is no preparation timestamp, so
+// the same inputs at the same tip always give byte-identical bytes and the same fingerprint.
 import { z } from 'zod';
 import type { ApprovalInput, ApprovalInputKind } from '../framework/port.ts';
-import { approvalItemId, assertHostId, assertPhaseId, HOST_ID_RE, PHASE_ID_RE } from '../ids.ts';
+import { approvalItemId, assertChangeId, assertHostId, HOST_ID_RE, isChangeId } from '../ids.ts';
 import { canonicalJson, prettyCanonicalJson } from './canonical.ts';
 import { BRANCH_RE } from './commit.ts';
 import { sha256Digest } from './digest.ts';
 
-export const APPROVAL_SCHEMA = 'counterpoint/approval/v1';
+export const APPROVAL_SCHEMA = 'counterpoint/approval/v2';
 
 /** Where approvals live in the host repository. */
 export const APPROVALS_DIR = '.counterpoint/approvals';
@@ -44,13 +44,12 @@ function isInputPath(path: string): boolean {
 }
 
 const INPUT_KINDS = [
-  'context',
-  'plan',
-  'research',
-  'ui-spec',
+  'proposal',
+  'design',
+  'tasks',
   'spec',
-  'ai-spec',
-  'roadmap-section',
+  'metadata',
+  'other',
 ] as const satisfies readonly ApprovalInputKind[];
 
 const Digest = z.string().regex(DIGEST_RE);
@@ -86,7 +85,10 @@ export const ApprovalStatement = z
     schema: z.literal(APPROVAL_SCHEMA),
     kind: z.literal('runway'),
     host: z.string().regex(HOST_ID_RE),
-    item: z.strictObject({ type: z.literal('phase'), id: z.string().regex(PHASE_ID_RE) }),
+    item: z.strictObject({
+      type: z.literal('change'),
+      id: z.string().refine(isChangeId, 'Not a change id.'),
+    }),
     base: z.strictObject({
       branch: z.string().regex(BRANCH_RE),
       commit: z.string().regex(COMMIT_RE),
@@ -146,14 +148,14 @@ export function statementFiles(
   return files;
 }
 
-/** The approval file path for a phase: `.counterpoint/approvals/phase-{NN}.json`. */
-export function approvalPath(phaseId: string): string {
-  return `${APPROVALS_DIR}/${approvalItemId(phaseId)}.json`;
+/** The approval file path for a change: `.counterpoint/approvals/{change}.json`. */
+export function approvalPath(changeId: string): string {
+  return `${APPROVALS_DIR}/${approvalItemId(changeId)}.json`;
 }
 
 export function buildStatement(options: {
   hostId: string;
-  phaseId: string;
+  changeId: string;
   baseBranch: string;
   tip: string;
   inputs: readonly Pick<ApprovalInput, 'path' | 'kind' | 'normalization' | 'bytes'>[];
@@ -164,7 +166,7 @@ export function buildStatement(options: {
     schema: APPROVAL_SCHEMA,
     kind: 'runway',
     host: assertHostId(options.hostId),
-    item: { type: 'phase', id: assertPhaseId(options.phaseId) },
+    item: { type: 'change', id: assertChangeId(options.changeId) },
     base: { branch: options.baseBranch, commit: options.tip },
     inputs: { algorithm: 'sha256', files, combined: combinedDigest(files) },
     draft: { state: 'none', digest: null },

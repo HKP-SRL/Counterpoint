@@ -1,5 +1,6 @@
-// The per-machine accepted-risk record (WINDOWS.md #1, STATE.md [Owner]: Keychain reachability
-// accepted, with an explicit recorded doctor exception for the gh credentials row).
+// The per-machine accepted-risk record (doctor: Owner-recorded accepted risk; owner decision in
+// docs/decisions.md: Keychain reachability accepted, with an explicit recorded doctor exception for
+// the gh credentials row).
 //
 //   {COUNTERPOINT_HOME}/trust/accepted-risks.json
 //   { "schema": "counterpoint/accepted-risks/v1",
@@ -14,7 +15,7 @@
 // Who writes it: only `counterpoint accept-risk gh-keychain` (src/cli/risk.ts), at a terminal,
 // after a typed reason and `y`; a source-scan test (tests/cli/risk.test.ts) keeps every other
 // module from calling the writer or the revoker, or from naming the file. The record lives next
-// to the pinned key in the trust folder, which agent sandboxes deny for Read and Edit (01-04 deny
+// to the pinned key in the trust folder, which agent sandboxes deny for Read and Edit (deny
 // twins) and which sandboxed Bash cannot write (Seatbelt). Nothing ships a default record: no
 // environment variable, host-repo config or HTTP route creates one, so a fresh home has none.
 //

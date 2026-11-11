@@ -1,8 +1,8 @@
-// Trust (`/h/{hostId}/trust`, FOUND-03 display, UI-SPEC "Trust" and E8): the last
+// Trust (`/h/{hostId}/trust`, doctor: Trust page; long evidence wraps): the last
 // `counterpoint doctor` report. The verdict Banner comes first (the page's focal point), then the
 // Tools, Signing key and Sandbox probe tables. The Sandbox probe card starts with the two session
-// checks, Agent permission mode (01-22) and Sandbox isolation settings (01-25), then lists the nine
-// probe targets (01-17's outside-workdir and 01-26's credential-env last). Read-only: the console
+// checks, Agent permission mode and Sandbox isolation settings, then lists the nine probe targets
+// (outside-workdir and credential-env last). Read-only: the console
 // never runs the probe, so this page has no privileged action; re-running is the terminal command
 // it shows.
 //
@@ -10,12 +10,13 @@
 // anything `Not checked`, failed, reachable or missing (a session check included) counts against
 // it. The page renders the stored report truthfully, whatever it says.
 //
-// The owner's accepted risk (01-19, 01-20): when the server says `accepted-risk` and names the
-// applied gh-keychain entry, every check passed and gh credentials is the only probe row that is
-// not Blocked (and it is Reachable), the verdict reads as its own warning, `Agents are boxed in,
-// with one accepted risk`, with the owner's reason, the date and the revoke command; the gh row
-// keeps `Reachable` and adds an `Accepted risk` Badge. Anything else falls back to the existing
-// verdicts, so the console never shows a better verdict than the server computed.
+// The owner's accepted risk (doctor: Owner-recorded accepted risk): when the server says
+// `accepted-risk` and names the applied gh-keychain entry, every check passed and gh credentials is
+// the only probe row that is not Blocked (and it is Reachable), the verdict reads as its own
+// warning, `Agents are boxed in, with one accepted risk`, with the owner's reason, the date and the
+// revoke command; the gh row keeps `Reachable` and adds an `Accepted risk` Badge. Anything else
+// falls back to the existing verdicts, so the console never shows a better verdict than the server
+// computed.
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -57,13 +58,13 @@ export type Report = {
   signingKey: CheckRow[];
   integrity: CheckRow | null;
   probe: ProbeRow[];
-  /** The Agent permission mode check (01-22); null when the report does not carry it. */
+  /** The Agent permission mode check; null when the report does not carry it. */
   agentMode: CheckRow | null;
-  /** The Sandbox isolation settings check (01-25); null when the report does not carry it. */
+  /** The Sandbox isolation settings check; null when the report does not carry it. */
   sandboxIsolation: CheckRow | null;
 };
 
-/** An accepted risk the server applied to this report (01-19 `acceptedRisks`). */
+/** An accepted risk the server applied to this report (its `acceptedRisks`). */
 export type AppliedRisk = { id: string; reason: string; recordedAt: string };
 
 export type DoctorAnswer = {
@@ -79,7 +80,7 @@ export type DoctorAnswer = {
 
 /**
  * The nine probe targets, in the Trust page's order (src/core/security/doctor-report.ts):
- * `outside-workdir` since 01-17 and `credential-env` since 01-26. A report without one of them
+ * `outside-workdir` and `credential-env` were added last. A report without one of them
  * shows that row `Not checked`.
  */
 const PROBE_TARGETS: readonly { id: string; label: string; mode: 'read' | 'write' }[] = [
@@ -206,14 +207,14 @@ export const PROBE_LOOK: Record<ProbeResult, ResultLook> = {
   'not-checked': { label: 'Not checked', variant: 'neutral', icon: 'clock' },
 };
 
-/** The owner's accepted risk (01-20): a warning Badge with its icon, so never colour-only. */
+/** The owner's accepted risk: a warning Badge with its icon, so never colour-only. */
 export const ACCEPTED_RISK_LOOK: ResultLook = {
   label: 'Accepted risk',
   variant: 'warning',
   icon: 'warning',
 };
 
-/** The one accepted risk the console knows; it covers only gh's Keychain lookup (01-19). */
+/** The one accepted risk the console knows; it covers only gh's Keychain lookup. */
 const GH_KEYCHAIN = 'gh-keychain';
 
 export function ResultBadge({ look }: { look: ResultLook }) {
@@ -302,7 +303,7 @@ export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: str
   const probes = probeRows(report, hostName);
   const reachable = probes.filter((row) => row.result === 'reachable').length;
   const checks = allChecks(report);
-  // Checks that did not pass, including a missing group or session check (01-22, 01-25).
+  // Checks that did not pass, including a missing group or session check.
   const checksNotPassing =
     checks.filter((check) => check.result !== 'pass').length +
     (report.tools.length === 0 ? 1 : 0) +
@@ -312,7 +313,7 @@ export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: str
   const notPassing = checksNotPassing + probes.filter((row) => row.result !== 'blocked').length;
 
   // The owner's accepted risk: only when the server applied it, every check passed, and gh
-  // credentials is the one probe row not Blocked and it is Reachable (01-20). Otherwise the
+  // credentials is the one probe row not Blocked and it is Reachable. Otherwise the
   // existing verdicts below apply unchanged.
   const risk = answer.acceptedRisks.find((entry) => entry.id === GH_KEYCHAIN);
   const notBlocked = probes.filter((row) => row.result !== 'blocked');

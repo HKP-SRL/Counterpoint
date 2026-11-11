@@ -1,4 +1,5 @@
-// Approval verification (APPR-01, APPR-04): recompute from git and fail closed. Every forgery
+// Approval verification (signed-approvals: Verification from git, failing closed): recompute
+// from git and fail closed. Every forgery
 // below is built on a scratch repo with throwaway keys and must come back `invalid`.
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,7 +42,7 @@ import {
   writeFileIn,
 } from '../../helpers/scratch.ts';
 
-const ITEM = '.counterpoint/approvals/phase-01.json';
+const ITEM = '.counterpoint/approvals/first-change.json';
 const ident = { name: 'Owner', email: 'owner@example.invalid', date: '1700000000 +0000' };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -72,7 +73,7 @@ const signWith = (key: ThrowawayKey) => (payload: Uint8Array) =>
   signPayload({ payload, privateKeyPath: key.privateKeyPath });
 
 function statement(text = 'v1'): Uint8Array {
-  return encoder.encode(`{"item":"phase-01","note":"${text}"}\n`);
+  return encoder.encode(`{"item":"first-change","note":"${text}"}\n`);
 }
 
 async function baseRepo(): Promise<string> {
@@ -89,7 +90,7 @@ async function approve(dir: string, key = owner, bytes = statement()) {
     baseBranch: 'master',
     itemPath: ITEM,
     fileBytes: bytes,
-    message: 'counterpoint: approve phase 01\n',
+    message: 'counterpoint: approve change first-change\n',
     ident,
     sign: signWith(key),
   });
@@ -104,7 +105,7 @@ async function verify(
   return verifyApprovalCommit({
     root: dir,
     baseBranch: 'master',
-    itemId: 'phase-01',
+    itemId: 'first-change',
     trust: withTrust,
     tmpDir,
   });
@@ -142,7 +143,7 @@ describe('verifyApprovalCommit', () => {
     if (state.state !== 'signed') return;
     expect(state.commit).toBe(commit);
     expect(state.tip).toBe(tip);
-    expect(decoder.decode(state.bytes)).toBe('{"item":"phase-01","note":"v1"}\n');
+    expect(decoder.decode(state.bytes)).toBe('{"item":"first-change","note":"v1"}\n');
     expect(new Date(state.signedAt).getTime()).toBe(1_700_000_000_000);
     expect(state.fingerprint).toBe(trust.fingerprint);
   });
@@ -186,8 +187,8 @@ describe('verifyApprovalCommit', () => {
     const commit = await approve(dir);
     const text = decoder.decode(await catFileCommit(dir, commit));
     const tampered = text.replace(
-      'counterpoint: approve phase 01',
-      'counterpoint: approve phase 0l',
+      'counterpoint: approve change first-change',
+      'counterpoint: approve change flrst-change',
     );
     expect(tampered).not.toBe(text);
     await forge(dir, encoder.encode(tampered));
@@ -197,7 +198,7 @@ describe('verifyApprovalCommit', () => {
   it('rejects a later unsigned commit that edits the approval file', async () => {
     const dir = await baseRepo();
     await approve(dir);
-    writeFileIn(dir, ITEM, '{"item":"phase-01","note":"agent edit"}\n');
+    writeFileIn(dir, ITEM, '{"item":"first-change","note":"agent edit"}\n');
     await commitAll(dir, 'edit approval');
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'unsigned' });
   });
@@ -316,7 +317,7 @@ describe('verifyApprovalCommit', () => {
   it('ignores replace refs that would hide an unsigned edit', async () => {
     const dir = await baseRepo();
     const signed = await approve(dir);
-    writeFileIn(dir, ITEM, '{"item":"phase-01","note":"agent edit"}\n');
+    writeFileIn(dir, ITEM, '{"item":"first-change","note":"agent edit"}\n');
     const unsigned = await commitAll(dir, 'edit approval');
     const disguise = (
       await gitIn(dir, ['commit-tree', `${signed}^{tree}`, '-p', signed, '-m', 'noop'])
@@ -329,7 +330,7 @@ describe('verifyApprovalCommit', () => {
     expect(await verify(dir)).toMatchObject({ state: 'invalid', reason: 'unsigned' });
   });
 
-  it('rejects an item id outside the phase-NN pattern', async () => {
+  it('rejects an item id that is not a change id', async () => {
     const dir = await baseRepo();
     const state = await verifyApprovalCommit({
       root: dir,

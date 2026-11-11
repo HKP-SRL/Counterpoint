@@ -366,7 +366,7 @@
     </header>
     <nav class="sidenav" aria-label="Main">
       <button class="navitem sel" data-act="toast" data-v="You're on Mission"><span data-ic="gauge"></span>Mission</button>
-      <button class="navitem" data-act="toast" data-v="Phases: the full GSD phase table"><span data-ic="list"></span>Phases</button>
+      <button class="navitem" data-act="toast" data-v="Changes: the full change table"><span data-ic="list"></span>Phases</button>
       <button class="navitem" data-act="toast" data-v="Needs You: the full inbox"><span data-ic="inbox"></span>Needs You<span class="navcount" id="nav-needs"></span></button>
       <button class="navitem" data-act="toast" data-v="Trust: doctor checks, sandbox probe, keys"><span data-ic="shield"></span>Trust</button>
     </nav>
@@ -495,7 +495,7 @@ function makeWorld(flight) {
         { id: 'm', sev: 'neutral', icon: 'merge', kind: 'merge', title: '3 PRs waiting for your signed merge', detail: '#41 Table ordering · #42 Kitchen display · #43 Waiter calls', actions: [['Review', 'debrief']] },
         { id: 'as', sev: 'neutral', icon: 'file', kind: 'assumed', title: '4 decisions the builder assumed', detail: 'Keep or change them before you merge', actions: [['Review', 'debrief']] },
         QUESTION,
-        { id: 'bl', sev: 'neutral', icon: 'layers', kind: 'backlog', seat: { i: 'QA', hue: 'teal', name: 'QA seat' }, title: 'Council filed 2 backlog items', detail: 'QA: “Kitchen display has no empty state” · Cook: “Ticket text too small to read from 2 m”', actions: [['See', 'toast', 'Opens the two backlog items in .planning/'], ['Dismiss', 'dismiss']] },
+        { id: 'bl', sev: 'neutral', icon: 'layers', kind: 'backlog', seat: { i: 'QA', hue: 'teal', name: 'QA seat' }, title: 'Council filed 2 backlog items', detail: 'QA: “Kitchen display has no empty state” · Cook: “Ticket text too small to read from 2 m”', actions: [['See', 'toast', 'Opens the two backlog items in the host's backlog'], ['Dismiss', 'dismiss']] },
       ];
       break;
     case 'alarm':

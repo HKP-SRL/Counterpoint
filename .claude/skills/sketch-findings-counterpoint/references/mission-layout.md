@@ -12,7 +12,7 @@ flight state:
 
 | Flight state | Mode | Hero sentence | Big figure | Body (left column / right column) |
 |---|---|---|---|---|
-| `idle` | Launch | "Good evening." (or "Stopped. It stays that way." after a manual stop) | runway phase count, "on the runway · N plans" | Flight plan + Settings (compact) / Go/No-go + "Before you go" (Needs You, no keys) |
+| `idle` | Launch | "Good evening." (or "Stopped. It stays that way." after a manual stop) | runway change count, "on the runway · N tasks" | Flight plan + Settings (compact) / Go/No-go + "Before you go" (Needs You, no keys) |
 | `inflight` | In flight | "You can walk away." | time left, "left until the 07:00 stop" | Needs You (keyboard) + Now / Up next + Ready for review |
 | `holding` | In flight (same body) | "Holding. You can still walk away." | time until resume, "until it resumes at 03:12" | same as In flight |
 | `landed` | Debrief | "Good morning." | PRs ready, "PRs ready for review" | Ready for review + Parked + Decisions the builder assumed / Questions from the council + Runway |
@@ -26,7 +26,7 @@ Up next card answers (3).
 - A status chip (Ready / In flight with a pulsing dot / Holding / Landed 06:40 / Stopped).
 - A greeting-sized sentence (28px/36px, weight 600) that answers "can I walk away?" in words.
 - One supporting line (secondary text, max 68ch) that says what is happening in plain language,
-  for example "Building Phase 5 · Kitchen display, plan 3 of 3. Questions wait in Needs You;
+  for example "Building Kitchen display, task 3 of 8. Questions wait in Needs You;
   only irreversible work parks."
 - On the right: one big number (60px/64px, weight 600 in the winning variant) with a 12px label
   under it, and the only hero action (Stop while flying, How to fix when stopped).
@@ -45,17 +45,17 @@ below 980px of container width. Each column is a vertical stack of cards with 24
 right-aligned extras. Shadows are only for popovers, tooltips, dialogs and toasts.
 
 **Copy tone:** plain, calm, specific times and counts. Examples kept from the sketch:
-"Nothing needs you. Go do something else." · "Nothing after this one. It lands when this phase
-is done." · "Holding … It resumes on its own and nothing is lost." · "Phase 5 stopped at a clean
+"Nothing needs you. Go do something else." · "Nothing after this one. It lands when this change
+is done." · "Holding … It resumes on its own and nothing is lost." · "Kitchen display stopped at a clean
 handoff; nothing is lost." Holding is described as normal, never as a warning.
 
 **App shell:** top nav (56px: wordmark, host switcher with branch, Live indicator, theme toggle),
-side nav (208px: Mission, Phases, Needs You with a count, Trust), main content padded 24px
+side nav (208px: Mission, Changes, Needs You with a count, Trust), main content padded 24px
 (16px on narrow). The side nav hides below 760px of container width.
 
 **Responsive:** the layout uses container queries on the frame, not viewport media queries.
 Below 760px: the hero becomes one column with the figure left-aligned, the Now card's
-plans/gates grid stacks, stat tiles go two-up and hide sparklines, odd hour ticks on the flight
+tasks/gates grid stacks, stat tiles go two-up and hide sparklines, odd hour ticks on the flight
 path hide, and keyboard hints are hidden.
 
 ## Mapping to Astryx (the real console)
@@ -86,7 +86,7 @@ Hero (winning variant E):
     <div>
       <span class="chip live"><span class="dot"></span>In flight</span>
       <h1 class="greet">You can walk away.</h1>
-      <div class="hero-sub">Building Phase 5 · Kitchen display, plan 3 of 3. Questions wait in Needs You; only irreversible work parks.</div>
+      <div class="hero-sub">Building Kitchen display, task 3 of 8. Questions wait in Needs You; only irreversible work parks.</div>
     </div>
     <div class="hero-fig">
       <div class="fig">5h 02m</div>
@@ -118,9 +118,9 @@ Card with header:
     <span class="end sup">lands ≈05:34</span>
   </div>
   <ul class="nlist">
-    <li class="nrow"><span class="sup">1</span><span class="mono muted">5.1</span>
+    <li class="nrow"><span class="sup">1</span><span class="mono muted">allergen-filters</span>
       <div class="n-main"><div class="n-title">Allergen filters</div></div>
-      <span class="sup">2 plans · ≈1h 12m</span></li>
+      <span class="sup">6 tasks · ≈1h 12m</span></li>
   </ul>
 </section>
 ```

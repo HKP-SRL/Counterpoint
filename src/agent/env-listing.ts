@@ -1,5 +1,5 @@
-// The environment listing's parser and the credential-shape rule (01-26, replacement 3 of 3 for
-// the scrub opt-out, STATE.md [Owner] 2026-11-10).
+// The environment listing's parser and the credential-shape rule (replacement 3 of 3 for
+// the scrub opt-out, owner decision 2026-11-10).
 //
 // The probe's env-shape step runs Counterpoint's own awk program (ENV_SHAPE_AWK in probe.ts) in a
 // sandboxed Bash command. For every variable in that command's environment it prints one line,
@@ -14,7 +14,7 @@
 // agentEnv passes only its allow-list (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR, SHELL), so
 // a credential-shaped variable in a sandboxed Bash environment came from Claude Code itself. The
 // rule is not narrowed: a flagged variable is a finding. Its only exception is the owner's
-// SANDBOX_PROXY_EXCEPTION (`sandbox-proxy-login`, STATE.md [Owner] 2026-11-10, "Credential-env row
+// SANDBOX_PROXY_EXCEPTION (`sandbox-proxy-login`, owner decision 2026-11-10, "Credential-env row
 // scoped to the real requirement", extended by "CLOUDSDK_PROXY_PASSWORD joins the
 // sandbox-proxy-login exception"): one of twelve exact proxy names, shaped `url-userinfo`, whose
 // host class is `loopback`; and `CLOUDSDK_PROXY_PASSWORD`, only in a listing whose
@@ -36,7 +36,8 @@ export type HostClass = (typeof HOST_CLASSES)[number];
 
 /**
  * The one variable whose line carries a host class whatever its shape: the gcloud proxy config's
- * bare host, which the listing classes like a proxy URL's host (01-26 rerun decision).
+ * bare host, which the listing classes like a proxy URL's host (owner decision after the listing's
+ * rerun).
  */
 export const PROXY_ADDRESS_NAME = 'CLOUDSDK_PROXY_ADDRESS';
 
@@ -145,8 +146,8 @@ export function isCredentialName(name: string): boolean {
  * `NAME (value: {shape}, {length} chars)` when the value's shape is anything but `plain`, and
  * `NAME (value: {shape}, {length} chars, host {class})` for an entry that carries a host class (a
  * `url-userinfo` value, or PROXY_ADDRESS_NAME). An entry whose host class is `other` is a finding
- * whatever its shape: a non-loopback proxy address fails the row (01-26 rerun decision). Names,
- * shapes and host classes only, never a value.
+ * whatever its shape: a non-loopback proxy address fails the row (owner decision after the
+ * listing's rerun). Names, shapes and host classes only, never a value.
  */
 export function credentialFindings(entries: readonly EnvEntry[]): string[] {
   const findings: string[] = [];
@@ -166,14 +167,14 @@ export function credentialFindings(entries: readonly EnvEntry[]): string[] {
 /**
  * The owner's one named exception to the credential-env rule, recorded like the Keychain one:
  * named, reasoned, dated, and shown wherever the row is (its evidence, the stored row's
- * `exceptions` field, and a waived WINDOWS.md entry). It covers the sandbox network proxy's own
+ * `exceptions` field, and docs/decisions.md). It covers the sandbox network proxy's own
  * per-session login: Claude Code runs that proxy on this machine, outside the sandbox, and points
  * sandboxed commands at it through the twelve proxy URL variables and the `CLOUDSDK_PROXY_*`
  * gcloud proxy config (ADDRESS, PORT, TYPE, USERNAME, PASSWORD), which it sets after the launch
  * profile's deny entries apply. It describes Claude Code's own sandbox runtime, the same on every
- * machine, so it is not a per-machine terminal record like gh-keychain (01-19).
+ * machine, so it is not a per-machine terminal record like gh-keychain.
  *
- * Two STATE.md [Owner] decisions, both 2026-11-10: "Credential-env row scoped to the real
+ * Two owner decisions in docs/decisions.md, both 2026-11-10: "Credential-env row scoped to the real
  * requirement" (the twelve proxy URLs, loopback host only) and "CLOUDSDK_PROXY_PASSWORD joins the
  * sandbox-proxy-login exception" (the gcloud proxy password, only beside a loopback
  * `CLOUDSDK_PROXY_ADDRESS`).
@@ -183,7 +184,7 @@ export const SANDBOX_PROXY_EXCEPTION = {
   reason: "the sandbox's own proxy login, local only",
   recordedAt: '2026-11-10',
   decision:
-    "STATE.md [Owner] 2026-11-10: Credential-env row scoped to the real requirement (after 01-26's halt); CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception (after 01-26's rerun halt): the CLOUDSDK_PROXY_* gcloud proxy config's password, excepted only when CLOUDSDK_PROXY_ADDRESS has host class loopback",
+    "Owner decision 2026-11-10 (docs/decisions.md): Credential-env row scoped to the real requirement (after the first live listing halted); CLOUDSDK_PROXY_PASSWORD joins the sandbox-proxy-login exception (after the rerun halted): the CLOUDSDK_PROXY_* gcloud proxy config's password, excepted only when CLOUDSDK_PROXY_ADDRESS has host class loopback",
   /** Excepted only when shaped `url-userinfo` with host class `loopback`. */
   proxyUrlNames: [
     'HTTP_PROXY',

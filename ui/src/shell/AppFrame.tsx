@@ -1,8 +1,8 @@
-// The console chrome (UI-SPEC "AppShell chrome"): TopNav with the wordmark, host switcher,
-// live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves the
-// SideNav into its mobile drawer. Items: Mission, Phases, Needs You (with its count badge), Trust.
-// While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`.
-// The frame owns the page's one live stream: while it is down the dot pulses warning and the
+// The console chrome (local-console: Host-scoped navigation): TopNav with the wordmark, host
+// switcher, live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves
+// the SideNav into its mobile drawer. Items: Mission, Changes, Needs You (with its count badge),
+// Trust. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
+// owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Badge } from '@astryxdesign/core/Badge';
@@ -144,8 +144,8 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const current = hosts.find((host) => host.id === hostId);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const missionPath = `/h/${hostId}`;
-  const phasesPath = `${missionPath}/phases`;
-  const onPhases = pathname === phasesPath || pathname.startsWith(`${phasesPath}/`);
+  const changesPath = `${missionPath}/changes`;
+  const onChanges = pathname === changesPath || pathname.startsWith(`${changesPath}/`);
   const needsYouPath = `${missionPath}/needs-you`;
   const onNeedsYou = pathname === needsYouPath || pathname.startsWith(`${needsYouPath}/`);
   const trustPath = `${missionPath}/trust`;
@@ -201,7 +201,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
             href={missionPath}
             isSelected={pathname === missionPath || pathname === `${missionPath}/`}
           />
-          <SideNavItem label="Phases" href={phasesPath} isSelected={onPhases} />
+          <SideNavItem label="Changes" href={changesPath} isSelected={onChanges} />
           <SideNavItem
             label="Needs You"
             href={needsYouPath}

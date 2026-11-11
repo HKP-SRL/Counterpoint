@@ -1,4 +1,4 @@
-// One-time sign-in codes and console sessions (D-07, FOUND-02).
+// One-time sign-in codes and console sessions.
 //
 // A code is minted only over the token-protected control socket and printed to the owner's
 // terminal. The browser exchanges it once at GET /login for an HttpOnly session cookie. Only the

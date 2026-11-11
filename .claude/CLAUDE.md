@@ -1,12 +1,10 @@
-<!-- GSD:project-start source:PROJECT.md -->
-
 ## Project
 
 **Counterpoint**
 
 Counterpoint is a local mission-control tool for **fully autonomous spec-driven development with Claude Code**, led by its owner. The owner plans, decides and signs off designs well ahead of time in a planning lane; an autonomous build lane turns approved work into gated, per-feature pull requests with preview links, during the day or overnight. A council of role "seats" (product, design, tech, QA, and customer personas like a restaurant's Cook) works alongside both lanes: it meets at key steps, debates among itself, and turns what it finds into cards, backlog items and review notes for the owner — without ever blocking the lane.
 
-It reads planning truth from the host project's SDD framework through adapters (GSD first), runs as its own local server (`npx counterpoint`), and is built for the owner's own use on **Cena** first, as an open-source project to publish later as `@hkp/counterpoint`.
+It reads planning truth from the host project's SDD framework through adapters (OpenSpec first), runs as its own local server (`npx counterpoint`), and is built for the owner's own use on **Cena** first, as an open-source project to publish later as `@hkp/counterpoint`.
 
 **Core Value:** **The owner can approve work and walk away, and come back to green, reviewable per-feature PRs with preview links — plus only the questions that genuinely need them.** Runway (approved, ready-to-build work ahead of the builder) is the headline metric; the system succeeds as it needs the owner *less*.
 
@@ -22,10 +20,6 @@ It reads planning truth from the host project's SDD framework through adapters (
 - **Packaging**: npm package `@hkp/counterpoint` (owner's org); one package as a modular monolith with the adapter boundary enforced by import rules — split out an adapter package only when a second adapter exists
 - **Install locations (owner's machine)**: tools, caches and app data live on `/Volumes/Dock`, never the internal disk
 
-<!-- GSD:project-end -->
-
-<!-- GSD:stack-start source:research/STACK.md -->
-
 ## Technology Stack
 
 ## Headline Decisions (read this first)
@@ -40,7 +34,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 | 6 | Visual gate | **`playwright-core` screenshots + `pixelmatch` 8** (with `pngjs`) as the exit-code check, **structural landmark comparison** as the second check, **vision-model review as advisory only**. Pixel diff needs hi-fi mocks. |
 | 7 | Persona browser agents | **`@playwright/mcp` (exact-pinned) headless + isolated**, passed to the SDK via `mcpServers`. **Not** Claude in Chrome (needs a headed, logged-in real Chrome; unusable unattended). Computer use is not needed. |
 | 8 | Element-pinned mock comments | **Build a small in-house overlay** (vanilla TS, Shadow DOM, injected by the mock server). Nothing off the shelf fits: Agentation is React-only and PolyForm Shield, Stagewise is an AGPL IDE, react-grab copies context but has no persistent comments, Vercel comments only work on Vercel deploys. |
-| 9 | Parsing `.planning/` | **Call the host's `gsd-tools` JSON queries first** (they already emit structured roadmap/phase/plan data), with **unified + remark-parse + remark-frontmatter + `yaml`** as the fallback and for position-exact write-back. **Do not use gray-matter.** |
+| 9 | Reading `openspec/` | **Parse the host's committed `openspec/` natively** from git blobs at the base tip: `yaml` + zod for `.openspec.yaml`, **unified + remark-parse + remark-gfm** for proposals, task checkboxes and spec requirements, and position-exact splicing for write-back. The `openspec` CLI reads the working tree, so it is a dev-time tool only. **Do not use gray-matter.** |
 
 ## Recommended Stack
 
@@ -90,12 +84,12 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
 | `yaml` | 2.9.1 | Parse/emit YAML (council config, frontmatter) | Always; used instead of gray-matter's bundled js-yaml. |
-| `unified` | 11.0.5 | Markdown processing pipeline | GSD adapter fallback parser and write-back. |
+| `unified` | 11.0.5 | Markdown processing pipeline | OpenSpec adapter parsing and write-back. |
 | `remark-parse` | 11.0.0 | Markdown to mdast | Same. |
 | `remark-frontmatter` | 5.0.0 | Recognise `---` frontmatter nodes | Same. |
 | `remark-gfm` | 4.0.1 | Tables and task lists (`- [ ]`) in plans | Same. |
 | `unist-util-visit` | 5.2.0 | Walk mdast | Same. |
-| `chokidar` | 6.0.0 | Watch `.planning/` for owner edits and push SSE updates | Optional; `fs.watch` is enough on macOS for a few directories, but chokidar normalises atomic-save behaviour. Requires Node >=22.22. |
+| `chokidar` | 6.0.0 | Watch `openspec/` for owner edits and push SSE updates | Optional; `fs.watch` is enough on macOS for a few directories, but chokidar normalises atomic-save behaviour. Requires Node >=22.22. |
 | `pino` | 10.4.0 | Structured logs | Orchestrator and server logs (separate from gate logs). Add `pino-pretty` 13.2.0 as a dev dependency. |
 | `p-queue` | 10.0.0 | Concurrency limits (N parallel worktree builds, 1 test lock holder) | In-process scheduling only; durable state still lives in SQLite. |
 | `@floating-ui/dom` | 1.8.0 | Position the pin popovers in the comment overlay | Only if the overlay UI needs anchored popovers. |
@@ -105,7 +99,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| Biome 2.6.6 | Lint, format, import-order | Use its restricted-imports rule (or `dependency-cruiser` 18.7.2) to enforce the **core must not import `adapters/gsd`** boundary from PROJECT.md. |
+| Biome 2.6.6 | Lint, format, import-order | Use its restricted-imports rule (or `dependency-cruiser` 18.7.2) to enforce the **core must not import `adapters/openspec`** boundary. |
 | `tsx` 4.23.15 | Run TS directly in dev | Dev only. Never in the published artifact. |
 | `@types/node` 26.6.6 | Node typings | Pin to the major you develop on. |
 | `publint` / `@arethetypeswrong/cli` | Check the package before the first publish | Cheap insurance when the public release comes. |
@@ -186,12 +180,12 @@ It reads planning truth from the host project's SDD framework through adapters (
 - **Variants** (2-3 side by side) are separate HTML files rendered in a grid of iframes by the console, each with its own pin overlay; "more like B" is a new generation round anchored on B's file.
 - **Do not** apply `html-to-image` 1.11.13 style client-side screenshots for evidence; server-side Playwright crops are exact and need no mock cooperation.
 
-## 9. Parsing GSD's `.planning/` markdown
+## 9. Reading OpenSpec's `openspec/` content
 
-- **Discovery:** the host project's installed `gsd-tools` (for Cena at `.claude/gsd-core/bin/gsd-tools.cjs`; package `@opengsd/gsd-core`, 1.20.1 here) already returns structured JSON. Verified read-only against Cena: `gsd-tools roadmap analyze --cwd <host>` returns phases with `number`, `name`, `goal`, `mode`, `depends_on`, `plan_count`, `summary_count`, `has_context`, `disk_status`; `phases list` and `phase-plan-index <n>` return directories and per-plan `id`, `wave`, `depends_on`, `autonomous`, `objective`, `files_modified`. The GSD adapter should call these via execa (with `--cwd`, `--raw`, `--pick`) so Counterpoint tracks GSD's own parsing rather than re-deriving it. Treat the output as a versioned contract: record the `VERSION`, validate with zod, and fail `doctor` on a mismatch.
-- **Fallback / content-level parsing:** `unified` 11.0.5 + `remark-parse` 11.0.0 + `remark-frontmatter` 5.0.0 + `remark-gfm` 4.0.1 + `yaml` 2.9.1 + `unist-util-visit` 5.2.0, for sections the CLI does not expose (for example the Decisions block inside a phase CONTEXT.md) and for hosts with GSD but without `gsd-tools`.
-- **Write-back = surgical splice, not round-trip.** Council decisions "written back through the adapter and committed" must produce a minimal diff. `remark-stringify` re-serialises the whole document and will reformat tables, bullets and emphasis. Instead locate the target node via mdast `position.start.offset/end.offset` and splice the original string. Add a round-trip test over the real Cena `.planning/` files.
-- **Do not use `gray-matter`** 4.0.3: last published 2023, bundles `js-yaml` 3, and its default engines include a JavaScript front-matter engine. `.planning/` files are written by agents, so treat them as untrusted input. Use `yaml` for frontmatter.
+- **Layout.** `openspec/config.yaml` (detection, project context and rules), `openspec/specs/<capability>/spec.md` (current behaviour), `openspec/changes/<name>/` (work: `.openspec.yaml` with `schema`, `created`, optional `goal`, plus Counterpoint's `x-depends-on`; `proposal.md`, optional `design.md`, `tasks.md` with `- [ ]` checkbox tasks, and `specs/<capability>/spec.md` deltas), and `openspec/changes/archive/<YYYY-MM-DD>-<name>/` (finished work). OpenSpec ignores keys prefixed `x-`, which is why Counterpoint's own metadata uses that prefix.
+- **Read from git, natively.** The adapter reads committed blobs at the base-branch tip through `GitFileReader`, never the working tree, so it does not call the `openspec` CLI (which reads the working tree). Parse `.openspec.yaml` with `yaml` and validate with zod; parse markdown with `unified` + `remark-parse` + `remark-gfm` + `unist-util-visit` where line scanning is not enough. Treat `openspec validate --strict` as the format reference, and treat host content as untrusted input (agents write it).
+- **Write-back = surgical splice, not round-trip.** Council decisions "written back through the adapter and committed" (into a change's `design.md`) must produce a minimal diff. `remark-stringify` re-serialises the whole document and will reformat tables, bullets and emphasis. Instead locate the target node via mdast `position.start.offset/end.offset` and splice the original string. Add a round-trip test over the real Cena `openspec/` files.
+- **Do not use `gray-matter`** 4.0.3: last published 2023, bundles `js-yaml` 3, and its default engines include a JavaScript front-matter engine. Use `yaml`.
 - Writes go to a **worktree/branch**, committed, never straight into the owner's checkout.
 
 ## Installation
@@ -227,7 +221,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `gray-matter` 4.0.3 | Unmaintained since 2023, old `js-yaml`, default JS front-matter engine can execute code; `.planning/` content is agent-written | `remark-frontmatter` + `yaml` |
+| `gray-matter` 4.0.3 | Unmaintained since 2023, old `js-yaml`, default JS front-matter engine can execute code; `openspec/` content is agent-written | `remark-frontmatter` + `yaml` |
 | Shell-string process spawning (`exec`, `execa` with `shell: true`, template-string commands) | Injection via branch names, phase titles, comment text | `execFile`-style argument arrays through execa |
 | Repo-local git config for `gpg.ssh.allowedSignersFile` | Agents in the worktree can rewrite it and approve themselves | `-c` flags on the command line, file outside worktrees, pinned fingerprint |
 | A hard-coded context window (the prior art's `CONTEXT_WINDOW_TOKENS=1000000`) | Violates "budgets follow the model"; wrong for other models | `modelUsage[model].contextWindow` / `getContextUsage()` |
@@ -272,7 +266,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 | `pixelmatch@8.0.0` | `pngjs@7.0.0` | Inputs must be same dimensions; pass `Uint8Array`/`Buffer` RGBA. |
 | `@playwright/mcp@0.0.84` | bundles `playwright 1.65.0-alpha-*` | May pull a different Playwright than your `playwright-core@1.65.0`; browser downloads can then double. Set one `PLAYWRIGHT_BROWSERS_PATH` and check `npx playwright-core install` reports no second download. |
 
-## Open Items to Verify in Phase-Level Research
+## Open Items to Verify in Change-Level Research
 
 ## Sources
 
@@ -290,50 +284,26 @@ It reads planning truth from the host project's SDD framework through adapters (
 - Local experiment (scratch repo, git 2.50.1, ed25519 keys): `verify-commit` exit codes, `%G?`/`%GF` output, "No principal matched" behaviour (HIGH).
 - https://github.com/benjitaylor/agentation, https://github.com/aidenybai/react-grab, https://github.com/stagewise-io/stagewise, https://github.com/onlook-dev/onlook, https://tldraw.dev (licence-key docs): mock-commenting tool survey (MEDIUM; READMEs fetched, some details not stated on the pages).
 - Prior art read-only: `/Volumes/Dock/Projects/HKP/CV/tools/speckit-auto` (`context-budget.sh`, `env.sh`, `gates.sh`, `run.sh`, `worktree.sh`, `test-lock.ts`) and Cena branch `ccr-61ff69b1-hgtpdm` (`lib/factory/guard.ts`, `lib/factory/signature.ts`, `app/__mission/*`) (HIGH for what they do).
-- `gsd-tools roadmap analyze|phases list|phase-plan-index` run read-only against Cena: GSD CLI output shape (HIGH).
-
-<!-- GSD:stack-end -->
-
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
+- OpenSpec 1.17.0 CLI and its `spec-driven` schema, inspected locally (`openspec init`, `new change`, `validate --strict`, change-metadata schema): change layout and the `x-` prefix for tool metadata (HIGH).
 
 ## Conventions
 
 Conventions not yet established. Will populate as patterns emerge during development.
-<!-- GSD:conventions-end -->
-
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
-
 ## Architecture
 
 Architecture not yet mapped. Follow existing patterns found in the codebase.
-<!-- GSD:architecture-end -->
-
-<!-- GSD:skills-start source:skills/ -->
-
 ## Project Skills
 
 - **Sketch findings for Counterpoint** (design decisions, CSS patterns, visual direction) → `Skill("sketch-findings-counterpoint")`
-<!-- GSD:skills-end -->
+## Spec-Driven Workflow (OpenSpec)
 
-<!-- GSD:workflow-start source:GSD defaults -->
+Planning lives in `openspec/`: current behaviour in `openspec/specs/`, work in `openspec/changes/<name>/`, finished work in `openspec/changes/archive/`. Research, decisions, backlog and sketches live in `docs/`.
 
-## GSD Workflow Enforcement
+- `/opsx:explore` to think something through before committing to a change
+- `/opsx:propose <name>` to create a change (proposal, spec deltas, design, tasks)
+- `/opsx:ff <name>` to fast-forward an existing change: generate every missing planning artifact in one go
+- `/opsx:apply` to implement a change's tasks, ticking them in `tasks.md`
+- `/opsx:verify` to check an implemented change against its specs, design and tasks before archiving
+- `/opsx:archive` when a change is done (merges its spec deltas into `openspec/specs/`)
 
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-- `/gsd-fast` for a trivial task inline, with no subagents and no PLAN.md
-- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd-debug` for investigation and bug fixing
-- `/gsd-execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
-
-<!-- GSD:profile-start -->
-
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
+Feature work starts from a change; small fixes and doc edits can go in directly. Run `openspec validate --all --strict` after editing anything under `openspec/`. Dependencies between changes go in `.openspec.yaml` as `x-depends-on: [<change>, ...]`; tasks only the owner can do start with `Owner:`.

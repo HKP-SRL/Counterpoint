@@ -1,4 +1,4 @@
-// Unit tests for the differential sandbox probe (01-04 Task 2): the step plan, the
+// Unit tests for the differential sandbox probe: the step plan, the
 // mirror-confined control session, the launch builder, the stale-artifact sweep and the probe
 // lifecycle with a fake runner. No `claude` is started here.
 import {
@@ -129,7 +129,7 @@ function overGrantedProfile(): Profile {
   return { settings: overGranted(), allowedTools: [...AGENT_TOOLS] };
 }
 
-/** A treatment input carrying every allow-side grant a later phase could add, and more. */
+/** A treatment input carrying every allow-side grant a later change could add, and more. */
 function overGranted(): AgentSettings {
   const real = buildAgentSandboxSettings(paths).settings;
   return {
@@ -282,7 +282,7 @@ describe('planProbe', () => {
     for (const step of p.treatment.steps) {
       if (step.target === 'control' || step.reaches === null) continue;
       if (step.target === 'credential-env') {
-        // The env listing runs the probe's own script in the probe directory (01-26).
+        // The env listing runs the probe's own script in the probe directory.
         expect(step.reaches).toBe(p.envScript.path);
         continue;
       }
@@ -349,7 +349,7 @@ describe('planProbe', () => {
     });
 
     const steps = p.treatment.steps;
-    // The env-shape step (01-26) is the last step; the outside three come right before it.
+    // The env-shape step is the last step; the outside three come right before it.
     const last = steps.slice(-4, -1);
     expect(steps.at(-1)).toMatchObject({ target: 'credential-env', operation: 'env-shape' });
     expect(steps.filter((s) => s.target === 'outside-workdir')).toEqual(last);
@@ -358,7 +358,7 @@ describe('planProbe', () => {
       steps.length - 2,
       steps.length - 1,
     ]);
-    // Every earlier step keeps its 01-04 index: git-info's Write is the step right before.
+    // Every earlier step keeps its original index: git-info's Write is the step right before.
     expect(steps[steps.length - 5]).toMatchObject({ target: 'git-info', operation: 'write' });
     expect(last.map((s) => [s.tool, s.operation, s.path])).toEqual([
       ['Write', 'write', outside.writeFile],
@@ -636,7 +636,7 @@ describe('buildProbeLaunch', () => {
     expect(valuesAfter(l.treatment.argv, '--settings')[0]).toBe(
       JSON.stringify(p.treatmentProfile.settings),
     );
-    // No file-edit grant reaches outside the probe directory (T-01-65).
+    // No file-edit grant reaches outside the probe directory.
     for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
       expect(valuesAfter(l.treatment.argv, '--allowedTools')).not.toContain(tool);
     }
@@ -812,7 +812,7 @@ describe('runSandboxProbe (fake runner)', () => {
         this.seen['treatment:outside-edit-file'] = existsSync(outsideWrite.replace(/-w$/, '-e'));
         writeFileSync(outsideWrite, 'cp-probe');
       }
-      // The env listing script (01-26) must exist, owner-only and exactly ENV_SHAPE_AWK, while
+      // The env listing script must exist, owner-only and exactly ENV_SHAPE_AWK, while
       // each session runs.
       const envScript = /Bash tool, command: awk -f '([^']+)'/.exec(prompt)?.[1];
       if (envScript !== undefined) {
@@ -870,7 +870,7 @@ describe('runSandboxProbe (fake runner)', () => {
       tmpRoot,
     });
 
-    // The fake attempts no step, so the treatment is retried once (RESEARCH Pitfall 1).
+    // The fake attempts no step, so the treatment is retried once.
     expect(runner.requests).toHaveLength(3);
     expect(outcome.treatmentAttempts).toBe(2);
     const [t, tRetry, c] = runner.requests;
@@ -902,7 +902,7 @@ describe('runSandboxProbe (fake runner)', () => {
     expect(runner.seen['treatment:outside-dir']).toBe(true);
     expect(runner.seen['treatment:outside-edit-file']).toBe(true);
     // The env listing script was written 0600 with exactly ENV_SHAPE_AWK before both sessions,
-    // was still intact after them, and is gone afterwards (01-26).
+    // was still intact after them, and is gone afterwards.
     expect(p.envScript.path).toBe(join(p.probeDir, `cp-env-${p.nonce}.awk`));
     for (const session of ['treatment', 'control']) {
       expect(runner.seen[`${session}:env-script-0600`], session).toBe(true);
@@ -928,7 +928,7 @@ describe('runSandboxProbe (fake runner)', () => {
       'git-hooks': 'reachable',
       'git-info': 'not-checked',
       'outside-workdir': 'reachable',
-      // The fake answers no env-shape call, so the listing row is Not checked (01-26).
+      // The fake answers no env-shape call, so the listing row is Not checked.
       'credential-env': 'not-checked',
     });
     expect(keychainCalls).toEqual([
@@ -950,7 +950,7 @@ describe('runSandboxProbe (fake runner)', () => {
   });
 });
 
-describe('the env-shape step (01-26)', () => {
+describe('the env-shape step', () => {
   it('is planned last in both sessions, with an identical command running the probe-owned script', () => {
     const p = plan();
     const scriptPath = join(probeDir, `cp-env-${NONCE}.awk`);
@@ -1021,8 +1021,8 @@ describe('the env-shape step (01-26)', () => {
     // and, for url-userinfo only, the host class word.
     const prints = ENV_SHAPE_AWK.split('\n').filter((line) => /\bprint\b/.test(line));
     expect(prints).toEqual(['    print name " " length(ENVIRON[name]) " " s extra']);
-    // The CLOUDSDK_PROXY_ADDRESS line always carries its bare-host class (01-26 rerun decision);
-    // every other url-userinfo line carries the URL's host class.
+    // The CLOUDSDK_PROXY_ADDRESS line always carries its bare-host class (owner decision after the
+    // rerun); every other url-userinfo line carries the URL's host class.
     expect(ENV_SHAPE_AWK).toContain(
       '    if (name == "CLOUDSDK_PROXY_ADDRESS") extra = " " address_class(ENVIRON[name])\n' +
         '    else if (s == "url-userinfo") extra = " " host_class(ENVIRON[name])',
@@ -1030,7 +1030,7 @@ describe('the env-shape step (01-26)', () => {
   });
 });
 
-describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (01-26)', () => {
+describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk', () => {
   let script: string;
   let home: string;
   beforeAll(() => {
@@ -1068,7 +1068,7 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
     CP_PX_OCTET: 'http://cp-user:cp-pw-0126@127.0.0.256:80',
     CP_PX_TWO_AT: 'http://cp-user:cp-pw-0126@extra.invalid@127.0.0.1:80',
     CP_PX_INSIDE: 'see http://cp-user:cp-pw-0126@127.0.0.1:80',
-    // The gcloud proxy config's bare host (01-26 rerun decision): classed, never printed.
+    // The gcloud proxy config's bare host (owner decision after the rerun): classed, never printed.
     CLOUDSDK_PROXY_ADDRESS: '127.0.0.1',
   });
 
@@ -1224,7 +1224,7 @@ describe.skipIf(process.platform !== 'darwin')('ENV_SHAPE_AWK on /usr/bin/awk (0
   });
 });
 
-describe('the sandbox proxy exception (01-26)', () => {
+describe('the sandbox proxy exception', () => {
   const PROXY_NAMES = [
     'HTTP_PROXY',
     'http_proxy',
@@ -1250,7 +1250,7 @@ describe('the sandbox proxy exception (01-26)', () => {
     expect(SANDBOX_PROXY_EXCEPTION.id).toBe('sandbox-proxy-login');
     expect(SANDBOX_PROXY_EXCEPTION.reason).toBe("the sandbox's own proxy login, local only");
     expect(SANDBOX_PROXY_EXCEPTION.recordedAt).toBe('2026-11-10');
-    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain('STATE.md [Owner]');
+    expect(SANDBOX_PROXY_EXCEPTION.decision).toContain('docs/decisions.md');
     expect(SANDBOX_PROXY_EXCEPTION.decision).toContain(
       'Credential-env row scoped to the real requirement',
     );

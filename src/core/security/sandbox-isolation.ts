@@ -1,9 +1,9 @@
-// Sandbox isolation settings (replacement 2 of 3 for the scrub opt-out, 01-25).
+// Sandbox isolation settings (replacement 2 of 3 for the scrub opt-out).
 //
 // With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` set, Claude Code "ignores `filesystem.disabled` from
 // every source, including managed settings, and keeps filesystem isolation on"
 // (https://code.claude.com/docs/en/sandboxing, "Which settings can disable it"). The owner opted
-// out of the scrub (STATE.md [Owner] 2026-11-10, agent-env.ts), so a settings file can now switch
+// out of the scrub (owner decision 2026-11-10, agent-env.ts), so a settings file can now switch
 // isolation off for agent sessions. The owner's replacement: doctor fails if any settings source
 // that an agent session loads turns sandbox isolation off. This module is the pure judge; the
 // reader that finds and reads each source is src/doctor/settings-sources.ts.
@@ -131,7 +131,7 @@ export const ISOLATION_RULES: readonly IsolationRule[] = [
     doc: `${SANDBOXING} "What changes when filesystem isolation is off": "\`autoAllowBashIfSandboxed\` still defaults to \`true\` ... Set it to \`false\` to prompt for sandboxed commands"`,
   },
   {
-    // Added at the 01-25 execution-time docs re-check (the list only grows).
+    // Added at a later re-check of the docs (the list only grows).
     key: 'sandbox.allowAppleEvents',
     failsIn: 'any',
     safe: false,

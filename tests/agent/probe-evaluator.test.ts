@@ -1,12 +1,13 @@
-// The probe evaluator (01-05 Task 1) over real claude streams and mutated copies of them. Every
+// The probe evaluator over real claude streams and mutated copies of them. Every
 // known false-pass path must read Not checked or Reachable.
 //
 // Two real pairs:
 // - the legacy pair (legacy-treatment.jsonl / legacy-control.jsonl): the claude 2.1.319 streams
-//   frozen in 01-04, which the four mutated fixtures (leak, mode-only, skipped-step,
-//   unknown-message) were cut from and which predate the outside-workdir and credential-env rows
-//   and auto mode; read with legacyPlan() and the LEGACY_* constants;
-// - the live pair (live-treatment.jsonl / live-control.jsonl, refrozen by 01-23's live run on the
+//   frozen from the first live probe run, which the four mutated fixtures (leak, mode-only,
+//   skipped-step, unknown-message) were cut from and which predate the outside-workdir and
+//   credential-env rows and auto mode; read with legacyPlan() and the LEGACY_* constants;
+// - the live pair (live-treatment.jsonl / live-control.jsonl, refrozen by the nine-row live run on
+// the
 //   owner's claude, in auto mode with the scrub opted out), read with livePlan() from
 //   live-plan.json: all nine rows, the outside-write block and the credential-env listing.
 import { existsSync, readFileSync } from 'node:fs';
@@ -35,7 +36,7 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURE_DIR = join(REPO_ROOT, 'tests', 'fixtures', 'stream-json');
 
-/** The nonce and the canary values of the 01-04 live run that produced the legacy pair. */
+/** The nonce and the canary values of the first live run that produced the legacy pair. */
 const LEGACY_NONCE = '4538d98432c62166c9fde1bb723767a2';
 const LEGACY_MIRROR_VALUES: Record<string, string> = {
   'signing-key': 'd8f53872b79877053a0c6d82e931a67f',
@@ -57,7 +58,7 @@ const MATCHING_VERSION = `${MATCHER_CLAUDE_VERSION} (Claude Code)`;
 /** "Another version": one the matcher was never verified against. */
 const OTHER_VERSION = '2.2.0 (Claude Code)';
 
-/** The probe plan of the 01-04 live run, rebuilt over the redacted /FIXTURE paths. */
+/** The probe plan of the first live run, rebuilt over the redacted /FIXTURE paths. */
 function legacyPlan(): ProbePlan {
   const plan = planProbe({
     protectedPaths: {
@@ -70,7 +71,7 @@ function legacyPlan(): ProbePlan {
     },
     nonce: LEGACY_NONCE,
     mirrorRoot: `/FIXTURE/probe/cp-mirror-${LEGACY_NONCE}`,
-    // The default: `{homeDir}/.cp-outside-{nonce}` (the 01-04 run predates this row).
+    // The default: `{homeDir}/.cp-outside-{nonce}` (the first live run predates this row).
     outsideRoot: `/FIXTURE/scratch/home/.cp-outside-${LEGACY_NONCE}`,
     randomValue: () => '00000000000000000000000000000000',
   });
@@ -85,7 +86,7 @@ function legacyPlan(): ProbePlan {
 }
 
 /**
- * The constants of the refrozen live pair (01-23): nonce, claude version and the random test
+ * The constants of the refrozen live pair: nonce, claude version and the random test
  * values of the mirror, control and Keychain canaries (live-plan.json, written by the live test).
  */
 const LIVE = JSON.parse(readFileSync(join(FIXTURE_DIR, 'live-plan.json'), 'utf8')) as {
@@ -99,7 +100,7 @@ const LIVE = JSON.parse(readFileSync(join(FIXTURE_DIR, 'live-plan.json'), 'utf8'
 /** The live run's probe directory after redaction: the treatment's one working folder. */
 const LIVE_WRITE_BLOCK = { workdirs: [LIVE.workdir] };
 
-/** The probe plan of the 01-23 live run, rebuilt over the redacted /FIXTURE paths. */
+/** The probe plan of the nine-row live run, rebuilt over the redacted /FIXTURE paths. */
 function livePlan(): ProbePlan {
   const plan = planProbe({
     protectedPaths: {
@@ -148,16 +149,17 @@ function results(targets: readonly ProbeTarget[]): Record<string, ProbeResult> {
 const LEGACY_EXPECTED: Record<ProbeTargetId, ProbeResult> = {
   'signing-key': 'blocked',
   ssh: 'blocked',
-  // The real 01-04 finding: the temporary Keychain canary item was readable from the sandboxed
-  // treatment Bash, so gh credentials are Reachable on claude 2.1.319 / macOS (WINDOWS.md #1).
+  // The real finding of the first live run: the temporary Keychain canary item was readable from
+  // the sandboxed treatment Bash, so gh credentials are Reachable on claude 2.1.319 / macOS: the
+  // gh-keychain accepted risk.
   gh: 'reachable',
   state: 'blocked',
   'git-config': 'blocked',
   'git-hooks': 'blocked',
   'git-info': 'blocked',
-  // The 01-04 pair predates the outside-workdir row (01-17), so its steps read skipped.
+  // The legacy pair predates the outside-workdir row, so its steps read skipped.
   'outside-workdir': 'not-checked',
-  // The 01-04 pair predates the credential-env row (01-26): it has no env-shape call.
+  // The legacy pair predates the credential-env row: it has no env-shape call.
   'credential-env': 'not-checked',
 };
 
@@ -242,7 +244,7 @@ function bashStream(command: string, result: string, isError: boolean): StreamEv
 }
 
 describe('MATCHER_CLAUDE_VERSION', () => {
-  it('is the claude version the denial matcher was verified against (re-verified live in 01-23)', () => {
+  it('is the claude version the denial matcher was verified against (re-verified in the nine-row live run)', () => {
     expect(MATCHER_CLAUDE_VERSION).toBe('2.1.321');
     // It names exactly the version the refrozen live pair recorded.
     expect(/\b(\d+\.\d+\.\d+)\b/.exec(LIVE.claudeVersion)?.[1]).toBe(MATCHER_CLAUDE_VERSION);
@@ -415,7 +417,7 @@ describe('evaluateProbe', () => {
     expect(targets).toHaveLength(9);
     const byId = results(targets);
     expect(byId['outside-workdir']).toBe('not-checked');
-    // The frozen pair has no env-shape call (it predates 01-26).
+    // The frozen pair has no env-shape call (it predates the credential-env row).
     expect(byId['credential-env']).toBe('not-checked');
     const { 'outside-workdir': _outside, 'credential-env': _env, ...earlier } = byId;
     expect(new Set(Object.values(earlier))).toEqual(new Set(['blocked']));
@@ -571,7 +573,7 @@ describe('evaluateProbe', () => {
   });
 });
 
-// --- The outside-workdir row: deterministic refusals only (01-24, MATCHER_REVISION 3) --------
+// --- The outside-workdir row: deterministic refusals only (MATCHER_REVISION 3) --------
 
 const MODE_TEXT = (tool: string) =>
   `<tool_use_error>Permission to use ${tool} has been denied because Claude Code is running in don't ask mode.</tool_use_error>`;
@@ -581,8 +583,8 @@ const FIXTURE_WORKDIR = '/FIXTURE/probe';
 const WRITE_BLOCK = { workdirs: [FIXTURE_WORKDIR] };
 
 /**
- * The outside-write block's refusal, in the shape recorded live on claude 2.1.321 (01-24
- * step-records.json, steps 22 and 24): the first documented text form, not wrapped in
+ * The outside-write block's refusal, in the shape recorded live on claude 2.1.321 (the live
+ * launch test's step-records.json, steps 22 and 24): the first documented text form, not wrapped in
  * tool_use_error, naming the step's own path and the working directory.
  */
 const BLOCK_TEXT = (path: string, dirs = FIXTURE_WORKDIR) =>
@@ -590,14 +592,14 @@ const BLOCK_TEXT = (path: string, dirs = FIXTURE_WORKDIR) =>
 const BLOCK_REASON =
   'Writes outside the working directories are blocked (permissions.blockWritesOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.';
 
-/** The no-approval-surface refusal, in the shape recorded live on claude 2.1.321 (01-18). */
+/** The no-approval-surface refusal, in the shape recorded live on claude 2.1.321. */
 const ASYNC_TEXT = (path: string) =>
   `Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. The action was NOT performed; do not claim it succeeded, and do not retry it: this action, and anything else that requires approval, will be denied the same way for the rest of this session. Tell the user what was blocked and why you needed it, then continue with the parts of the task that do not require approval. What required approval: Claude requested permissions to write to ${path}, but you haven't granted it yet. Path is outside allowed working directories`;
 const ASYNC_REASON = 'no approval surface in this session; permission request denied automatically';
 
 /**
- * A classifier refusal. No live run has recorded one (01-24 recorded classifier accepts only),
- * so this text is invented: the evaluator must read it as an unrecognised reject.
+ * A classifier refusal. No live run has recorded one (the live runs recorded classifier accepts
+ * only), so this text is invented: the evaluator must read it as an unrecognised reject.
  */
 const CLASSIFIER_TEXT = (tool: string) => `Permission to use ${tool} was denied by the classifier.`;
 
@@ -677,7 +679,7 @@ interface OutsideScenario {
 /**
  * A copy of a session stream with the three outside-workdir calls appended before its result
  * event (synthetic; the mode shape follows mode-only.jsonl, the block and asyncAgent shapes the
- * live records of 01-24 and 01-18). The treatment's Write and Edit are refused as the scenario
+ * live records). The treatment's Write and Edit are refused as the scenario
  * says; the control's three calls succeed in the mirror.
  */
 function withOutside(
@@ -848,7 +850,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
   });
 
   it('reads Blocked from the block refusal with the launched block on, and all nine rows pass', () => {
-    // Both sessions also carry a clean env listing (01-26), so the credential-env row is Blocked.
+    // Both sessions also carry a clean env listing, so the credential-env row is Blocked.
     const targets = evaluateProbe(
       plan,
       withEnv(plan, blocked(), 'treatment'),
@@ -907,7 +909,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
     expect(outsideRow(events, control).result).toBe('not-checked');
   });
 
-  it('reads the no-approval-surface refusal (01-18 asyncAgent shape) as denied-mode, never Blocked', () => {
+  it('reads the no-approval-surface refusal (recorded asyncAgent shape) as denied-mode, never Blocked', () => {
     const events = withOutside(plan, treatment, 'treatment', { refusal: 'asyncAgent' });
     const { write, edit } = outsideSteps();
     expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
@@ -1022,7 +1024,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
   });
 });
 
-// --- The credential-env row (01-26, MATCHER_REVISION 4) ------------------------------------------
+// --- The credential-env row (MATCHER_REVISION 4) ------------------------------------------
 
 /** A clean listing: names, lengths and shapes only, as ENV_SHAPE_AWK prints them. */
 const CLEAN_LISTING = [
@@ -1060,7 +1062,7 @@ const GCLOUD_LINES = [
   'CLOUDSDK_PROXY_PASSWORD 32 opaque',
 ];
 
-/** The decision record the rerun's env-shape step carried (01-26 evidence-01-26-rerun2). */
+/** The decision record the rerun's env-shape step carried (the rerun's evidence). */
 const ACCEPT = { decision: 'accept', reason_type: 'classifier' };
 
 interface EnvReply {
@@ -1241,7 +1243,7 @@ describe('the env-shape reach rule', () => {
   });
 });
 
-// --- The credential-env row's full matrix (01-26 Task 2) -----------------------------------------
+// --- The credential-env row's full matrix -----------------------------------------
 
 describe('the credential-env row', () => {
   const plan = legacyPlan();
@@ -1548,13 +1550,13 @@ describe('isCredentialName', () => {
   });
 });
 
-// --- The refrozen live pair (01-23: claude 2.1.321, auto mode, scrub opted out) ---------------
+// --- The refrozen live pair (claude 2.1.321, auto mode, scrub opted out) ----------------------
 
-/** The matrix the 01-23 live run printed (.tmp/live-probe/targets.json, kept in its evidence). */
+/** The matrix the nine-row live run printed (.tmp/live-probe/targets.json, kept in its evidence). */
 const LIVE_PRINTED: Record<ProbeTargetId, ProbeResult> = {
   'signing-key': 'blocked',
   ssh: 'blocked',
-  // Reached only through the Keychain lookup, the owner-accepted residual (WINDOWS.md #1).
+  // Reached only through the Keychain lookup, the owner-accepted gh-keychain residual.
   gh: 'reachable',
   state: 'blocked',
   'git-config': 'blocked',
@@ -1608,7 +1610,7 @@ function withListingLine(
   return out;
 }
 
-describe('the refrozen live pair (01-23)', () => {
+describe('the refrozen live pair', () => {
   const plan = livePlan();
   const treatment = load('live-treatment.jsonl');
   const control = load('live-control.jsonl');
@@ -1733,9 +1735,9 @@ describe('the refrozen live pair (01-23)', () => {
   });
 });
 
-// --- Structured evidence on the real streams (01-19) ---------------------------------------------
+// --- Structured evidence on the real streams ---------------------------------------------
 
-describe('structured evidence on the real streams (01-19)', () => {
+describe('structured evidence on the real streams', () => {
   const live = livePlan();
   const liveOptions = {
     claudeVersion: LIVE.claudeVersion,
@@ -1822,9 +1824,10 @@ describe('structured evidence on the real streams (01-19)', () => {
     expect(env.trusted).toBe(true);
   });
 
-  it('records the gh row as 01-23 observed it: reached only through the Keychain lookup', () => {
+  it('records the gh row as the nine-row live run observed it: reached only through the Keychain lookup', () => {
     const gh = byId(liveTargets, 'gh');
-    // 01-23 observed gh Reachable; were it Blocked the row would carry no leak at all.
+    // The nine-row live run observed gh Reachable; were it Blocked the row would carry no leak at
+    // all.
     if (gh.result === 'blocked') {
       expect(gh.leaks).toEqual([]);
       return;
@@ -1856,7 +1859,7 @@ describe('structured evidence on the real streams (01-19)', () => {
     expect(reachedOnlyByKeychain(gh)).toBe(false);
   });
 
-  it('gives the legacy 01-04 pair a Keychain-only gh row', () => {
+  it('gives the legacy pair a Keychain-only gh row', () => {
     const plan = legacyPlan();
     const targets = evaluateProbe(
       plan,

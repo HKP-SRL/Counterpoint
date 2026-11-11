@@ -1,5 +1,5 @@
 // The lifecycle commands around the daemon: init, status, open, and the sign-in link that start
-// prints (D-05, D-07, D-08). Drives the real CLI with scratch homes; never opens a browser.
+// prints. Drives the real CLI with scratch homes; never opens a browser.
 import { existsSync, statSync } from 'node:fs';
 import { request } from 'node:http';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -162,8 +162,8 @@ describe('counterpoint status, open and the sign-in link', () => {
   it('status prints one line per host with its port, runway and needs-you count', async () => {
     const result = await cli(['status'], home, repo);
     expect(result.exitCode).toBe(0);
-    // Nothing is approved in this repository, so its runway is 0 (01-13) and nothing needs the
-    // owner (01-14).
+    // Nothing is approved in this repository, so its runway is 0 and nothing needs the
+    // owner.
     expect(result.stdout.trim()).toBe(
       `${hostIdFromName(basename(repo))}  running on 127.0.0.1:${port}  runway 0  needs you 0`,
     );

@@ -1,8 +1,9 @@
-// Approval state and runway, recomputed from git (RESEARCH verification step 5). Approvals are
-// landed with throwaway unprotected ed25519 keys in scratch repositories; the trust store lives in a
-// scratch home. Nothing here touches ~/.ssh, ssh-agent, the Keychain or a real Counterpoint home.
+// Approval state and runway, recomputed from git (runway: Runway recomputed from git). Approvals
+// are landed with throwaway unprotected ed25519 keys in scratch repositories; the trust store lives
+// in a scratch home. Nothing here touches ~/.ssh, ssh-agent, the Keychain or a real Counterpoint
+// home.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGsdAdapter } from '../../../src/adapters/gsd/index.ts';
+import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { signAndLand } from '../../../src/core/approvals/commit.ts';
 import { COUNTERPOINT_CONFIG_PATH, gatesDigest } from '../../../src/core/approvals/gates.ts';
 import { prepareApproval } from '../../../src/core/approvals/prepare.ts';
@@ -19,15 +20,18 @@ import {
   commitChange,
   type FixtureRepo,
   materializeFixtureRepo,
+  SYNTHETIC,
 } from '../../helpers/fixture-repo.ts';
 import { makeThrowawayKey, type ThrowawayKey } from '../../helpers/keys.ts';
 import { gitIn, makeScratchDir, removeScratchDirs } from '../../helpers/scratch.ts';
 
-const adapter = createGsdAdapter();
-const PHASE_DIR = '.planning/phases/02-ready-thing';
-const CONTEXT = `${PHASE_DIR}/02-CONTEXT.md`;
-const RESEARCH = `${PHASE_DIR}/02-RESEARCH.md`;
-const SPEC = `${PHASE_DIR}/02-SPEC.md`;
+const adapter = createOpenSpecAdapter();
+const READY = SYNTHETIC.ready;
+const CHANGE_DIR = `openspec/changes/${READY}`;
+const PROPOSAL = `${CHANGE_DIR}/proposal.md`;
+const DESIGN = `${CHANGE_DIR}/design.md`;
+const TASKS = `${CHANGE_DIR}/tasks.md`;
+const SPEC = `${CHANGE_DIR}/specs/ordering/spec.md`;
 const IDENT = { name: 'Owner', email: 'owner@counterpoint.invalid' };
 
 let key: ThrowawayKey;
@@ -59,12 +63,12 @@ function appended(bytes: Uint8Array, text: string): Uint8Array {
   return Buffer.concat([bytes, Buffer.from(text)]);
 }
 
-/** Prepares and lands a real signed approval of `phaseId` at master's tip. */
-async function approve(repo: FixtureRepo, phaseId = '02'): Promise<string> {
+/** Prepares and lands a real signed approval of `changeId` at master's tip. */
+async function approve(repo: FixtureRepo, changeId: string = READY): Promise<string> {
   const prepared = await prepareApproval({
     hostId: 'synthetic',
     baseBranch: 'master',
-    phaseId,
+    changeId,
     reader: createGitFileReader(repo.root),
     adapter,
   });
@@ -74,7 +78,7 @@ async function approve(repo: FixtureRepo, phaseId = '02'): Promise<string> {
     baseBranch: 'master',
     itemPath: prepared.itemPath,
     fileBytes: prepared.bytes,
-    message: `counterpoint: approve phase ${phaseId}`,
+    message: `counterpoint: approve change ${changeId}`,
     ident: IDENT,
     sign: (payload) => signPayload({ payload, privateKeyPath: key.privateKeyPath }),
   });
@@ -82,15 +86,15 @@ async function approve(repo: FixtureRepo, phaseId = '02'): Promise<string> {
   return landed.commit;
 }
 
-/** Lands an arbitrary statement (for mismatch cases and built phases). */
+/** Lands an arbitrary statement (for mismatch cases and built changes). */
 async function landStatement(
   repo: FixtureRepo,
-  itemPhaseId: string,
-  statementOptions: { hostId: string; phaseId: string },
+  itemChangeId: string,
+  statementOptions: { hostId: string; changeId: string },
 ): Promise<void> {
   const reader = createGitFileReader(repo.root);
   const tip = (await reader.resolve('refs/heads/master')) as string;
-  const inputs = await adapter.approvalInputs(reader, tip, statementOptions.phaseId);
+  const inputs = await adapter.approvalInputs(reader, tip, statementOptions.changeId);
   const statement = buildStatement({
     ...statementOptions,
     baseBranch: 'master',
@@ -101,7 +105,7 @@ async function landStatement(
   const landed = await signAndLand({
     root: repo.root,
     baseBranch: 'master',
-    itemPath: approvalPath(itemPhaseId),
+    itemPath: approvalPath(itemChangeId),
     fileBytes: new TextEncoder().encode(serializeStatement(statement)),
     message: 'counterpoint: approve',
     ident: IDENT,
@@ -110,12 +114,17 @@ async function landStatement(
   if (!landed.ok) throw new Error(`landing refused: ${landed.reason}`);
 }
 
-function stateOf(repo: FixtureRepo, phaseId = '02', hostId = 'synthetic', withTrust = true) {
+function stateOf(
+  repo: FixtureRepo,
+  changeId: string = READY,
+  hostId = 'synthetic',
+  withTrust = true,
+) {
   return approvalState({
     hostId,
     root: repo.root,
     baseBranch: 'master',
-    phaseId,
+    changeId,
     reader: createGitFileReader(repo.root),
     adapter,
     trust: withTrust ? trust : null,
@@ -152,25 +161,50 @@ describe('approvalState: inputs', () => {
     expect(state.state).toBe('on-runway');
   });
 
-  it('moves to changed after a committed edit to an input, listing signed and current digests', async () => {
-    const original = await showAtMaster(repo.root, CONTEXT);
-    await commitChange(repo.root, CONTEXT, appended(original, '\nOne more decision.\n'));
+  it('stays on-runway when a task box is ticked (tasks.md is normalized)', async () => {
+    const original = await showAtMaster(repo.root, TASKS);
+    const text = new TextDecoder().decode(original);
+    await commitChange(repo.root, TASKS, text.replace('- [ ] 1.1', '- [x] 1.1'));
+    expect((await stateOf(repo)).state).toBe('on-runway');
+    await commitChange(repo.root, TASKS, original);
+  });
+
+  it('moves to changed when a task is reworded, naming tasks.md', async () => {
+    const original = await showAtMaster(repo.root, TASKS);
+    const text = new TextDecoder().decode(original);
+    await commitChange(repo.root, TASKS, text.replace('Finish the ready thing', 'Finish later'));
+    const state = await stateOf(repo);
+    if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
+    expect(state.changes).toEqual([
+      expect.objectContaining({ path: TASKS, kind: 'tasks', change: 'modified' }),
+    ]);
+    await commitChange(repo.root, TASKS, original);
+    expect((await stateOf(repo)).state).toBe('on-runway');
+  });
+
+  it('moves to changed after a committed edit to the proposal, listing signed and current digests', async () => {
+    const original = await showAtMaster(repo.root, PROPOSAL);
+    await commitChange(repo.root, PROPOSAL, appended(original, '\nOne more reason.\n'));
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
     expect(state.changes).toHaveLength(1);
-    expect(state.changes[0]).toMatchObject({ path: CONTEXT, kind: 'context', change: 'modified' });
+    expect(state.changes[0]).toMatchObject({
+      path: PROPOSAL,
+      kind: 'proposal',
+      change: 'modified',
+    });
     expect(state.changes[0]?.signedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(state.changes[0]?.nowDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(state.changes[0]?.nowDigest).not.toBe(state.changes[0]?.signedDigest);
     expect(state.gatesChange).toBeNull();
 
     // Reverting the edit returns the item to the runway, with no re-sign.
-    await commitChange(repo.root, CONTEXT, original);
+    await commitChange(repo.root, PROPOSAL, original);
     expect((await stateOf(repo)).state).toBe('on-runway');
   });
 
-  it('reports an input added after signing as added', async () => {
-    await commitChange(repo.root, SPEC, '# Spec\n');
+  it('reports a file added to the change after signing as added', async () => {
+    await commitChange(repo.root, SPEC, '## ADDED Requirements\n');
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
     expect(state.changes).toEqual([
@@ -180,36 +214,36 @@ describe('approvalState: inputs', () => {
     expect((await stateOf(repo)).state).toBe('on-runway');
   });
 
-  it('reports a deleted input as removed', async () => {
-    const original = await showAtMaster(repo.root, RESEARCH);
-    await commitChange(repo.root, RESEARCH, null);
+  it('reports a deleted file as removed', async () => {
+    const original = await showAtMaster(repo.root, DESIGN);
+    await commitChange(repo.root, DESIGN, null);
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
     expect(state.changes).toEqual([
       expect.objectContaining({
-        path: RESEARCH,
-        kind: 'research',
+        path: DESIGN,
+        kind: 'design',
         change: 'removed',
         nowDigest: null,
       }),
     ]);
-    await commitChange(repo.root, RESEARCH, original);
+    await commitChange(repo.root, DESIGN, original);
     expect((await stateOf(repo)).state).toBe('on-runway');
   });
 
   it('lists several changes sorted by path', async () => {
-    const context = await showAtMaster(repo.root, CONTEXT);
-    await commitChange(repo.root, SPEC, '# Spec\n');
-    await commitChange(repo.root, CONTEXT, appended(context, 'x\n'));
+    const proposal = await showAtMaster(repo.root, PROPOSAL);
+    await commitChange(repo.root, SPEC, '## ADDED Requirements\n');
+    await commitChange(repo.root, PROPOSAL, appended(proposal, 'x\n'));
     const state = await stateOf(repo);
     if (state.state !== 'changed') throw new Error(`expected changed, got ${state.state}`);
-    expect(state.changes.map((c) => c.path)).toEqual([CONTEXT, SPEC]);
+    expect(state.changes.map((c) => c.path)).toEqual([PROPOSAL, SPEC]);
     await commitChange(repo.root, SPEC, null);
-    await commitChange(repo.root, CONTEXT, context);
+    await commitChange(repo.root, PROPOSAL, proposal);
   });
 
   it('is invalid without a trusted key (fail closed)', async () => {
-    const state = await stateOf(repo, '02', 'synthetic', false);
+    const state = await stateOf(repo, READY, 'synthetic', false);
     expect(state).toMatchObject({ state: 'invalid', reason: 'no-trusted-key' });
   });
 });
@@ -217,13 +251,13 @@ describe('approvalState: inputs', () => {
 describe('approvalState: statement cross-checks', () => {
   it('is invalid when the statement names another host', async () => {
     const repo = await materializeFixtureRepo('synthetic');
-    await landStatement(repo, '02', { hostId: 'other-host', phaseId: '02' });
+    await landStatement(repo, READY, { hostId: 'other-host', changeId: READY });
     expect(await stateOf(repo)).toMatchObject({ state: 'invalid', reason: 'host-mismatch' });
   });
 
   it('is invalid when the statement names another item', async () => {
     const repo = await materializeFixtureRepo('synthetic');
-    await landStatement(repo, '02', { hostId: 'synthetic', phaseId: '01' });
+    await landStatement(repo, READY, { hostId: 'synthetic', changeId: SYNTHETIC.built });
     expect(await stateOf(repo)).toMatchObject({ state: 'invalid', reason: 'item-mismatch' });
   });
 
@@ -232,7 +266,7 @@ describe('approvalState: statement cross-checks', () => {
     const landed = await signAndLand({
       root: repo.root,
       baseBranch: 'master',
-      itemPath: approvalPath('02'),
+      itemPath: approvalPath(READY),
       fileBytes: new TextEncoder().encode('{"schema":"something-else"}\n'),
       message: 'counterpoint: approve',
       ident: IDENT,
@@ -243,7 +277,7 @@ describe('approvalState: statement cross-checks', () => {
   });
 });
 
-describe('approvalState: gate config (ROADMAP SC5)', () => {
+describe('approvalState: gate config (runway spec, gate config edited)', () => {
   let repo: FixtureRepo;
 
   beforeAll(async () => {
@@ -282,7 +316,7 @@ describe('approvalState: gate config (ROADMAP SC5)', () => {
 
     const runway = await runwayOf(repo);
     expect(runway.count).toBe(0);
-    expect(runway.changed.map((c) => c.phaseId)).toEqual(['02']);
+    expect(runway.changed.map((c) => c.changeId)).toEqual([READY]);
   });
 
   it('returns to on-runway when the gates key is deleted again', async () => {
@@ -339,14 +373,14 @@ describe('compareInputs', () => {
         path: 'a.md',
         sourcePath: 'a.md',
         label: 'a.md',
-        kind: 'plan' as const,
+        kind: 'proposal' as const,
         normalization: null,
         bytes: new TextEncoder().encode('a'),
       },
     ];
     const statement = buildStatement({
       hostId: 'h',
-      phaseId: '02',
+      changeId: 'a-change',
       baseBranch: 'master',
       tip: 'b'.repeat(40),
       inputs,
@@ -360,33 +394,62 @@ describe('compareInputs', () => {
 });
 
 describe('computeRunway', () => {
-  it('counts on-runway approvals of phases that are not built', async () => {
+  it('counts on-runway approvals of changes that are not built', async () => {
     const repo = await materializeFixtureRepo('synthetic');
     expect(await runwayOf(repo)).toMatchObject({
       count: 0,
-      planCount: 0,
+      taskCount: 0,
       onRunway: [],
       changed: [],
       invalid: [],
     });
 
     await approve(repo);
-    // An approval of the built phase 01 verifies but is not runway.
-    await landStatement(repo, '01', { hostId: 'synthetic', phaseId: '01' });
-    expect((await stateOf(repo, '01')).state).toBe('on-runway');
+    // An approval of the built change verifies but is not runway.
+    await landStatement(repo, SYNTHETIC.built, {
+      hostId: 'synthetic',
+      changeId: SYNTHETIC.built,
+    });
+    expect((await stateOf(repo, SYNTHETIC.built)).state).toBe('on-runway');
 
     const runway = await runwayOf(repo);
     expect(runway.count).toBe(1);
-    expect(runway.planCount).toBe(2);
-    expect(runway.onRunway.map((r) => r.phaseId)).toEqual(['02']);
+    expect(runway.taskCount).toBe(4);
+    expect(runway.onRunway).toEqual([
+      expect.objectContaining({ changeId: READY, title: 'Ready thing', taskCount: 4 }),
+    ]);
     expect(runway.changed).toEqual([]);
     expect(runway.invalid).toEqual([]);
 
-    const original = await showAtMaster(repo.root, CONTEXT);
-    await commitChange(repo.root, CONTEXT, appended(original, 'edit\n'));
+    const original = await showAtMaster(repo.root, PROPOSAL);
+    await commitChange(repo.root, PROPOSAL, appended(original, 'edit\n'));
     const changed = await runwayOf(repo);
     expect(changed.count).toBe(0);
-    expect(changed.changed.map((c) => c.phaseId)).toEqual(['02']);
+    expect(changed.changed.map((c) => c.changeId)).toEqual([READY]);
+  });
+
+  it('keeps a change on the runway while its tasks are ticked, and drops it once all are done', async () => {
+    const repo = await materializeFixtureRepo('synthetic');
+    await approve(repo);
+    const text = new TextDecoder().decode(await showAtMaster(repo.root, TASKS));
+    await commitChange(repo.root, TASKS, text.replace('- [ ] 1.1', '- [x] 1.1'));
+    expect((await runwayOf(repo)).count).toBe(1);
+    // Every box ticked: the change is built, so its approval is no longer runway (and not drift).
+    await commitChange(repo.root, TASKS, text.replaceAll('- [ ]', '- [x]'));
+    expect(await runwayOf(repo)).toMatchObject({ count: 0, changed: [], invalid: [] });
+  });
+
+  it('ignores an approval of a change that has since been archived', async () => {
+    const repo = await materializeFixtureRepo('synthetic');
+    await approve(repo);
+    await gitIn(repo.root, ['mv', CHANGE_DIR, `openspec/changes/archive/2026-11-01-${READY}`]);
+    await gitIn(repo.root, ['commit', '-q', '-m', 'archive']);
+    expect(await runwayOf(repo)).toMatchObject({
+      count: 0,
+      onRunway: [],
+      changed: [],
+      invalid: [],
+    });
   });
 
   it('is zero with every approval invalid when no key is trusted', async () => {
@@ -395,13 +458,14 @@ describe('computeRunway', () => {
     const runway = await runwayOf(repo, false);
     expect(runway.count).toBe(0);
     expect(runway.invalid).toEqual([
-      expect.objectContaining({ phaseId: '02', reason: 'no-trusted-key' }),
+      expect.objectContaining({ changeId: READY, reason: 'no-trusted-key' }),
     ]);
   });
 
-  it('skips approval file names that fail the phase regex', async () => {
+  it('skips approval file names that are not change ids', async () => {
     const repo = await materializeFixtureRepo('synthetic');
-    await commitChange(repo.root, '.counterpoint/approvals/phase-2.json', '{}\n');
+    await commitChange(repo.root, '.counterpoint/approvals/Bad_Name.json', '{}\n');
+    await commitChange(repo.root, '.counterpoint/approvals/archive.json', '{}\n');
     await commitChange(repo.root, '.counterpoint/approvals/notes.txt', 'x\n');
     const runway = await runwayOf(repo);
     expect(runway).toMatchObject({ count: 0, onRunway: [], changed: [], invalid: [] });

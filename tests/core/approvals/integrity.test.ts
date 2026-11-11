@@ -1,6 +1,7 @@
-// Integrity snapshot (APPR-04): only the execution-capable git surface is captured — risky
-// `.git/config` keys plus hashes of real hooks, `.git/info/*` and config.worktree — and compared
-// against the owner's baseline. Churn and sandbox-probe artifacts are ignored; nothing runs.
+// Integrity snapshot (key-trust: Host integrity baseline): only the execution-capable git surface
+// is captured — risky `.git/config` keys plus hashes of real hooks, `.git/info/*` and
+// config.worktree — and compared against the owner's baseline. Churn and sandbox-probe artifacts
+// are ignored; nothing runs.
 import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -201,7 +202,7 @@ describe('compareIntegrity and copy', () => {
     }
   });
 
-  it('exports the UI-SPEC refusal sentence', () => {
+  it('exports the refusal sentence the owner sees', () => {
     expect(INTEGRITY_REFUSAL('cena')).toBe(
       "Signing would be refused: cena's .git/config (or hooks) changed since Counterpoint last checked. Review the change in cena, then prepare the approval again.",
     );

@@ -2,16 +2,16 @@
 // adapter (reached only through the composition root, never by naming an adapter here), the base
 // tip and a snapshot cached by tip.
 //
-// Partial reads (UI-SPEC E3): when a phase that read fine at the previous tip is unreadable at a
-// new tip, the previous good facts for that phase stay on screen and the tip is read again once
-// after a short debounce. Whatever that retry finds is final, and listeners are told it settled so
-// open pages refetch.
+// Partial reads (a change that breaks mid-edit): when a change that read fine at the previous tip
+// is unreadable at a new tip, the previous good facts for that change stay on screen and the tip is
+// read again once after a short debounce. Whatever that retry finds is final, and listeners are
+// told it settled so open pages refetch.
 import { adapterFor } from '../compose.ts';
 import type {
+  ChangeFacts,
+  ChangeSnapshot,
   FrameworkAdapter,
   GitFileReader,
-  PhaseFacts,
-  PlanSnapshot,
 } from '../core/framework/port.ts';
 import { createGitFileReader } from '../core/git/reader.ts';
 import { getHost, type HostRow, listHosts, type Store } from '../core/store/db.ts';
@@ -23,8 +23,8 @@ export interface HostView {
   /** The base branch tip, or null when the branch no longer resolves. */
   tip: string | null;
   /** The snapshot at `tip`; null when there is no tip or the host has no composed framework. */
-  snapshot: PlanSnapshot | null;
-  /** True while a newly unreadable phase is shown from its last good parse, awaiting the retry. */
+  snapshot: ChangeSnapshot | null;
+  /** True while a newly unreadable change is shown from its last good parse, awaiting the retry. */
   retryPending: boolean;
 }
 
@@ -53,16 +53,16 @@ export interface HostRuntimes {
 
 export interface HostRuntimesOptions {
   store: Store;
-  /** Delay before re-reading a phase that just became unreadable. */
+  /** Delay before re-reading a change that just became unreadable. */
   debounceMs?: number;
 }
 
 interface CacheEntry {
   tip: string;
   /** What the adapter actually reported at `tip`. */
-  actual: PlanSnapshot;
-  /** What is served: `actual` with newly unreadable phases replaced by their last good facts. */
-  served: PlanSnapshot;
+  actual: ChangeSnapshot;
+  /** What is served: `actual` with newly unreadable changes replaced by their last good facts. */
+  served: ChangeSnapshot;
   retryPending: boolean;
 }
 
@@ -70,13 +70,13 @@ function sameHost(a: HostRow, b: HostRow): boolean {
   return a.root === b.root && a.baseBranch === b.baseBranch && a.adapter === b.adapter;
 }
 
-/** Phases readable in `previous` that are unreadable in `next`, by id. */
-function newlyUnreadable(previous: PlanSnapshot, next: PlanSnapshot): Map<string, PhaseFacts> {
-  const good = new Map<string, PhaseFacts>();
-  for (const phase of next.phases) {
-    if (phase.unreadable === null) continue;
-    const before = previous.phases.find((candidate) => candidate.id === phase.id);
-    if (before !== undefined && before.unreadable === null) good.set(phase.id, before);
+/** Changes readable in `previous` that are unreadable in `next`, by directory. */
+function newlyUnreadable(previous: ChangeSnapshot, next: ChangeSnapshot): Map<string, ChangeFacts> {
+  const good = new Map<string, ChangeFacts>();
+  for (const change of next.changes) {
+    if (change.unreadable === null) continue;
+    const before = previous.changes.find((candidate) => candidate.dir === change.dir);
+    if (before !== undefined && before.unreadable === null) good.set(change.dir, before);
   }
   return good;
 }
@@ -90,8 +90,8 @@ function createRuntime(
   const adapter = adapterFor(host);
   const ref = `refs/heads/${host.baseBranch}`;
   let cache: CacheEntry | null = null;
-  /** The last snapshot whose phases are all as the adapter reported them. */
-  let lastActual: PlanSnapshot | null = null;
+  /** The last snapshot whose changes are all as the adapter reported them. */
+  let lastActual: ChangeSnapshot | null = null;
   const inflight = new Map<string, Promise<CacheEntry>>();
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -122,15 +122,15 @@ function createRuntime(
   const load = async (tip: string, current: FrameworkAdapter): Promise<CacheEntry> => {
     const actual = await current.snapshot(reader, tip);
     const keep =
-      lastActual === null ? new Map<string, PhaseFacts>() : newlyUnreadable(lastActual, actual);
+      lastActual === null ? new Map<string, ChangeFacts>() : newlyUnreadable(lastActual, actual);
     let entry: CacheEntry;
     if (keep.size === 0) {
       entry = { tip, actual, served: actual, retryPending: false };
       lastActual = actual;
     } else {
-      const served: PlanSnapshot = {
+      const served: ChangeSnapshot = {
         ...actual,
-        phases: actual.phases.map((phase) => keep.get(phase.id) ?? phase),
+        changes: actual.changes.map((change) => keep.get(change.dir) ?? change),
       };
       entry = { tip, actual, served, retryPending: true };
       scheduleRetry();

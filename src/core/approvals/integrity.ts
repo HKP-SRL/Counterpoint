@@ -1,5 +1,5 @@
-// Integrity snapshot of a host repository's execution-capable git surface (APPR-04, owner
-// decision "risky keys + owner baseline").
+// Integrity snapshot of a host repository's execution-capable git surface (key-trust: Host
+// integrity baseline; owner decision "risky keys + owner baseline").
 //
 // Hashing all of .git/config would fire on routine churn (`git push -u` rewrites branch
 // tracking) and train the owner to click through. So only what can make git run a program or
@@ -8,7 +8,7 @@
 // every hook that is not a `.sample`, every file in info/, and config.worktree. Names matching
 // the sandbox probe's artifact pattern are skipped: git never runs or reads files by those
 // names, so a doctor probe killed midway cannot make approve refuse, while any real hook name is
-// always captured. The owner accepts a baseline with `counterpoint trust {host}` (01-10);
+// always captured. The owner accepts a baseline with `counterpoint trust {host}`;
 // approve and doctor refuse when the current snapshot differs.
 import { createHash } from 'node:crypto';
 import {
@@ -292,7 +292,7 @@ export async function checkIntegrity(
   return result.ok ? { state: 'ok' } : { state: 'changed', changes: result.changes };
 }
 
-/** The UI-SPEC refusal sentence shown by approve and the console when integrity changed. */
+/** The refusal sentence shown by approve and the console when integrity changed. */
 export function INTEGRITY_REFUSAL(hostName: string): string {
   return `Signing would be refused: ${hostName}'s .git/config (or hooks) changed since Counterpoint last checked. Review the change in ${hostName}, then prepare the approval again.`;
 }

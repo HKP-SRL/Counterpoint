@@ -1,7 +1,7 @@
-// The gate-config digest slot of an approval (RESEARCH Item 4, assumption A6).
+// The gate-config digest slot of an approval (signed-approvals: Statement format).
 //
 // Gates are commands in the host's own Counterpoint config, `.counterpoint/config.yaml`, under the
-// `gates` key. Their real shape belongs to a later phase; the approval only binds a digest of
+// `gates` key. Their real shape belongs to a later change; the approval only binds a digest of
 // whatever the `gates` value is at the base tip: sha256 of its canonical JSON. A missing file, an
 // empty file, or a missing or null `gates` key is the `{ state: 'absent', digest: null }`
 // sentinel, so the slot exists from day one and filling it later changes no schema. Edits to

@@ -1,4 +1,4 @@
-// The probe evaluator (FOUND-04, RESEARCH "doctor live probe design" steps 3 and 6): a pure
+// The probe evaluator (doctor: Differential live probe; doctor: No false pass): a pure
 // function from the two probe sessions' stream-json events to one Blocked / Reachable /
 // Not checked verdict per probe target. It is written so that it cannot false-pass.
 //
@@ -15,27 +15,28 @@
 // the no-approval-surface fallback, an unrecognised message and a control session that could not
 // reach its mirror, is Not checked.
 //
-// Since MATCHER_REVISION 3 (01-24, auto mode) no permission-mode, classifier or
+// Since MATCHER_REVISION 3 (auto mode) no permission-mode, classifier or
 // no-approval-surface refusal counts as denied, for any target: those layers are not
-// deterministic, so a confinement claim never rests on them (01-17's scoped mode-denial
-// acceptance is gone). The outside-write block (`permissions.blockWritesOutsideWorkingDirectories`)
-// counts only for Write and Edit steps, only when the launched treatment settings turned it on
-// (`treatmentWriteBlock`), only for a path outside the treatment's working folder, and only when
-// every record agrees with the refusal recorded live on claude 2.1.321 (01-24).
+// deterministic, so a confinement claim never rests on them (the earlier scoped
+// acceptance of mode denials is gone). The outside-write block
+// (`permissions.blockWritesOutsideWorkingDirectories`) counts only for Write and Edit steps, only
+// when the launched treatment settings turned it on (`treatmentWriteBlock`), only for a path
+// outside the treatment's working folder, and only when every record agrees with the refusal
+// recorded live on claude 2.1.321.
 //
-// The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live in 01-04 and
-// 01-05 on 2.1.319, then in 01-24 and 01-23 on 2.1.321, where 01-23's nine-row run recognised
+// The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live on 2.1.319,
+// then on 2.1.321, where the nine-row live run recognised
 // every step of both sessions with the same exact texts). Update the families together with
 // MATCHER_CLAUDE_VERSION when Claude Code changes its messages; until then another version that
 // prints anything unfamiliar reads Not checked.
 //
-// The credential-env row (01-26, replacement 3 for the scrub opt-out) has no canary. Its env-shape
+// The credential-env row (replacement 3 for the scrub opt-out) has no canary. Its env-shape
 // step lists the sandboxed command's environment by name, length, shape and host class, and the
 // row is judged from that listing with src/agent/env-listing.ts (the parser, the credential rule
 // and the owner's one exception, `sandbox-proxy-login`); this module defines no second parser,
 // name rule or exception.
 //
-// Structured evidence (01-19): every row also carries `steps` (each treatment step's classes in
+// Structured evidence: every row also carries `steps` (each treatment step's classes in
 // both sessions, exactly as classified), `leaks` (which canary or finding reached the treatment)
 // and `trusted` (plans matched, baseline held, no version distrust). This module only reports that
 // evidence: it holds no accepted-risk logic and imports nothing from the accepted-risk record;
@@ -70,10 +71,10 @@ export const MATCHER_CLAUDE_VERSION = '2.1.321';
 /**
  * The classifier revision, recorded in the doctor report's `matcherVersion`
  * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped outside-workdir
- * mode-denial rule (01-17). 3: auto mode, where only deterministic refusals count (deny rule, OS
- * sandbox, outside-write block); mode, classifier and no-approval-surface refusals never do (01-24).
+ * mode-denial rule. 3: auto mode, where only deterministic refusals count (deny rule, OS
+ * sandbox, outside-write block); mode, classifier and no-approval-surface refusals never do.
  * 4: the credential-env row (the env-shape step and its reach rule, with the owner's
- * sandbox-proxy-login exception, 01-26).
+ * sandbox-proxy-login exception).
  */
 export const MATCHER_REVISION = 4;
 
@@ -86,7 +87,7 @@ export type StepClass =
   | 'skipped'
   | 'unknown';
 
-// Compile-time checks (01-19): every evaluator operation, class and tool is a member of the
+// Compile-time checks: every evaluator operation, class and tool is a member of the
 // doctor report's enums, so a new value here fails the build until the report schema has it.
 const REPORT_OPERATION = {
   cat: 'cat',
@@ -130,7 +131,7 @@ export interface WriteBlockContext {
 
 // --- Denial-text families (claude 2.1.319, re-verified on 2.1.321) ---------------------------
 
-/** Mode family: a denial by the permission mode, not by any rule of ours (RESEARCH R2). */
+/** Mode family: a denial by the permission mode, not by any rule of ours. */
 const MODE_FAMILY_TEXT = "running in don't ask mode";
 /** Rule family, Read and Write tools. */
 const RULE_FILE_TEXT = 'File is in a directory that is denied by your permission settings.';
@@ -141,7 +142,7 @@ const RULE_BASH_RE = /^Permission to use Bash with command ([\s\S]+) has been de
 /** OS family: the Seatbelt sandbox refused the syscall (`Operation not permitted`). */
 const OS_FAMILY_TEXT = 'Operation not permitted';
 /**
- * Block family (claude 2.1.321, recorded live in 01-24): `<path> is outside <dirs>; …`. The docs
+ * Block family (claude 2.1.321, recorded live): `<path> is outside <dirs>; …`. The docs
  * name a second form, `<path>: Writes outside the working directories are blocked
  * (permissions.blockWritesOutsideWorkingDirectories). …`; it has not appeared live, so it is not
  * accepted and reads `unknown`.
@@ -151,7 +152,7 @@ const BLOCK_TEXT_SUFFIX =
 /** The `permission_decision.reason_type` (and permission_denied reason type) of a block refusal. */
 const BLOCK_REASON_TYPE = 'other';
 /**
- * No-approval-surface family (claude 2.1.321, recorded live in 01-18): a `reason_type` asyncAgent
+ * No-approval-surface family (claude 2.1.321, recorded live): a `reason_type` asyncAgent
  * reject with this text. Not deterministic: it refuses whatever would have needed a prompt.
  */
 const ASYNC_FAMILY_PREFIX =
@@ -321,8 +322,9 @@ function classifyUse(
   if (isBlockRefusal(step, use, result, events, writeBlock)) return 'denied-block';
 
   // Non-deterministic families (never ours, so never Blocked): the permission mode, and the
-  // no-approval-surface fallback. No classifier refusal has been recorded live (01-24 recorded
-  // only classifier accepts), so there is no classifier family: such a reject reads `unknown`.
+  // no-approval-surface fallback. No classifier refusal has been recorded live (the live runs
+  // recorded only classifier accepts), so there is no classifier family: such a reject reads
+  // `unknown`.
   if (folded(text).includes(folded(MODE_FAMILY_TEXT))) return 'denied-mode';
   if (isNoApprovalSurface(use, result, events)) return 'denied-mode';
   if (decision?.decision === 'reject' && !RULE_REASON_TYPES.has(decision.reasonType)) {
@@ -353,7 +355,7 @@ function classifyUse(
     return 'denied-os';
   }
 
-  // Env-shape reach rule (01-26): the step has no canary, so it reaches only when the call ran
+  // Env-shape reach rule: the step has no canary, so it reaches only when the call ran
   // without an error, with no reject decision and no permission_denials entry, and its result is
   // a recognised listing (no malformed line, PATH and HOME named). Anything else is unknown. The
   // refusal families above ran first, so a refused step is never reached.
@@ -385,7 +387,7 @@ function classifyUse(
 
 /**
  * True only when the outside-write block refused this Write or Edit call, with every record
- * agreeing with the refusal recorded live (01-24): the block was launched on (`writeBlock`), the
+ * agreeing with the refusal recorded live: the block was launched on (`writeBlock`), the
  * step path lies outside every working directory, `is_error`, the text names exactly the step's
  * `file_path` and the launched working directories, a `permission_decision` reject with
  * `reason_type` other, the call listed in `result.permission_denials`, and a
@@ -415,7 +417,7 @@ function isBlockRefusal(
   );
 }
 
-/** The no-approval-surface fallback (01-18 shape), every record agreeing. */
+/** The no-approval-surface fallback (the recorded asyncAgent shape), every record agreeing. */
 function isNoApprovalSurface(
   use: ToolUse,
   result: ToolResult,
@@ -515,8 +517,8 @@ export interface EvaluateProbeOptions {
    */
   treatmentWriteBlock?: WriteBlockContext;
   /**
-   * True only when the listing script still held exactly ENV_SHAPE_AWK after both sessions
-   * (01-26). Without it the credential-env row can never read Blocked.
+   * True only when the listing script still held exactly ENV_SHAPE_AWK after both sessions.
+   * Without it the credential-env row can never read Blocked.
    */
   envScriptIntact?: boolean;
 }
@@ -618,7 +620,7 @@ export function evaluateProbe(
     const writeTarget = plan.writeTargets.find((t) => t.id === id);
     const mode = probeTargetMode(id);
     const outsideRow = id === 'outside-workdir';
-    // The structured evidence every row carries (01-19); filled in below as it becomes known.
+    // The structured evidence every row carries; filled in below as it becomes known.
     let fields: StructuredEvidence = { steps: [], leaks: [], trusted: false };
     const row = (result: ProbeResult, evidence: string): ProbeTarget => ({
       id,
@@ -777,7 +779,7 @@ export function evaluateProbe(
   });
 }
 
-/** The structured evidence fields of a row (01-19). */
+/** The structured evidence fields of a row. */
 interface StructuredEvidence {
   steps: ProbeStepRecord[];
   leaks: ProbeLeak[];
@@ -819,7 +821,7 @@ interface CredentialEnvInput {
 }
 
 /**
- * The credential-env row (01-26), decided apart from the canary rows, in this order (the step
+ * The credential-env row, decided apart from the canary rows, in this order (the step
  * plans already match): a credential-shaped variable outside the owner's exception in either
  * session's listing is Reachable; a changed script, a step that did not reach, or an unrecognised
  * listing is Not checked; then the baseline and version-distrust rules as for every row; otherwise

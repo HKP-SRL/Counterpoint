@@ -1,7 +1,8 @@
 // The console's HTTP client. The session lives in an HttpOnly cookie the server set during the
 // one-time sign-in exchange; the SPA never sees the sign-in code or the session value, and never
 // stores or logs either. Any 401 sends the browser to the signed-out screen, any 403 to the
-// "Request blocked" screen (UI-SPEC Interaction Contract 1 and 8).
+// "Request blocked" screen (local-console: Session required for the API; Origin and content
+// checks on writes).
 import { queryOptions } from '@tanstack/react-query';
 
 export type SignedOutReason = 'none' | 'used' | 'blocked';
@@ -64,16 +65,16 @@ export async function apiPost(path: string, body: unknown, signal?: AbortSignal)
 
 /**
  * Query keys. Host-scoped data sits under `['host', hostId, …]`, apart from the host list, so
- * invalidating one family never sweeps up another. `phase(hostId)` without a phase id is the
- * prefix of every phase of that host.
+ * invalidating one family never sweeps up another. `change(hostId)` without a change id is the
+ * prefix of every change detail of that host.
  */
 export const queryKeys = {
   hosts: ['hosts'] as const,
-  phases: (hostId: string) => ['host', hostId, 'phases'] as const,
-  phase: (hostId: string, phaseId?: string) =>
-    phaseId === undefined
-      ? (['host', hostId, 'phase'] as const)
-      : (['host', hostId, 'phase', phaseId] as const),
+  changes: (hostId: string) => ['host', hostId, 'changes'] as const,
+  change: (hostId: string, changeId?: string) =>
+    changeId === undefined
+      ? (['host', hostId, 'change'] as const)
+      : (['host', hostId, 'change', changeId] as const),
   runway: (hostId: string) => ['host', hostId, 'runway'] as const,
   needsYou: (hostId: string) => ['host', hostId, 'needs-you'] as const,
   doctor: (hostId: string) => ['host', hostId, 'doctor'] as const,

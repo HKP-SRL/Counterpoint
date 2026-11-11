@@ -1,5 +1,6 @@
-// The owner's accepted sandbox risk (WINDOWS.md #1; STATE.md [Owner]: Keychain reachability
-// accepted, with an explicit recorded doctor exception for the gh credentials row).
+// The owner's accepted sandbox risk (doctor: Owner-recorded accepted risk; owner decision in
+// docs/decisions.md: Keychain reachability accepted, with an explicit recorded doctor exception for
+// the gh credentials row).
 //
 //   counterpoint accept-risk gh-keychain   records it, at a terminal, with a reason and `y`
 //   counterpoint revoke-risk gh-keychain   withdraws it (no terminal needed: it only makes the

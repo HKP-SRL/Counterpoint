@@ -1,5 +1,6 @@
-// The console's approval half (APPR-01, APPR-02, MISN-01): the prepare preview, the runway API,
-// the verified status overlay on the phases API, and the watcher's `approval` / `runway` events.
+// The console's approval half (signed-approvals: Console prepares, terminal signs; runway): the
+// prepare preview, the runway API,
+// the verified status overlay on the changes API, and the watcher's `approval` / `runway` events.
 //
 // A scratch copy of the synthetic host, a scratch home, a throwaway unprotected ed25519 key
 // trusted through the library, and an integrity baseline. Approvals land through the real
@@ -20,7 +21,12 @@ import { type ApprovalViews, createApprovalViews } from '../../src/server/approv
 import { createControlApp, hashToken } from '../../src/server/control.ts';
 import { createHostRuntimes, type HostRuntimes } from '../../src/server/hosts.ts';
 import { startWatcher, type Watcher } from '../../src/server/watcher.ts';
-import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
+import {
+  commitChange,
+  type FixtureRepo,
+  materializeFixtureRepo,
+  SYNTHETIC,
+} from '../helpers/fixture-repo.ts';
 import { makeThrowawayKey, type ThrowawayKey } from '../helpers/keys.ts';
 import { gitIn, makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
@@ -28,36 +34,38 @@ const PORT = 4997;
 const HOST = `127.0.0.1:${PORT}`;
 const ORIGIN = `http://${HOST}`;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
-const CONTEXT_02 = '.planning/phases/02-ready-thing/02-CONTEXT.md';
+const READY = SYNTHETIC.ready;
+const PROPOSAL = `openspec/changes/${READY}/proposal.md`;
+const TASKS = `openspec/changes/${READY}/tasks.md`;
 const CONTROL_TOKEN = 'test-control-token';
 
 interface Prepared {
-  phase: { id: string; name: string; planCount: number };
+  change: { id: string; title: string; taskCount: number };
   baseBranch: string;
   tip: string;
   inputs: { label: string; path: string; kind: string; digest: string }[];
   draft: { state: string };
   gates: { state: string; digest: string | null };
   fingerprint: string;
-  prerequisites: { nonAutonomous: number; total: number; userSetup: { service: string }[] };
+  ownerSteps: string[];
   itemPath: string;
   command: string;
 }
 
 interface RunwayBody {
   count: number;
-  planCount: number;
+  taskCount: number;
   changedCount: number;
   items: {
-    phaseId: string;
-    name: string;
-    planCount: number;
+    changeId: string;
+    title: string;
+    taskCount: number;
     signedAt: string;
     unreadable: boolean;
   }[];
 }
 
-interface PhaseRow {
+interface ChangeRow {
   id: string;
   status: string;
   approval: { state: string; signedAt?: string; commit?: string; reason?: string } | null;
@@ -91,7 +99,7 @@ async function get(path: string, options: { home?: string; approvals?: ApprovalV
 }
 
 async function prepare(
-  phaseId: string,
+  changeId: string,
   options: {
     home?: string;
     approvals?: ApprovalViews;
@@ -102,22 +110,22 @@ async function prepare(
   const headers: Record<string, string> = { host: HOST, 'content-type': 'application/json' };
   if (options.origin !== null) headers.origin = options.origin ?? ORIGIN;
   if (options.withCookie !== false) headers.cookie = cookie;
-  return app(options).request(`http://${HOST}/api/hosts/${hostId}/phases/${phaseId}/approval`, {
+  return app(options).request(`http://${HOST}/api/hosts/${hostId}/changes/${changeId}/approval`, {
     method: 'POST',
     headers,
     body: '{}',
   });
 }
 
-async function phaseRow(
-  phaseId: string,
+async function changeRow(
+  changeId: string,
   options: { approvals?: ApprovalViews; home?: string } = {},
 ) {
-  const body = (await (await get(`/api/hosts/${hostId}/phases`, options)).json()) as {
-    phases: PhaseRow[];
+  const body = (await (await get(`/api/hosts/${hostId}/changes`, options)).json()) as {
+    changes: ChangeRow[];
   };
-  const row = body.phases.find((phase) => phase.id === phaseId);
-  if (row === undefined) throw new Error(`no row for ${phaseId}`);
+  const row = body.changes.find((change) => change.id === changeId);
+  if (row === undefined) throw new Error(`no row for ${changeId}`);
   return row;
 }
 
@@ -139,13 +147,13 @@ async function master(): Promise<string> {
   return (await gitIn(repo.root, ['rev-parse', 'refs/heads/master'])).trim();
 }
 
-/** Signs and lands the approval of `phaseId` with the throwaway key (no terminal prompt). */
-async function land(phaseId: string, notify?: () => Promise<void>): Promise<void> {
+/** Signs and lands the approval of `changeId` with the throwaway key (no terminal prompt). */
+async function land(changeId: string, notify?: () => Promise<void>): Promise<void> {
   const err: string[] = [];
   const code = await approveCommand({
     home,
     hostId,
-    phaseId,
+    changeId,
     isTTY: true,
     out: () => {},
     err: (line) => err.push(line),
@@ -205,30 +213,34 @@ afterAll(() => {
   removeScratchDirs();
 });
 
-describe('POST /api/hosts/:hostId/phases/:phaseId/approval (prepare preview)', () => {
+describe('POST /api/hosts/:hostId/changes/:changeId/approval (prepare preview)', () => {
   it('recomputes the statement at the base tip and returns inputs, slots, fingerprint and the command', async () => {
     const before = await master();
-    const res = await prepare('02');
+    const res = await prepare(READY);
     expect(res.status).toBe(200);
     const { prepared } = (await res.json()) as { prepared: Prepared };
-    expect(prepared.phase).toEqual({ id: '02', name: 'Ready Thing', planCount: 2 });
+    expect(prepared.change).toEqual({ id: READY, title: 'Ready thing', taskCount: 4 });
     expect(prepared.baseBranch).toBe('master');
     expect(prepared.tip).toBe(before);
-    expect(prepared.inputs).toHaveLength(6);
+    expect(prepared.inputs).toHaveLength(5);
     for (const input of prepared.inputs) {
       expect(input.digest).toMatch(DIGEST_RE);
       expect(typeof input.label).toBe('string');
       expect(input).not.toHaveProperty('bytes');
     }
-    expect(prepared.inputs.some((input) => input.kind === 'roadmap-section')).toBe(true);
+    expect(prepared.inputs.map((input) => input.kind)).toEqual([
+      'metadata',
+      'design',
+      'proposal',
+      'spec',
+      'tasks',
+    ]);
     expect(prepared.draft).toEqual({ state: 'none' });
     expect(prepared.gates.state).toBe('absent');
     expect(prepared.fingerprint).toMatch(/^[0-9a-f]{12}$/);
-    expect(prepared.prerequisites.nonAutonomous).toBe(1);
-    expect(prepared.prerequisites.total).toBe(2);
-    expect(prepared.prerequisites.userSetup.map((item) => item.service)).toContain('google-oauth');
-    expect(prepared.itemPath).toBe('.counterpoint/approvals/phase-02.json');
-    expect(prepared.command).toBe(`counterpoint approve ${hostId} 02`);
+    expect(prepared.ownerSteps).toEqual(['Owner: create the Supabase project']);
+    expect(prepared.itemPath).toBe(`.counterpoint/approvals/${READY}.json`);
+    expect(prepared.command).toBe(`counterpoint approve ${hostId} ${READY}`);
 
     // Preview only: nothing was written.
     expect(await master()).toBe(before);
@@ -236,34 +248,34 @@ describe('POST /api/hosts/:hostId/phases/:phaseId/approval (prepare preview)', (
   });
 
   it('is deterministic for the same tip', async () => {
-    const a = ((await (await prepare('02')).json()) as { prepared: Prepared }).prepared;
-    const b = ((await (await prepare('02')).json()) as { prepared: Prepared }).prepared;
+    const a = ((await (await prepare(READY)).json()) as { prepared: Prepared }).prepared;
+    const b = ((await (await prepare(READY)).json()) as { prepared: Prepared }).prepared;
     expect(b.fingerprint).toBe(a.fingerprint);
   });
 
   it('is guarded: no Origin → 403, no session → 401', async () => {
-    expect((await prepare('02', { origin: null })).status).toBe(403);
-    expect((await prepare('02', { origin: 'http://evil.example' })).status).toBe(403);
-    expect((await prepare('02', { withCookie: false })).status).toBe(401);
+    expect((await prepare(READY, { origin: null })).status).toBe(403);
+    expect((await prepare(READY, { origin: 'http://evil.example' })).status).toBe(403);
+    expect((await prepare(READY, { withCookie: false })).status).toBe(401);
   });
 
   it('refuses with no trusted key', async () => {
     const other = await otherHome({ trust: false, baseline: 'same' });
-    const res = await prepare('02', other);
+    const res = await prepare(READY, other);
     expect(res.status).toBe(409);
     expect(((await res.json()) as { refused: string }).refused).toBe('no-trusted-key');
   });
 
   it('refuses with no integrity baseline', async () => {
     const other = await otherHome({ trust: true, baseline: 'none' });
-    const res = await prepare('02', other);
+    const res = await prepare(READY, other);
     expect(res.status).toBe(409);
     expect(((await res.json()) as { refused: string }).refused).toBe('no-baseline');
   });
 
   it('refuses when the integrity snapshot changed, listing the changes', async () => {
     const other = await otherHome({ trust: true, baseline: 'other' });
-    const res = await prepare('02', other);
+    const res = await prepare(READY, other);
     expect(res.status).toBe(409);
     const body = (await res.json()) as {
       refused: string;
@@ -274,21 +286,30 @@ describe('POST /api/hosts/:hostId/phases/:phaseId/approval (prepare preview)', (
     expect(JSON.stringify(body)).not.toContain('command');
   });
 
-  it('refuses phases that are not ready, built or unknown', async () => {
-    const notReady = await prepare('03');
-    expect(notReady.status).toBe(409);
-    expect(await notReady.json()).toEqual({ refused: 'not-ready', reason: 'no-context' });
+  it('refuses changes that are not ready, built, unreadable or unknown', async () => {
+    const noProposal = await prepare(SYNTHETIC.noProposal);
+    expect(noProposal.status).toBe(409);
+    expect(await noProposal.json()).toEqual({ refused: 'not-ready', reason: 'no-proposal' });
 
-    const noPlans = await prepare('02.1');
-    expect(noPlans.status).toBe(409);
-    expect(await noPlans.json()).toEqual({ refused: 'not-ready', reason: 'no-plans' });
+    const noTasks = await prepare(SYNTHETIC.noTasks);
+    expect(noTasks.status).toBe(409);
+    expect(await noTasks.json()).toEqual({ refused: 'not-ready', reason: 'no-tasks' });
 
-    const built = await prepare('01');
+    const built = await prepare(SYNTHETIC.built);
     expect(built.status).toBe(409);
     expect(await built.json()).toEqual({ refused: 'built' });
+    expect(await (await prepare(SYNTHETIC.archived)).json()).toEqual({ refused: 'built' });
 
-    expect((await prepare('09')).status).toBe(404);
-    expect((await prepare('2')).status).toBe(400);
+    const broken = await prepare(SYNTHETIC.broken);
+    expect(broken.status).toBe(409);
+    expect(await broken.json()).toMatchObject({
+      refused: 'unreadable',
+      file: `openspec/changes/${SYNTHETIC.broken}/.openspec.yaml`,
+    });
+
+    expect((await prepare('no-such-change')).status).toBe(404);
+    expect((await prepare('Bad_Change')).status).toBe(400);
+    expect((await prepare('archive')).status).toBe(400);
   });
 });
 
@@ -300,7 +321,7 @@ describe('runway, status overlay and live events', () => {
   beforeAll(async () => {
     unsubscribe = bus.subscribe((event) => events.push(event));
     watcher = startWatcher({ runtimes, db, bus, intervalMs: 100, approvals });
-    await get(`/api/hosts/${hostId}/phases`);
+    await get(`/api/hosts/${hostId}/changes`);
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 
@@ -309,11 +330,11 @@ describe('runway, status overlay and live events', () => {
     unsubscribe?.();
   });
 
-  it('starts with an empty runway and phase 02 Ready', async () => {
+  it('starts with an empty runway and the ready change Ready', async () => {
     const body = await runway();
     expect(body.count).toBe(0);
     expect(body.items).toEqual([]);
-    const row = await phaseRow('02');
+    const row = await changeRow(READY);
     expect(row.status).toBe('ready');
     expect(row.approval).toBeNull();
   });
@@ -321,7 +342,7 @@ describe('runway, status overlay and live events', () => {
   it('appends approval and runway events within 3 s of a signed approval landing', async () => {
     events.length = 0;
     const started = Date.now();
-    await land('02');
+    await land(READY);
     await waitFor(
       () =>
         events.some((e) => e.family === 'approval' && e.hostId === hostId) &&
@@ -334,47 +355,55 @@ describe('runway, status overlay and live events', () => {
     expect(runwayEvent?.payload).toEqual({ hostId, count: 1 });
   });
 
-  it('serves runway 1 with the phase row and overlays On runway on the phases API', async () => {
+  it('serves runway 1 with the change row and overlays On runway on the changes API', async () => {
     const body = await runway();
     expect(body.count).toBe(1);
-    expect(body.planCount).toBe(2);
+    expect(body.taskCount).toBe(4);
     expect(body.changedCount).toBe(0);
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({
-      phaseId: '02',
-      name: 'Ready Thing',
-      planCount: 2,
+      changeId: READY,
+      title: 'Ready thing',
+      taskCount: 4,
       unreadable: false,
     });
     expect(Number.isNaN(Date.parse(body.items[0]?.signedAt ?? ''))).toBe(false);
 
-    const row = await phaseRow('02');
+    const row = await changeRow(READY);
     expect(row.status).toBe('on-runway');
     expect(row.approval?.state).toBe('on-runway');
     expect(typeof row.approval?.signedAt).toBe('string');
     expect(row.approval?.commit).toBe(await master());
 
-    const detail = (await (await get(`/api/hosts/${hostId}/phases/02`)).json()) as PhaseRow;
+    const detail = (await (await get(`/api/hosts/${hostId}/changes/${READY}`)).json()) as ChangeRow;
     expect(detail.status).toBe('on-runway');
     expect(detail.approval?.state).toBe('on-runway');
   });
 
-  it('fails closed without a trusted key: the approval is invalid and the phase keeps its base status', async () => {
+  it('fails closed without a trusted key: the approval is invalid and the change keeps its base status', async () => {
     const other = await otherHome({ trust: false, baseline: 'same' });
-    const row = await phaseRow('02', other);
+    const row = await changeRow(READY, other);
     expect(row.status).toBe('ready');
     expect(row.approval).toEqual({ state: 'invalid', reason: 'no-trusted-key' });
   });
 
+  it('stays On runway when a task box is ticked on the base branch', async () => {
+    const bytes = (await import('node:fs')).readFileSync(join(repo.root, TASKS), 'utf8');
+    await commitChange(repo.root, TASKS, bytes.replace('- [ ] 1.1', '- [x] 1.1'));
+    expect((await changeRow(READY)).status).toBe('on-runway');
+    expect((await runway()).count).toBe(1);
+    await commitChange(repo.root, TASKS, bytes);
+  });
+
   it('goes Changed when a signed input changes, and back On runway when it is reverted', async () => {
-    const original = await gitIn(repo.root, ['show', `master:${CONTEXT_02}`]);
-    const bytes = (await import('node:fs')).readFileSync(join(repo.root, CONTEXT_02));
+    const original = await gitIn(repo.root, ['show', `master:${PROPOSAL}`]);
+    const bytes = (await import('node:fs')).readFileSync(join(repo.root, PROPOSAL));
     events.length = 0;
-    await commitChange(repo.root, CONTEXT_02, `${original}\nAn edit after signing.\n`);
+    await commitChange(repo.root, PROPOSAL, `${original}\nAn edit after signing.\n`);
     await waitFor(() => events.some((e) => e.family === 'runway' && e.payload.count === 0), 3000);
     expect(events.some((e) => e.family === 'approval')).toBe(true);
 
-    const row = await phaseRow('02');
+    const row = await changeRow(READY);
     expect(row.status).toBe('changed');
     expect(row.approval?.state).toBe('changed');
     const changed = await runway();
@@ -382,9 +411,9 @@ describe('runway, status overlay and live events', () => {
     expect(changed.changedCount).toBe(1);
 
     events.length = 0;
-    await commitChange(repo.root, CONTEXT_02, bytes);
+    await commitChange(repo.root, PROPOSAL, bytes);
     await waitFor(() => events.some((e) => e.family === 'runway' && e.payload.count === 1), 3000);
-    expect((await phaseRow('02')).status).toBe('on-runway');
+    expect((await changeRow(READY)).status).toBe('on-runway');
     expect((await runway()).count).toBe(1);
   });
 
@@ -437,7 +466,7 @@ describe('runway, status overlay and live events', () => {
     try {
       await slow.tick();
       events.length = 0;
-      await commitChange(repo.root, CONTEXT_02, 'nudged edit\n');
+      await commitChange(repo.root, PROPOSAL, 'nudged edit\n');
       await slow.nudge(hostId);
       expect(events.some((e) => e.family === 'runway' && e.payload.count === 0)).toBe(true);
       expect(events.some((e) => e.family === 'approval')).toBe(true);

@@ -88,7 +88,7 @@ function packageVersion(): string {
   }
 }
 
-/** Resolves the home and its paths; a missing home is refused and nothing is created (D-08). */
+/** Resolves the home and its paths; a missing home is refused and nothing is created. */
 function homeOrExit(): { home: string; paths: HomePaths } {
   try {
     const home = requireHome();
@@ -315,7 +315,7 @@ async function status(): Promise<void> {
   }
 }
 
-/** Creates the home (only the final directory, mode 0700). Its parent must already exist (D-08). */
+/** Creates the home (only the final directory, mode 0700). Its parent must already exist. */
 function init(): void {
   const home = resolveHome();
   try {
@@ -467,13 +467,13 @@ function revokeRisk(risk: string): void {
   exitWith(revokeRiskCommand(home, risk));
 }
 
-async function approve(hostId: string, phaseId: string): Promise<void> {
+async function approve(hostId: string, changeId: string): Promise<void> {
   const { home } = homeOrExit();
   exitWith(
     await approveCommand({
       home,
       hostId,
-      phaseId,
+      changeId,
       isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
     }),
   );
@@ -558,11 +558,11 @@ export function buildProgram(): Command {
   program
     .command('approve')
     .description(
-      'sign a planned phase into the runway with your approval key (asks for its passphrase)',
+      'sign a planned change into the runway with your approval key (asks for its passphrase)',
     )
     .argument('<host>', 'the registered project id')
-    .argument('<phase>', 'the phase id, for example 02 or 01.1')
-    .action((hostId: string, phaseId: string) => approve(hostId, phaseId));
+    .argument('<change>', 'the change name, for example qr-menu-browsing')
+    .action((hostId: string, changeId: string) => approve(hostId, changeId));
 
   program
     .command('__daemon', { hidden: true })

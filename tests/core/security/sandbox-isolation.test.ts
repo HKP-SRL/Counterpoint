@@ -1,4 +1,4 @@
-// The Sandbox isolation settings judge (01-25, replacement 2 for the scrub opt-out): pure, over
+// The Sandbox isolation settings judge (replacement 2 for the scrub opt-out): pure, over
 // in-memory sources. No settings file is read here.
 import { describe, expect, it } from 'vitest';
 import { SandboxIsolationCheck } from '../../../src/core/security/doctor-report.ts';
@@ -12,7 +12,7 @@ import { buildAgentSandboxSettings } from '../../../src/core/security/sandbox-se
 
 const HOME = '/nonexistent-cp-isolation/home';
 
-/** The 01-24 launch profile, built by the production builder (no file is read or written). */
+/** The production launch profile, built by the production builder (no file is read or written). */
 function launchSettings(): Record<string, unknown> {
   const base = '/nonexistent-cp-isolation';
   return buildAgentSandboxSettings({
@@ -100,7 +100,7 @@ const UNSAFE: Record<string, unknown> = {
 };
 
 describe('judgeSandboxIsolation', () => {
-  it('passes the 01-24 launch profile with nothing else present', () => {
+  it('passes the production launch profile with nothing else present', () => {
     const check = judgeSandboxIsolation([launch()], HOME);
     expect(check.result).toBe('pass');
     expect(check.id).toBe('sandbox-isolation');
@@ -364,7 +364,7 @@ describe('the rule matrix: each rule in each source kind', () => {
   }
 });
 
-describe('several sources at once (01-25 Task 2)', () => {
+describe('several sources at once', () => {
   it('names the first finding in source order and keeps each source its own findings', () => {
     const check = judgeSandboxIsolation(
       [

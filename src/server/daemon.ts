@@ -1,4 +1,4 @@
-// The background daemon (D-05, D-06): one per machine, serving every registered host.
+// The background daemon (daemon-lifecycle: One daemon per machine serves every host).
 //
 // Boot order: single-instance lock → token → console HTTP on 127.0.0.1 → control socket. The
 // socket comes up last, so "the socket answers" means the daemon is fully up; liveness is never
@@ -276,7 +276,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const info: DaemonInfo = { pid: process.pid, port: bound, startedAt: new Date().toISOString() };
   writeFileSync(paths.daemonJson, `${JSON.stringify(info)}\n`, { mode: 0o600 });
 
-  // Base-tip polling (D-03): a commit to a host's base branch reaches open consoles within ~2 s.
+  // Base-tip polling (host-planning: Live refresh from the base branch): a commit to a host's base
+  // branch reaches open consoles within ~2 s.
   watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
 
   process.once('SIGTERM', () => void stop('SIGTERM'));

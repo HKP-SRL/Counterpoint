@@ -1,18 +1,19 @@
 // Approval views for the console: each approval's state and the runway, recomputed from git at
-// the host's base tip (RESEARCH Pattern 1, "derive, don't store").
+// the host's base tip (runway: Runway recomputed from git; derive, don't store).
 //
 // The only memory here is an in-process cache keyed by `{hostId}:{tip}:{itemId}:{trusted
 // fingerprint}` (and `{hostId}:{tip}:runway:{fingerprint}` for the runway,
-// `{hostId}:{tip}:needs-you:{fingerprint}` for the Needs You items). It never decides
-// authority: every entry is the output of `approvalState` / `computeRunway` (signature verified
-// against the trusted key, statement parsed strictly, every digest recomputed at that tip), a key
-// changes whenever the tip or the trusted key changes, and the cache starts empty with the daemon
-// (T-01-48). A result is cached only if the base tip did not move while it was computed.
+// `{hostId}:{tip}:needs-you:{fingerprint}` for the Needs You items). It never decides authority:
+// every entry is the output of `approvalState` / `computeRunway` (signature verified against the
+// trusted key, statement parsed strictly, every digest recomputed at that tip), a key changes
+// whenever the tip or the trusted key changes, and the cache starts empty with the daemon (so a
+// forged or stale entry can never outlive a restart). A result is cached only if the base tip did
+// not move while it was computed.
 import { mkdirSync } from 'node:fs';
 import { APPROVALS_DIR } from '../core/approvals/statement.ts';
 import { readTrust, type Trust } from '../core/approvals/trust-store.ts';
 import { homePaths } from '../core/host/home.ts';
-import { approvalItemId, isPhaseId } from '../core/ids.ts';
+import { approvalItemId, isChangeId } from '../core/ids.ts';
 import {
   type ChangedApproval,
   deriveNeedsYou,
@@ -28,15 +29,15 @@ import {
 import type { HostRuntime } from './hosts.ts';
 
 const MAX_ENTRIES = 1_000;
-const APPROVAL_FILE_RE = /^phase-(.+)\.json$/;
+const APPROVAL_FILE_RE = /^(.+)\.json$/;
 
 export interface ApprovalViews {
   /** The trusted key now, or null when none is trusted (or it cannot be used). */
   trust(): Trust | null;
-  /** The state of every approval file present at `tip`, by phase id. */
+  /** The state of every approval file present at `tip`, by change id. */
   states(runtime: HostRuntime, tip: string): Promise<Map<string, ApprovalState>>;
-  /** The state of one phase's approval at the current base tip. */
-  state(runtime: HostRuntime, phaseId: string): Promise<ApprovalState>;
+  /** The state of one change's approval at the current base tip. */
+  state(runtime: HostRuntime, changeId: string): Promise<ApprovalState>;
   /** The runway at the current base tip. */
   runway(runtime: HostRuntime): Promise<Runway>;
   /** The Needs You items at the current base tip. */
@@ -50,7 +51,7 @@ export interface NeedsYouSnapshot {
 }
 
 function emptyRunway(tip: string | null): Runway {
-  return { tip, count: 0, planCount: 0, onRunway: [], changed: [], invalid: [] };
+  return { tip, count: 0, taskCount: 0, onRunway: [], changed: [], invalid: [] };
 }
 
 export function createApprovalViews(options: { home: string }): ApprovalViews {
@@ -120,19 +121,19 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
   const stateAt = (
     runtime: HostRuntime,
     tip: string,
-    phaseId: string,
+    changeId: string,
     key: Trust | null,
   ): Promise<ApprovalState> => {
     const opts = runwayOptions(runtime, key);
     if (opts === null) return Promise.resolve({ state: 'none', tip });
-    const cacheKey = `${runtime.host.id}:${tip}:${approvalItemId(phaseId)}:${key?.fingerprint ?? 'none'}`;
+    const cacheKey = `${runtime.host.id}:${tip}:${approvalItemId(changeId)}:${key?.fingerprint ?? 'none'}`;
     // An unexpected error is reported as invalid (fail closed) but not remembered: the next read
     // tries again instead of pinning a transient failure to this tip.
     return cached(
       cacheKey,
       runtime,
       tip,
-      () => approvalState({ ...opts, phaseId }),
+      () => approvalState({ ...opts, changeId }),
       (state) => !(state.state === 'invalid' && state.reason === 'error'),
     );
   };
@@ -143,21 +144,21 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
     async states(runtime, tip) {
       const key = trust();
       const entries = await runtime.reader.list(tip, APPROVALS_DIR);
-      const phaseIds = entries
+      const changeIds = entries
         .filter((entry) => entry.type === 'blob')
         .map((entry) => APPROVAL_FILE_RE.exec(entry.name)?.[1])
-        .filter((id): id is string => id !== undefined && isPhaseId(id));
+        .filter((id): id is string => id !== undefined && isChangeId(id));
       const result = new Map<string, ApprovalState>();
-      for (const phaseId of phaseIds) {
-        result.set(phaseId, await stateAt(runtime, tip, phaseId, key));
+      for (const changeId of changeIds) {
+        result.set(changeId, await stateAt(runtime, tip, changeId, key));
       }
       return result;
     },
 
-    async state(runtime, phaseId) {
+    async state(runtime, changeId) {
       const tip = await runtime.tip();
       if (tip === null) return { state: 'none', tip: null };
-      return stateAt(runtime, tip, phaseId, trust());
+      return stateAt(runtime, tip, changeId, trust());
     },
 
     async runway(runtime) {
@@ -181,7 +182,7 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
         // A tip that moved in between is caught by `cached`, which then drops this entry.
         if (runway.tip === null) return { tip: null, items: [], changed: [] };
         const view = await runtime.view().catch(() => null);
-        const phases = view?.tip === runway.tip ? view.snapshot?.phases : undefined;
+        const changes = view?.tip === runway.tip ? view.snapshot?.changes : undefined;
         const items = await deriveNeedsYou({
           root: runtime.host.root,
           baseBranch: runtime.host.baseBranch,
@@ -189,7 +190,7 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
           changed: runway.changed,
           reader: runtime.reader,
           adapter,
-          ...(phases === undefined ? {} : { phases }),
+          ...(changes === undefined ? {} : { changes }),
         });
         return { tip: runway.tip, items, changed: runway.changed };
       });

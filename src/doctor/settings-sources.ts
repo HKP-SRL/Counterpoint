@@ -1,5 +1,5 @@
 // Where Claude Code keeps each settings source an agent session loads, and a read-only,
-// fail-closed reader for them (01-25, replacement 2 for the scrub opt-out). The judge is
+// fail-closed reader for them (replacement 2 for the scrub opt-out). The judge is
 // src/core/security/sandbox-isolation.ts.
 //
 // The reader reads only the listed settings paths and writes nothing. It follows symbolic links on

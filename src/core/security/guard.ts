@@ -1,6 +1,7 @@
-// The console's request guard (FOUND-02, D-07).
+// The console's request guard (local-console: Exact Host allowlist; Origin and content checks on
+// writes; Session required for the API; Strict content security policy).
 //
-// WR-01 (carried from the prototype guard): the Host check stops browsers and DNS rebinding, but
+// Carried from the prototype guard's review: the Host check stops browsers and DNS rebinding, but
 // it does NOT stop a client on the LAN — such a client can send any Host header it likes. Only
 // binding the socket to 127.0.0.1 keeps LAN clients out. The Host check is therefore a browser
 // defence layered on top of the bind, never a replacement for it.
@@ -24,7 +25,7 @@ export type PortGetter = () => number;
 /**
  * The console's Content Security Policy. Scripts stay strict (no inline script; the theme
  * bootstrap is an external file). `style-src` allows inline styles because Astryx injects
- * <style> elements at runtime (RESEARCH Item 6 corrects the UI-SPEC's implied strict style-src).
+ * <style> elements at runtime (a strict style-src would break the design system).
  */
 export const CONSOLE_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -50,7 +51,7 @@ function isJson(contentType: string | undefined): boolean {
   return type?.trim().toLowerCase() === 'application/json';
 }
 
-/** Exact Host allowlist: `127.0.0.1:{port}`, else 403. Stops DNS rebinding (T-01-06). */
+/** Exact Host allowlist: `127.0.0.1:{port}`, else 403. Stops DNS rebinding. */
 export function hostGuard(getPort: PortGetter): MiddlewareHandler {
   return async (c, next) => {
     if (c.req.header('host') !== allowedHost(getPort())) return c.json(BLOCKED, 403);
@@ -62,7 +63,7 @@ export function hostGuard(getPort: PortGetter): MiddlewareHandler {
  * For non-GET/HEAD `/api/*`: the Origin must be exactly this console (a missing Origin is
  * rejected), `Sec-Fetch-Site` when present must be `same-origin`, and the body must be JSON
  * (415 otherwise). Runs before the session check, so a cross-site request learns nothing about
- * whether the browser is signed in (T-01-07).
+ * whether the browser is signed in.
  */
 export function mutationGuard(getPort: PortGetter): MiddlewareHandler {
   return async (c, next) => {
@@ -78,7 +79,7 @@ export function mutationGuard(getPort: PortGetter): MiddlewareHandler {
 /**
  * For the SSE stream (a GET): an EventSource normally sends no Origin, so the stream relies on
  * Host + the SameSite=Strict cookie; an Origin or `Sec-Fetch-Site` that is present must still
- * match (T-01-10).
+ * match.
  */
 export function sseGuard(getPort: PortGetter): MiddlewareHandler {
   return async (c, next) => {
@@ -97,7 +98,7 @@ export function sessionGuard(db: Store): MiddlewareHandler {
   };
 }
 
-/** CSP, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, nosniff (T-01-11). */
+/** CSP, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, nosniff. */
 export function securityHeaders(): MiddlewareHandler {
   const standard = secureHeaders({
     referrerPolicy: 'no-referrer',

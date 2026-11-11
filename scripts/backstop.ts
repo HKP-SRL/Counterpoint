@@ -1,22 +1,23 @@
 /// <reference lib="dom" />
 // (playwright-core's published types name DOM element types.)
 //
-// UI-SPEC backstop screenshots (01-15): the heavy-data cases the UI-SPEC held out for a visual
+// Backstop screenshots: the heavy-data cases held out of the automated tests for a visual
 // check, rendered in the real console at 1024 and 360 px wide, in light and dark, for the owner
-// to review at the end of the phase. There is no pixel comparison in Phase 1.
+// to review. There is no pixel comparison yet (that arrives with design-drafts-visual-gate).
 //
 //   node scripts/backstop.ts
 //
-// It builds the console, generates a 50-phase host (tests/helpers/large-host.ts) in scratch
+// It builds the console, generates a 50-change host (tests/helpers/large-host.ts) in scratch
 // directories, starts the daemon from src/cli/main.ts on a free loopback port with a scratch home,
 // signs in with playwright-core driving the system Chrome (CP_CHROME_PATH, or Chrome under
 // /Volumes/Dock/Applications), then writes full-page PNGs to `.tmp/backstop/`:
 //
-//   phases-40          Phases list: 50 rows, the 300-character name (E3 overflow and long-text)
-//   phase-detail-long  Phase 01: long name, 300-character objective, long user_setup, deep paths (E4)
-//   mission-runway-40  Mission after every phase is approved: a 50-row runway list (E1 overflow)
-//   needs-you-50       Needs You after every approval drifted: 50 items (E6 overflow)
-//   change-view-1000   The change view of a 1,000-line diff with a 400-character line (E7 overflow)
+//   changes-40          Changes list: 50 rows and the long title (list overflow, long text)
+//   change-detail-long  change-01: long title, 300-character why, long owner steps, deep spec
+//                       path (long text on the detail page)
+//   mission-runway-40   Mission after every change is approved: a 50-row runway list
+//   needs-you-50        Needs You after every approval drifted: 50 items
+//   drift-view-1000     The drift view of a 1,000-line diff with a 400-character line
 //
 // Scratch repos, homes and keys live under the repo's `.tmp/` (or CP_TEST_SCRATCH, which keeps the
 // daemon's socket path short in a deep checkout) and are removed at the end. Nothing here touches
@@ -41,8 +42,8 @@ const THEMES = ['light', 'dark'] as const;
 const VIEWPORT_HEIGHT = 900;
 /** Chrome cannot capture taller than this in one image. */
 const MAX_CAPTURE_HEIGHT = 16_000;
-const PHASES = 50;
-const BIG_DIFF_PHASE = '02';
+const CHANGES = 50;
+const BIG_DIFF_CHANGE = 'change-02';
 
 const LINK_RE =
   /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:\d+\/login\?code=[A-Za-z0-9_-]{43})$/m;
@@ -87,7 +88,8 @@ async function waitFor(what: string, check: () => Promise<boolean>, timeoutMs = 
  * Full-page capture. When the app scrolls inside its own page-level container rather than the
  * document, the viewport is made as tall as that content first, so the whole list is in the
  * image. Only page-level scrollers (at least 80% of the viewport tall) count: a nested scroller
- * such as the 480 px diff block keeps its own height, which is exactly what E7 checks.
+ * such as the 480 px diff block keeps its own height, which is exactly what the long-diff case
+ * checks.
  */
 async function capture(page: Page, file: string, width: number): Promise<void> {
   const height = await page.evaluate((viewportHeight) => {
@@ -121,11 +123,11 @@ async function main(): Promise<void> {
   }
 
   const host = await buildLargeHost({
-    phases: PHASES,
-    longName: true,
-    longObjective: true,
+    changes: CHANGES,
+    longTitle: true,
+    longWhy: true,
     deepPath: true,
-    longUserSetup: true,
+    longOwnerSteps: true,
   });
   const { home, root, hostId } = host;
   let browser: Browser | undefined;
@@ -175,47 +177,47 @@ async function main(): Promise<void> {
       }, theme);
     }
 
-    // Phases: 50 rows including the 300-character name.
-    await shoot('phases-40', `/h/${hostId}/phases`, async () => {
+    // Changes: 50 rows including the long title.
+    await shoot('changes-40', `/h/${hostId}/changes`, async () => {
       await main()
-        .getByRole('link', { name: /^Phase 50:/ })
+        .getByRole('link', { name: /\(change-50\)$/ })
         .waitFor({ timeout: 30_000 });
     });
 
-    // Phase 01: the long objective, user_setup entries and paths.
-    await shoot('phase-detail-long', `/h/${hostId}/phases/01`, async () => {
+    // change-01: the long title, why, owner steps and spec path.
+    await shoot('change-detail-long', `/h/${hostId}/changes/change-01`, async () => {
       await main()
-        .getByRole('heading', { name: /^Phase 01: Long Name/ })
+        .getByRole('heading', { name: /^Long Title/ })
         .waitFor({ timeout: 30_000 });
-      await main().getByLabel('Inputs', { exact: true }).getByRole('table').waitFor();
+      await main().getByLabel('Covered files', { exact: true }).getByRole('table').waitFor();
     });
 
-    // Every phase approved through the library: a 50-row runway.
+    // Every change approved through the library: a 50-row runway.
     await host.approveAll();
     await shoot('mission-runway-40', `/h/${hostId}`, async () => {
       await main()
         .getByLabel('Runway', { exact: true })
-        .getByRole('heading', { name: String(PHASES), exact: true })
+        .getByRole('heading', { name: String(CHANGES), exact: true })
         .waitFor({ timeout: 60_000 });
     });
 
     // Every approval drifted in one commit: 50 Needs You items.
-    await host.driftAll({ bigDiffPhase: BIG_DIFF_PHASE });
+    await host.driftAll({ bigDiffChange: BIG_DIFF_CHANGE });
     const items = () => main().getByRole('list', { name: 'Needs You items' }).getByRole('listitem');
     await page.goto(`${origin}/h/${hostId}/needs-you`);
     await waitFor(
-      `${PHASES} Needs You items`,
-      async () => (await items().count()) === PHASES,
+      `${CHANGES} Needs You items`,
+      async () => (await items().count()) === CHANGES,
       60_000,
     );
     await shoot('needs-you-50', `/h/${hostId}/needs-you`, async () => {
-      await waitFor('the Needs You list', async () => (await items().count()) === PHASES);
+      await waitFor('the Needs You list', async () => (await items().count()) === CHANGES);
     });
 
     // The 1,000-line diff, open in its CodeBlock.
-    await shoot('change-view-1000', `/h/${hostId}/needs-you/phase-${BIG_DIFF_PHASE}`, async () => {
+    await shoot('drift-view-1000', `/h/${hostId}/needs-you/${BIG_DIFF_CHANGE}`, async () => {
       await main()
-        .getByText(`Changed decision 1 for part ${BIG_DIFF_PHASE}.`, { exact: false })
+        .getByText(`Changed decision 1 for part ${BIG_DIFF_CHANGE}.`, { exact: false })
         .first()
         .waitFor({ timeout: 30_000 });
     });

@@ -1,21 +1,21 @@
-// The console's approval API (APPR-01 console half, MISN-01).
+// The console's approval API (signed-approvals: Console prepares, terminal signs; runway).
 //
-//   POST /api/hosts/:hostId/phases/:phaseId/approval   preview only: recompute the statement at
-//        the base tip and return what a signature would bind plus the terminal command. It refuses
-//        exactly when `counterpoint approve` would (no trusted key, no or changed integrity
-//        baseline, phase not ready / built / unreadable / unknown) and never shows a command then.
+//   POST /api/hosts/:hostId/changes/:changeId/approval   preview only: recompute the statement
+//        at the base tip and return what a signature would bind plus the terminal command. It
+//        refuses exactly when `counterpoint approve` would (no trusted key, no or changed integrity
+//        baseline, change not ready / built / unreadable / unknown) and never shows a command then.
 //        It writes nothing: signing happens only in the owner's terminal, which re-derives the
-//        statement itself (RESEARCH Pattern 4). Guarded by the session cookie, the exact Origin
-//        and a JSON body (01-03 mutationGuard + sessionGuard on every /api write, T-01-47).
+//        statement itself (recompute, then print). Guarded by the session cookie, the exact
+//        Origin and a JSON body (mutationGuard + sessionGuard on every /api write, so a
+//        cross-site page cannot trigger it).
 //   GET  /api/hosts/:hostId/runway   the runway recomputed from git at the base tip.
 //
-// The command is assembled only from the validated host and phase ids (RESEARCH Pitfall 8).
+// The command is assembled only from the validated host and change ids (no injected arguments).
 import type { Hono } from 'hono';
 import { checkIntegrity, type IntegrityState } from '../../core/approvals/integrity.ts';
 import { prepareApproval } from '../../core/approvals/prepare.ts';
 import { readTrust } from '../../core/approvals/trust-store.ts';
-import { comparePhaseNumbers } from '../../core/framework/port.ts';
-import { HOST_ID_RE, PHASE_ID_RE } from '../../core/ids.ts';
+import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { HostRuntimes } from '../hosts.ts';
 
@@ -26,24 +26,22 @@ export interface ApprovalRoutesOptions {
   approvals: ApprovalViews;
 }
 
-/** `counterpoint approve {host} {phase}`; both ids have already matched the strict id rules. */
-export function approveCommandLine(hostId: string, phaseId: string): string {
-  if (!HOST_ID_RE.test(hostId) || !PHASE_ID_RE.test(phaseId)) {
+/** `counterpoint approve {host} {change}`; both ids have already matched the strict id rules. */
+export function approveCommandLine(hostId: string, changeId: string): string {
+  if (!HOST_ID_RE.test(hostId) || !isChangeId(changeId)) {
     throw new Error('refusing to build a command from an unvalidated id');
   }
-  return `counterpoint approve ${hostId} ${phaseId}`;
+  return `counterpoint approve ${hostId} ${changeId}`;
 }
-
-const phaseTuple = (phaseId: string): number[] => phaseId.split('.').map(Number);
 
 export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): void {
   const { runtimes, home, approvals } = options;
 
-  app.post('/api/hosts/:hostId/phases/:phaseId/approval', async (c) => {
+  app.post('/api/hosts/:hostId/changes/:changeId/approval', async (c) => {
     const hostId = c.req.param('hostId');
-    const phaseId = c.req.param('phaseId');
+    const changeId = c.req.param('changeId');
     if (!HOST_ID_RE.test(hostId)) return c.json({ error: 'invalid host id' }, 400);
-    if (!PHASE_ID_RE.test(phaseId)) return c.json({ error: 'invalid phase id' }, 400);
+    if (!isChangeId(changeId)) return c.json({ error: 'invalid change id' }, 400);
     const runtime = runtimes.get(hostId);
     if (runtime === null) return c.json({ error: 'not found' }, 404);
 
@@ -73,7 +71,7 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
     const prepared = await prepareApproval({
       hostId,
       baseBranch: runtime.host.baseBranch,
-      phaseId,
+      changeId,
       reader: runtime.reader,
       adapter: runtime.adapter,
     });
@@ -100,7 +98,7 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
     const { statement } = prepared;
     return c.json({
       prepared: {
-        phase: prepared.phase,
+        change: prepared.change,
         baseBranch: runtime.host.baseBranch,
         tip: prepared.tip,
         inputs: prepared.inputs.map((input) => ({
@@ -113,9 +111,9 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
         draft: { state: 'none' },
         gates: { state: statement.gates.state, digest: statement.gates.digest },
         fingerprint: prepared.fingerprint,
-        prerequisites: prepared.prerequisites,
+        ownerSteps: prepared.ownerSteps,
         itemPath: prepared.itemPath,
-        command: approveCommandLine(hostId, phaseId),
+        command: approveCommandLine(hostId, changeId),
       },
     });
   });
@@ -128,26 +126,32 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
 
     const runway = await approvals.runway(runtime);
     const view = await runtime.view().catch(() => null);
+    const changes = view?.snapshot?.changes ?? [];
     const unreadable = new Set(
-      (view?.snapshot?.phases ?? [])
-        .filter((phase) => phase.unreadable !== null)
-        .map((phase) => phase.id),
+      changes
+        .filter((change) => !change.archived && change.unreadable !== null)
+        .map((change) => change.id),
     );
+    // Runway order is build order: the position of each change in the snapshot.
+    const position = new Map(
+      changes.filter((change) => !change.archived).map((change, index) => [change.id, index]),
+    );
+    const at = (id: string) => position.get(id) ?? Number.MAX_SAFE_INTEGER;
     const items = [...runway.onRunway]
-      .sort((a, b) => comparePhaseNumbers(phaseTuple(a.phaseId), phaseTuple(b.phaseId)))
+      .sort((a, b) => at(a.changeId) - at(b.changeId) || (a.changeId < b.changeId ? -1 : 1))
       .map((entry) => ({
-        phaseId: entry.phaseId,
-        name: entry.name ?? '',
-        planCount: entry.planCount,
+        changeId: entry.changeId,
+        title: entry.title ?? entry.changeId,
+        taskCount: entry.taskCount,
         signedAt: entry.signedAt,
         commit: entry.commit,
-        unreadable: unreadable.has(entry.phaseId),
+        unreadable: unreadable.has(entry.changeId),
       }));
     return c.json({
       hostId,
       tip: runway.tip,
       count: runway.count,
-      planCount: runway.planCount,
+      taskCount: runway.taskCount,
       changedCount: runway.changed.length,
       items,
     });

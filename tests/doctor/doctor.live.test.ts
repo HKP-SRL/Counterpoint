@@ -1,6 +1,6 @@
 // One live `counterpoint doctor` run on the owner's real `claude` with the owner's accepted risk
-// recorded (01-20, WINDOWS.md #1, STATE.md [Owner]: Keychain reachability accepted, with an
-// explicit recorded doctor exception for the gh credentials row).
+// recorded (doctor: Owner-recorded accepted risk; owner decision in docs/decisions.md: Keychain
+// reachability accepted, with an explicit recorded doctor exception for the gh credentials row).
 //
 // Gated by COUNTERPOINT_LIVE_PROBE=1: it needs a signed-in `claude` and spends a few cents of
 // haiku. Everything is scratch, under CP_TEST_SCRATCH: the Counterpoint home, a user home with
@@ -14,8 +14,8 @@
 // creates, and it removes it itself.
 //
 // Evidence first: summary.json, doctor-output.txt and doctor.json are written to
-// .tmp/live-doctor/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-01-20-live/ before any
-// assertion. The protected-target facts (01-20 Task 2 step 3, the stop rule) are hard assertions;
+// .tmp/live-doctor/ (gitignored) and copied to $CP_TEST_SCRATCH/evidence-doctor-live/ before any
+// assertion. The protected-target facts (the stop rule) are hard assertions;
 // the facts that step records as findings (the two session checks, the exit code, the accepted-risk
 // line) are soft, so the evidence and every finding are reported either way.
 
@@ -52,8 +52,8 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEBUG_DIR = join(REPO_ROOT, '.tmp', 'live-doctor');
 const SCRATCH_ROOT = process.env.CP_TEST_SCRATCH ?? join(REPO_ROOT, '.tmp');
-const EVIDENCE_DIR = join(SCRATCH_ROOT, 'evidence-01-20-live');
-const REASON = 'Live check: owner-accepted Keychain residual (WINDOWS.md #1)';
+const EVIDENCE_DIR = join(SCRATCH_ROOT, 'evidence-doctor-live');
+const REASON = 'Live check: owner-accepted Keychain residual (the gh-keychain accepted risk)';
 
 const pass = (id: string, label: string, detail = 'ok'): Check => ({
   id,

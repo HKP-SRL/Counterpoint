@@ -1,12 +1,12 @@
-// Needs You (`/h/{hostId}/needs-you`, MISN-02, UI-SPEC "Screens and Layout" Needs You and E6):
-// one inbox of what genuinely needs the owner, newest first as the server serves it. In Phase 1
-// the only kind is "approved version changed": an approved phase whose committed inputs or gate
-// config moved on after signing. Each row links to its change view.
+// Needs You (`/h/{hostId}/needs-you`, needs-you: One inbox; a long list grows with the page):
+// one inbox of what genuinely needs the owner, newest first as the server serves it. So far the
+// only kind is "approved version changed": an approved change whose committed files or gate
+// config moved on after signing. Each row links to its drift view.
 //
 // Nothing here dismisses, snoozes or hides an item: the server recomputes the list from git, and
-// an item disappears only when the phase is re-signed or its inputs return to the signed state.
+// an item disappears only when the change is re-signed or its files return to the signed state.
 // `needs-you` and `approval` events refetch the list (live.ts). The row component takes a `kind`
-// so later phases add parked items, PRs and council cards; the Mission card (01-15) reuses it.
+// so later changes add parked items, PRs and council cards; the Mission card reuses it.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -22,10 +22,10 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { apiGet, hostsQuery, queryKeys } from '../api';
+import { isChangeId } from '../ids';
 
-/** Needs You item ids in Phase 1 (src/server/routes/needs-you.ts). */
-export const NEEDS_YOU_ITEM_ID_RE = /^phase-\d{2}(\.\d+)?$/;
-const PHASE_ID_RE = /^\d{2}(\.\d+)?$/;
+/** Needs You item ids are change ids (src/server/routes/needs-you.ts). */
+export const isNeedsYouItemId = isChangeId;
 
 export type NeedsYouKind = 'approved-version-changed';
 
@@ -34,7 +34,7 @@ export type NeedsYouItem = {
   kind: NeedsYouKind;
   /** The kind's visible name, e.g. `Approved version changed`. */
   kindLabel: string;
-  phaseId: string;
+  changeId: string;
   title: string;
   changedCount: number;
   gatesChanged: boolean;
@@ -58,16 +58,15 @@ const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 /** One item from the server; null for anything that does not have the expected shape. */
 export function parseNeedsYouItem(value: unknown): NeedsYouItem | null {
   if (!isRecord(value)) return null;
-  if (typeof value.id !== 'string' || !NEEDS_YOU_ITEM_ID_RE.test(value.id)) return null;
-  if (typeof value.phaseId !== 'string' || !PHASE_ID_RE.test(value.phaseId)) return null;
+  if (!isNeedsYouItemId(value.id) || !isChangeId(value.changeId)) return null;
   if (value.kind !== 'approved-version-changed') return null;
   if (typeof value.signedAt !== 'string') return null;
   return {
     id: value.id,
     kind: value.kind,
     kindLabel: str(value.kindLabel) || 'Approved version changed',
-    phaseId: value.phaseId,
-    title: str(value.title) || `Phase ${value.phaseId} changed since you signed it`,
+    changeId: value.changeId,
+    title: str(value.title) || `${value.changeId} changed since you signed it`,
     changedCount: count(value.changedCount),
     gatesChanged: value.gatesChanged === true,
     signedAt: value.signedAt,
@@ -167,7 +166,7 @@ export function NeedsYouEmpty({ headingLevel = 2 }: { headingLevel?: 2 | 3 }) {
     <EmptyState
       headingLevel={headingLevel}
       title="Nothing needs you"
-      description="If a phase you approved changes after signing, it will show up here with what changed."
+      description="If a change you approved is edited after signing, it will show up here with what changed."
     />
   );
 }

@@ -1,8 +1,8 @@
-// First-paint theme (FOUND-06). Loaded synchronously from <head> as a same-origin file, because
-// the console's CSP (`script-src 'self'`) forbids inline script. It applies the owner's stored
-// choice before the page paints, so a dark console never flashes light. It reads only
-// localStorage, accepts only the three known values, takes no server data and never throws.
-// Keep the key and values in step with ui/src/theme.ts.
+// First-paint theme (local-console: Light, dark and system themes). Loaded synchronously from
+// <head> as a same-origin file, because the console's CSP (`script-src 'self'`) forbids inline
+// script. It applies the owner's stored choice before the page paints, so a dark console never
+// flashes light. It reads only localStorage, accepts only the three known values, takes no server
+// data and never throws. Keep the key and values in step with ui/src/theme.ts.
 (() => {
   try {
     let stored = null;

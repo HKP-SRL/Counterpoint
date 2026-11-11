@@ -1,17 +1,17 @@
-// The base-tip watcher (D-03). Planning truth is committed content on the base branch, so the
-// watcher polls each registered host's `refs/heads/{base}` (RESEARCH Item 5 chose polling over
-// filesystem events: the source is a ref, not a working tree). When the tip moves it refreshes the
-// host's snapshot and publishes a `phase` event `{ hostId, tip }`; open consoles refetch. A
-// debounced re-read that settles publishes `{ hostId, tip, settled: true }`.
+// The base-tip watcher (host-planning: Live refresh from the base branch). Planning truth is
+// committed content on the base branch, so the watcher polls each registered host's
+// `refs/heads/{base}` (polling, not filesystem events: the source is a ref, not a working tree).
+// When the tip moves it refreshes the host's snapshot and publishes a `planning` event
+// `{ hostId, tip }`; open consoles refetch. A debounced re-read that settles publishes
+// `{ hostId, tip, settled: true }`.
 //
-// Approvals and the runway (MISN-01): on every pass it also recomputes the runway with
-// `computeRunway` (through the approval views: cached per tip and trusted key, so an unchanged tip
-// costs one ref read). It publishes `approval` `{ hostId, tip }` when any approval's state
-// changed and `runway` `{ hostId, count }` when the count changed. The first look at a host only
-// records a baseline. `nudge(hostId)` runs the same check at once (an approval just landed).
-// It then derives the Needs You items and publishes `needs-you` `{ hostId, count }` when they
-// changed (MISN-02).
-// Checks of one host never overlap.
+// Approvals and the runway (runway: Runway recomputed from git): on every pass it also recomputes
+// the runway with `computeRunway` (through the approval views: cached per tip and trusted key, so
+// an unchanged tip costs one ref read). It publishes `approval` `{ hostId, tip }` when any
+// approval's state changed and `runway` `{ hostId, count }` when the count changed. The first look
+// at a host only records a baseline. `nudge(hostId)` runs the same check at once (an approval just
+// landed). It then derives the Needs You items and publishes `needs-you` `{ hostId, count }` when
+// they changed (needs-you: One inbox). Checks of one host never overlap.
 //
 // Errors are logged and never thrown: one unreadable host must not stop the others.
 import type { Store } from '../core/store/db.ts';
@@ -26,7 +26,7 @@ export interface WatcherOptions {
   db: Store;
   bus: EventBus;
   intervalMs?: number;
-  /** Approval views; without them the watcher publishes only `phase` events. */
+  /** Approval views; without them the watcher publishes only `planning` events. */
   approvals?: ApprovalViews;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
@@ -66,7 +66,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
   };
 
   const unsubscribe = runtimes.onSettled((hostId, tip) => {
-    publish(hostId, 'phase', { tip, settled: true });
+    publish(hostId, 'planning', { tip, settled: true });
   });
 
   const checkTip = async (runtime: HostRuntime): Promise<string | null> => {
@@ -82,7 +82,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     await runtime.view().catch((error: unknown) => {
       log('watch-snapshot-failed', { hostId: id, message: (error as Error).message });
     });
-    publish(id, 'phase', { tip });
+    publish(id, 'planning', { tip });
     return tip;
   };
 
@@ -91,9 +91,9 @@ export function startWatcher(options: WatcherOptions): Watcher {
     const { id } = runtime.host;
     const runway = await approvals.runway(runtime);
     const signature = JSON.stringify([
-      runway.onRunway.map((e) => [e.phaseId, 'on-runway', e.commit, e.name, e.planCount]),
-      runway.changed.map((e) => [e.phaseId, 'changed', e.commit, e.name, e.planCount]),
-      runway.invalid.map((e) => [e.phaseId, 'invalid', e.reason]),
+      runway.onRunway.map((e) => [e.changeId, 'on-runway', e.commit, e.title, e.taskCount]),
+      runway.changed.map((e) => [e.changeId, 'changed', e.commit, e.title, e.taskCount]),
+      runway.invalid.map((e) => [e.changeId, 'invalid', e.reason]),
     ]);
     const seen = lastRunway.get(id);
     lastRunway.set(id, { signature, count: runway.count });
@@ -103,8 +103,9 @@ export function startWatcher(options: WatcherOptions): Watcher {
     if (seen.count !== runway.count) publish(id, 'runway', { hostId: id, count: runway.count });
   };
 
-  // Needs You (MISN-02): the items derived from the changed approvals. A `needs-you` event goes
-  // out when the set of items (or what an item lists as changed) differs from the last look.
+  // Needs You (needs-you: One inbox): the items derived from the changed approvals. A `needs-you`
+  // event goes out when the set of items (or what an item lists as changed) differs from the last
+  // look.
   const checkNeedsYou = async (runtime: HostRuntime): Promise<void> => {
     if (approvals === undefined) return;
     const { id } = runtime.host;
@@ -112,7 +113,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     const signature = JSON.stringify([
       items.map((item) => [item.id, item.changedCount, item.gatesChanged, item.unreadable]),
       changed.map((c) => [
-        c.phaseId,
+        c.changeId,
         c.commit,
         c.changes.map((change) => [change.path, change.change, change.nowDigest]),
         c.gatesChange === null ? null : [c.gatesChange.change, c.gatesChange.nowDigest],

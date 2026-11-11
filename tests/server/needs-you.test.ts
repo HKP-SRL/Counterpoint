@@ -1,6 +1,6 @@
-// The Needs You API (MISN-02, APPR-02, D-03, D-04): the inbox, the change view and per-file diffs
-// served from git, the watcher's `needs-you` events, the `needsYou` count in /control/status and
-// the uncommitted-edits hint on phases rows.
+// The Needs You API (needs-you; runway: Uncommitted edits do not change the runway): the inbox, the
+// drift view and per-file diffs served from git, the watcher's `needs-you` events, the `needsYou`
+// count in /control/status and the uncommitted-edits hint on change rows.
 //
 // A scratch copy of the synthetic host, a scratch home, a throwaway unprotected ed25519 key
 // trusted through the library, and an integrity baseline. Approvals land through the real
@@ -22,14 +22,21 @@ import { type ApprovalViews, createApprovalViews } from '../../src/server/approv
 import { createControlApp, hashToken } from '../../src/server/control.ts';
 import { createHostRuntimes, type HostRuntimes } from '../../src/server/hosts.ts';
 import { startWatcher } from '../../src/server/watcher.ts';
-import { commitChange, type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
+import {
+  commitChange,
+  type FixtureRepo,
+  materializeFixtureRepo,
+  SYNTHETIC,
+} from '../helpers/fixture-repo.ts';
 import { makeThrowawayKey } from '../helpers/keys.ts';
 import { gitIn, makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
 const PORT = 4996;
 const HOST = `127.0.0.1:${PORT}`;
-const CONTEXT_02 = '.planning/phases/02-ready-thing/02-CONTEXT.md';
-const PLAN_02 = '.planning/phases/02-ready-thing/02-01-PLAN.md';
+const READY = SYNTHETIC.ready;
+const PROPOSAL = `openspec/changes/${READY}/proposal.md`;
+const METADATA = `openspec/changes/${READY}/.openspec.yaml`;
+const TASKS = `openspec/changes/${READY}/tasks.md`;
 const CONFIG = '.counterpoint/config.yaml';
 const GATES_ROW = `${CONFIG}#gates`;
 const CONTROL_TOKEN = 'test-control-token';
@@ -38,7 +45,7 @@ interface Item {
   id: string;
   kind: string;
   kindLabel: string;
-  phaseId: string;
+  changeId: string;
   title: string;
   changedCount: number;
   gatesChanged: boolean;
@@ -107,12 +114,12 @@ async function diff(itemId: string, path: string): Promise<{ status: number; bod
   return { status: res.status, body: await res.json() };
 }
 
-async function land(phaseId: string): Promise<void> {
+async function land(changeId: string): Promise<void> {
   const err: string[] = [];
   const code = await approveCommand({
     home,
     hostId,
-    phaseId,
+    changeId,
     isTTY: true,
     out: () => {},
     err: (line) => err.push(line),
@@ -132,7 +139,7 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<void> {
 
 beforeAll(async () => {
   repo = await materializeFixtureRepo('synthetic');
-  originalContext = readFileSync(join(repo.root, CONTEXT_02));
+  originalContext = readFileSync(join(repo.root, PROPOSAL));
   home = makeScratchDir('ny-home');
   db = openStore(home);
   bus = new EventBus();
@@ -158,7 +165,7 @@ beforeAll(async () => {
   expect(login.status).toBe(302);
   cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
 
-  await land('02');
+  await land(READY);
 });
 
 afterAll(() => {
@@ -175,69 +182,77 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
   it('lists a changed approval with its change view and diffs, and resolves on re-sign', async () => {
     await commitChange(
       repo.root,
-      CONTEXT_02,
-      Buffer.concat([originalContext, Buffer.from('\nA new decision.\n')]),
+      PROPOSAL,
+      Buffer.concat([originalContext, Buffer.from('\nA new reason.\n')]),
     );
 
     const list = await items();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
-      id: 'phase-02',
+      id: READY,
+      changeId: READY,
       kind: 'approved-version-changed',
       kindLabel: 'Approved version changed',
-      title: 'Phase 02 changed since you signed it',
+      title: 'Ready thing changed since you signed it',
       changedCount: 1,
       gatesChanged: false,
     });
 
-    const view = await itemBody('phase-02');
+    const view = await itemBody(READY);
     expect(view.status).toBe(200);
     const body = view.body as ItemBody;
-    expect(body.item.id).toBe('phase-02');
+    expect(body.item.id).toBe(READY);
     expect(body.lead.baseBranch).toBe('master');
     expect(body.lead.changedCount).toBe(1);
     expect(body.lead.signedBase).toMatch(/^[0-9a-f]{40}$/);
     expect(body.changes).toEqual([
-      expect.objectContaining({ path: CONTEXT_02, change: 'modified', kind: 'context' }),
+      expect.objectContaining({ path: PROPOSAL, change: 'modified', kind: 'proposal' }),
     ]);
-    expect(body.command).toBe(`counterpoint approve ${hostId} 02`);
+    expect(body.command).toBe(`counterpoint approve ${hostId} ${READY}`);
 
-    const fileDiff = await diff('phase-02', CONTEXT_02);
+    const fileDiff = await diff(READY, PROPOSAL);
     expect(fileDiff.status).toBe(200);
     const d = fileDiff.body as { path: string; diff: string; truncated: boolean };
-    expect(d.path).toBe(CONTEXT_02);
+    expect(d.path).toBe(PROPOSAL);
     expect(d.truncated).toBe(false);
-    expect(d.diff).toContain(`diff --git a/${CONTEXT_02} b/${CONTEXT_02}`);
-    expect(d.diff).toContain('+A new decision.');
+    expect(d.diff).toContain(`diff --git a/${PROPOSAL} b/${PROPOSAL}`);
+    expect(d.diff).toContain('+A new reason.');
 
     // Only paths on the item's change list are served.
-    expect((await diff('phase-02', PLAN_02)).status).toBe(400);
-    expect((await diff('phase-02', '/etc/passwd')).status).toBe(400);
-    expect((await get(`/api/hosts/${hostId}/needs-you/phase-02/diff`)).status).toBe(400);
+    expect((await diff(READY, METADATA)).status).toBe(400);
+    expect((await diff(READY, '/etc/passwd')).status).toBe(400);
+    expect((await get(`/api/hosts/${hostId}/needs-you/${READY}/diff`)).status).toBe(400);
 
     // Re-signing the new version resolves the item on its own.
-    await land('02');
+    await land(READY);
     expect(await items()).toEqual([]);
-    const gone = await itemBody('phase-02');
+    const gone = await itemBody(READY);
     expect(gone.status).toBe(404);
     expect(gone.body).toMatchObject({ state: 'gone' });
   });
 
   it('resolves when the inputs are reverted to the signed state', async () => {
-    const signed = readFileSync(join(repo.root, CONTEXT_02));
-    await commitChange(repo.root, CONTEXT_02, Buffer.concat([signed, Buffer.from('\nDrift.\n')]));
+    const signed = readFileSync(join(repo.root, PROPOSAL));
+    await commitChange(repo.root, PROPOSAL, Buffer.concat([signed, Buffer.from('\nDrift.\n')]));
     expect(await items()).toHaveLength(1);
-    await commitChange(repo.root, CONTEXT_02, signed);
+    await commitChange(repo.root, PROPOSAL, signed);
     expect(await items()).toEqual([]);
   });
 
+  it('lists nothing when only task boxes are ticked after signing', async () => {
+    const signed = readFileSync(join(repo.root, TASKS), 'utf8');
+    await commitChange(repo.root, TASKS, signed.replace('- [ ] 2.1', '- [x] 2.1'));
+    expect(await items()).toEqual([]);
+    await commitChange(repo.root, TASKS, signed);
+  });
+
   it('answers 404 gone for an unknown item and 400 for a malformed id', async () => {
-    const unknown = await itemBody('phase-03');
+    const unknown = await itemBody(SYNTHETIC.noTasks);
     expect(unknown.status).toBe(404);
     expect(unknown.body).toMatchObject({ state: 'gone' });
-    expect((await itemBody('bogus')).status).toBe(400);
-    expect((await itemBody('phase-2')).status).toBe(400);
-    expect((await diff('bogus', CONTEXT_02)).status).toBe(400);
+    expect((await itemBody('Bogus_Id')).status).toBe(400);
+    expect((await itemBody('archive')).status).toBe(400);
+    expect((await diff('Bogus_Id', PROPOSAL)).status).toBe(400);
     expect((await get('/api/hosts/Not_A_Host/needs-you')).status).toBe(400);
     expect((await get('/api/hosts/nobody/needs-you')).status).toBe(404);
   });
@@ -246,9 +261,9 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
     await commitChange(repo.root, CONFIG, 'gates:\n  lint: pnpm lint\n');
     const list = await items();
     expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ id: 'phase-02', changedCount: 0, gatesChanged: true });
+    expect(list[0]).toMatchObject({ id: READY, changedCount: 0, gatesChanged: true });
 
-    const view = await itemBody('phase-02');
+    const view = await itemBody(READY);
     expect(view.status).toBe(200);
     const body = view.body as ItemBody;
     expect(body.lead.gatesChanged).toBe(true);
@@ -257,7 +272,7 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
     ]);
 
     const res = await get(
-      `/api/hosts/${hostId}/needs-you/phase-02/diff?path=.counterpoint%2Fconfig.yaml%23gates`,
+      `/api/hosts/${hostId}/needs-you/${READY}/diff?path=.counterpoint%2Fconfig.yaml%23gates`,
     );
     expect(res.status).toBe(200);
     const d = (await res.json()) as { diff: string; truncated: boolean };
@@ -270,34 +285,36 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
   });
 });
 
-describe('uncommitted edits hint on phases rows (D-03)', () => {
+describe('uncommitted edits hint on change rows', () => {
   interface Row {
     id: string;
     status: string;
     uncommittedEdits: boolean;
   }
 
-  async function row(phaseId: string): Promise<Row> {
-    const body = (await (await get(`/api/hosts/${hostId}/phases`)).json()) as { phases: Row[] };
-    const found = body.phases.find((phase) => phase.id === phaseId);
-    if (found === undefined) throw new Error(`no row for ${phaseId}`);
+  async function row(changeId: string): Promise<Row> {
+    const body = (await (await get(`/api/hosts/${hostId}/changes`)).json()) as {
+      changes: Row[];
+    };
+    const found = body.changes.find((change) => change.id === changeId);
+    if (found === undefined) throw new Error(`no row for ${changeId}`);
     return found;
   }
 
-  it('flags an approved phase with an uncommitted edit to an input, and only then', async () => {
-    expect(await row('02')).toMatchObject({ status: 'on-runway', uncommittedEdits: false });
-    const current = readFileSync(join(repo.root, CONTEXT_02));
-    writeFileIn(repo.root, CONTEXT_02, Buffer.concat([current, Buffer.from('\nlocal only\n')]));
+  it('flags an approved change with an uncommitted edit to a file it covers, and only then', async () => {
+    expect(await row(READY)).toMatchObject({ status: 'on-runway', uncommittedEdits: false });
+    const current = readFileSync(join(repo.root, PROPOSAL));
+    writeFileIn(repo.root, PROPOSAL, Buffer.concat([current, Buffer.from('\nlocal only\n')]));
     try {
-      const flagged = await row('02');
+      const flagged = await row(READY);
       // The approval itself is unaffected: still on the runway.
       expect(flagged).toMatchObject({ status: 'on-runway', uncommittedEdits: true });
-      // A phase without an approval never carries the hint.
-      expect((await row('02.1')).uncommittedEdits).toBe(false);
+      // A change without an approval never carries the hint.
+      expect((await row(SYNTHETIC.noTasks)).uncommittedEdits).toBe(false);
     } finally {
-      await gitIn(repo.root, ['checkout', '--', CONTEXT_02]);
+      await gitIn(repo.root, ['checkout', '--', PROPOSAL]);
     }
-    expect((await row('02')).uncommittedEdits).toBe(false);
+    expect((await row(READY)).uncommittedEdits).toBe(false);
   });
 });
 
@@ -309,10 +326,10 @@ describe('needs-you events and the status count', () => {
     try {
       await watcher.tick();
       events.length = 0;
-      const signed = readFileSync(join(repo.root, CONTEXT_02));
+      const signed = readFileSync(join(repo.root, PROPOSAL));
       await commitChange(
         repo.root,
-        CONTEXT_02,
+        PROPOSAL,
         Buffer.concat([signed, Buffer.from('\nWatched drift.\n')]),
       );
       await waitFor(
@@ -343,7 +360,7 @@ describe('needs-you events and the status count', () => {
       expect(status.hosts.find((h) => h.id === hostId)?.needsYou).toBe(1);
 
       events.length = 0;
-      await commitChange(repo.root, CONTEXT_02, signed);
+      await commitChange(repo.root, PROPOSAL, signed);
       await waitFor(
         () => events.some((e) => e.family === 'needs-you' && e.payload.count === 0),
         3000,

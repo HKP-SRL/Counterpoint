@@ -1,4 +1,4 @@
-// A plain-text unified diff of two byte arrays, made by git itself (RESEARCH "Don't Hand-Roll").
+// A plain-text unified diff of two byte arrays, made by git itself, never hand-rolled.
 //
 // The two sides are written to unique 0600 files in a private scratch directory under the
 // Counterpoint home and compared with `git diff --no-index`. External diff drivers and textconv

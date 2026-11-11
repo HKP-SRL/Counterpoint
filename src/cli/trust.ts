@@ -1,5 +1,5 @@
-// Owner setup commands for approvals (APPR-04; CONTEXT discretion "signing key"; owner decision
-// "risky keys + owner baseline").
+// Owner setup commands for approvals (key-trust: Dedicated approval key setup; Key pinned only
+// after terminal confirmation; Host integrity baseline).
 //
 //   counterpoint init-key          prints how to make a dedicated passphrase ed25519 key
 //   counterpoint trust-key {pub}   pins that key for approvals

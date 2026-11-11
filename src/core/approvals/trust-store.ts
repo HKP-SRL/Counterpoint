@@ -1,5 +1,6 @@
-// The owner's trusted signing key (APPR-04), kept under COUNTERPOINT_HOME/trust/ — outside every
-// repository and denied to agent sessions (01-04).
+// The owner's trusted signing key (key-trust: Key pinned only after terminal confirmation), kept
+// under COUNTERPOINT_HOME/trust/ — outside every repository and denied to agent sessions
+// (agent-sandbox: Protected paths are unreadable).
 //
 //   trust/allowed_signers   one line: owner@counterpoint namespaces="git" ssh-ed25519 AAAA…
 //   trust/key.json          { publicKeyPath, privateKeyPath, fingerprint }  (the pinned fingerprint)

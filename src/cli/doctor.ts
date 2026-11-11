@@ -1,8 +1,8 @@
 // `counterpoint doctor [host]`: picks the host, runs every check (src/doctor/run.ts), prints the
 // grouped report, writes hosts/{id}/doctor.json and nudges a running daemon so the console's
 // Trust page refreshes. Exit 0 only when every check passes, the Sandbox isolation settings
-// check (01-25) included, or when the only exception is the owner's accepted risk gh-keychain
-// (01-19), which covers a gh row reached through the Keychain lookup alone.
+// check included, or when the only exception is the owner's accepted risk gh-keychain,
+// which covers a gh row reached through the Keychain lookup alone.
 import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { TrustResult } from '../core/approvals/trust-store.ts';

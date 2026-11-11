@@ -1,5 +1,5 @@
-// Pure theme-preference logic (FOUND-06): parsing the stored value, resolving dark mode, and
-// keyboard movement through the Light / Dark / System options.
+// Pure theme-preference logic (local-console: Light, dark and system themes): parsing the stored
+// value, resolving dark mode, and keyboard movement through the Light / Dark / System options.
 import { describe, expect, it } from 'vitest';
 import {
   isDark,

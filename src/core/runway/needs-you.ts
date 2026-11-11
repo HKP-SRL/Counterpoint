@@ -1,16 +1,17 @@
-// Needs You (MISN-02) for drifted approvals (APPR-02, D-03, D-04).
+// Needs You for drifted approvals (needs-you: Approved version changed; Change view reads like a
+// PR review).
 //
-// An approved phase whose signed inputs or gate config moved on at the base tip leaves the runway
+// An approved change whose signed inputs or gate config moved on at the base tip leaves the runway
 // (runway.ts) and becomes one Needs You item of kind `approved-version-changed`. Nothing here is
 // stored: items, their order, the change view, the per-file diffs and the uncommitted-edits hint
-// are all derived from git every time (RESEARCH Pattern 1). An item disappears only when the
-// recomputation shows the phase on the runway again (re-signed, or inputs reverted) or no longer
+// are all derived from git every time (derive, don't store). An item disappears only when the
+// recomputation shows the change on the runway again (re-signed, or inputs reverted) or no longer
 // approved; nothing dismisses, snoozes or hides one.
 //
 // Core learns which repository files an input comes from only through the framework port
-// (`ApprovalInput.sourcePath`), never from a framework path of its own (ADPT-02). A derived input
-// (one whose bytes are a normalized slice of a shared file) is diffed and compared exactly as the
-// adapter produced it for hashing.
+// (`ApprovalInput.sourcePath`), never from a framework path of its own (host-planning: Framework
+// adapter boundary). A normalized
+// input is diffed and compared exactly as the adapter produced it for hashing.
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { prettyCanonicalJson } from '../approvals/canonical.ts';
@@ -19,22 +20,21 @@ import { COUNTERPOINT_CONFIG_PATH, gatesValue } from '../approvals/gates.ts';
 import type { ApprovalStatement } from '../approvals/statement.ts';
 import {
   type ApprovalInput,
-  comparePhaseNumbers,
+  type ChangeFacts,
+  ChangeNotFoundError,
   type FrameworkAdapter,
+  findChange,
   type GitFileReader,
-  type PhaseFacts,
-  PhaseNotFoundError,
-  parsePhaseNumber,
 } from '../framework/port.ts';
 import { type DiffResult, diffBytes } from '../git/diff.ts';
 import { MAX_BLOB_BYTES } from '../git/reader.ts';
 import { runGit } from '../git/run.ts';
-import { approvalItemId, assertHostId, assertPhaseId } from '../ids.ts';
+import { approvalItemId, assertChangeId, assertHostId } from '../ids.ts';
 import type { GatesChange, InputChange, Runway } from './runway.ts';
 
-/** The only Needs You kind in Phase 1; later phases add parked items, PRs and council cards. */
+/** The only Needs You kind so far; later changes add parked items, PRs and council cards. */
 export const APPROVED_VERSION_CHANGED = 'approved-version-changed';
-/** The kind's visible name (success criterion 5 / APPR-02 wording). */
+/** The kind's visible name (needs-you: Approved version changed). */
 export const APPROVED_VERSION_CHANGED_LABEL = 'Approved version changed';
 
 /** The change-list path of the gate-config row (the gate config is not an input file). */
@@ -53,11 +53,11 @@ const PLUMBING_ENV = {
 export type ChangedApproval = Runway['changed'][number];
 
 export interface NeedsYouItem {
-  /** `phase-{NN}`: the approval item id, also the URL id of the change view. */
+  /** The approval item id (the change id), also the URL id of the drift view. */
   id: string;
   kind: typeof APPROVED_VERSION_CHANGED;
   kindLabel: typeof APPROVED_VERSION_CHANGED_LABEL;
-  phaseId: string;
+  changeId: string;
   title: string;
   /** Changed input files (the gate config is counted separately in `gatesChanged`). */
   changedCount: number;
@@ -66,11 +66,11 @@ export interface NeedsYouItem {
   signedAt: string;
   /** Commit time of the latest base-branch commit touching what changed (ISO 8601, UTC). */
   changedAt: string;
-  /** True when the phase's planning files cannot be read at the tip. */
+  /** True when the change's planning files cannot be read at the tip. */
   unreadable: boolean;
 }
 
-export interface ChangeRow {
+export interface DriftRow {
   /** The input's logical path, or GATES_ROW_PATH for the gate config. */
   path: string;
   label: string;
@@ -81,10 +81,10 @@ export interface ChangeRow {
   nowDigest: string | null;
 }
 
-export interface ChangeView {
+export interface DriftView {
   lead: {
     signedAt: string;
-    /** The base tip the signed statement was prepared at (the diff base, D-04). */
+    /** The base tip the signed statement was prepared at (the diff base). */
     signedBase: string;
     tip: string;
     baseBranch: string;
@@ -92,7 +92,7 @@ export interface ChangeView {
     gatesChanged: boolean;
   };
   /** Changed inputs sorted by path, then the gate-config row when the gates changed. */
-  changes: ChangeRow[];
+  changes: DriftRow[];
   /** The one-line re-sign command, built from validated ids only. */
   command: string;
 }
@@ -114,17 +114,17 @@ function assertCommit(commit: string): string {
   return commit;
 }
 
-/** The inputs of `phaseId` at `commit`; [] when the phase is not in the planning truth there. */
+/** The inputs of `changeId` at `commit`; [] when the change is not in the planning truth there. */
 async function inputsAt(
   adapter: FrameworkAdapter,
   reader: GitFileReader,
   commit: string,
-  phaseId: string,
+  changeId: string,
 ): Promise<ApprovalInput[]> {
   try {
-    return await adapter.approvalInputs(reader, commit, phaseId);
+    return await adapter.approvalInputs(reader, commit, changeId);
   } catch (error) {
-    if (error instanceof PhaseNotFoundError) return [];
+    if (error instanceof ChangeNotFoundError) return [];
     throw error;
   }
 }
@@ -162,7 +162,7 @@ async function changedSources(
   const sources = new Set<string>();
   if (approval.changes.length > 0) {
     const atTip = new Map(
-      (await inputsAt(adapter, reader, tip, approval.phaseId)).map((i) => [i.path, i.sourcePath]),
+      (await inputsAt(adapter, reader, tip, approval.changeId)).map((i) => [i.path, i.sourcePath]),
     );
     let atBase: Map<string, string> | null = null;
     for (const change of approval.changes) {
@@ -175,7 +175,7 @@ async function changedSources(
               adapter,
               reader,
               assertCommit(approval.statement.base.commit),
-              approval.phaseId,
+              approval.changeId,
             )
           ).map((i) => [i.path, i.sourcePath]),
         );
@@ -189,8 +189,8 @@ async function changedSources(
 }
 
 /**
- * The Needs You items for the changed approvals at `tip`: one per phase, never merged, newest
- * change first, ties by phase number ascending.
+ * The Needs You items for the changed approvals at `tip`: one per change, never merged, newest
+ * edit first, ties by change id ascending.
  */
 export async function deriveNeedsYou(options: {
   root: string;
@@ -199,57 +199,60 @@ export async function deriveNeedsYou(options: {
   changed: readonly ChangedApproval[];
   reader: GitFileReader;
   adapter: FrameworkAdapter;
-  /** The phases at the tip (for the `Couldn't read` mark); omitted means none is unreadable. */
-  phases?: readonly Pick<PhaseFacts, 'id' | 'unreadable'>[];
+  /** The changes at the tip (for the `Couldn't read` mark and titles); omitted means none. */
+  changes?: readonly Pick<ChangeFacts, 'id' | 'archived' | 'title' | 'unreadable'>[];
 }): Promise<NeedsYouItem[]> {
   const tip = assertCommit(options.tip);
   let tipSeconds: number | null = null;
-  const rows: { item: NeedsYouItem; seconds: number; number: number[] }[] = [];
+  const rows: { item: NeedsYouItem; seconds: number }[] = [];
 
   for (const approval of options.changed) {
-    const phaseId = assertPhaseId(approval.phaseId);
+    const changeId = assertChangeId(approval.changeId);
     const sources = await changedSources({ ...options, tip }, approval);
     let seconds = sources.length > 0 ? await lastTouched(options.root, tip, sources) : null;
     if (seconds === null) {
       tipSeconds ??= await lastTouched(options.root, tip, []);
       seconds = tipSeconds ?? 0;
     }
-    const phase = options.phases?.find((p) => p.id === phaseId);
+    const change = options.changes ? findChange(options.changes, changeId) : undefined;
     rows.push({
       seconds,
-      number: parsePhaseNumber(phaseId) ?? [],
       item: {
-        id: approvalItemId(phaseId),
+        id: approvalItemId(changeId),
         kind: APPROVED_VERSION_CHANGED,
         kindLabel: APPROVED_VERSION_CHANGED_LABEL,
-        phaseId,
-        title: `Phase ${phaseId} changed since you signed it`,
+        changeId,
+        title: `${change?.title ?? approval.title ?? changeId} changed since you signed it`,
         changedCount: approval.changes.length,
         gatesChanged: approval.gatesChange !== null,
         signedAt: approval.signedAt,
         changedAt: new Date(seconds * 1000).toISOString(),
-        unreadable: phase !== undefined && phase.unreadable !== null,
+        unreadable: change !== undefined && change.unreadable !== null,
       },
     });
   }
 
-  rows.sort((a, b) => b.seconds - a.seconds || comparePhaseNumbers(a.number, b.number));
+  rows.sort(
+    (a, b) =>
+      b.seconds - a.seconds ||
+      (a.item.changeId < b.item.changeId ? -1 : a.item.changeId > b.item.changeId ? 1 : 0),
+  );
   return rows.map((row) => row.item);
 }
 
-/** The change view model: lead facts, the change rows and the re-sign command. */
-export function changeView(options: {
-  item: Pick<NeedsYouItem, 'phaseId' | 'signedAt'>;
+/** The drift view model: lead facts, the changed-file rows and the re-sign command. */
+export function driftView(options: {
+  item: Pick<NeedsYouItem, 'changeId' | 'signedAt'>;
   statement: ApprovalStatement;
   changes: readonly InputChange[];
   gatesChange: GatesChange | null;
   tip: string;
   baseBranch: string;
   hostId: string;
-}): ChangeView {
+}): DriftView {
   const hostId = assertHostId(options.hostId);
-  const phaseId = assertPhaseId(options.item.phaseId);
-  const rows: ChangeRow[] = [...options.changes]
+  const changeId = assertChangeId(options.item.changeId);
+  const rows: DriftRow[] = [...options.changes]
     .sort((a, b) => comparePathBytes(a.path, b.path))
     .map((change) => ({
       path: change.path,
@@ -279,19 +282,19 @@ export function changeView(options: {
       gatesChanged: options.gatesChange !== null,
     },
     changes: rows,
-    command: `counterpoint approve ${hostId} ${phaseId}`,
+    command: `counterpoint approve ${hostId} ${changeId}`,
   };
 }
 
-/** The bytes of input `path` of `phaseId` at `commit`, exactly as hashed; null when absent. */
+/** The bytes of input `path` of `changeId` at `commit`, exactly as hashed; null when absent. */
 async function inputBytes(
   adapter: FrameworkAdapter,
   reader: GitFileReader,
   commit: string,
-  phaseId: string,
+  changeId: string,
   path: string,
 ): Promise<Uint8Array | null> {
-  const input = (await inputsAt(adapter, reader, commit, phaseId)).find((i) => i.path === path);
+  const input = (await inputsAt(adapter, reader, commit, changeId)).find((i) => i.path === path);
   return input === undefined ? null : input.bytes;
 }
 
@@ -303,8 +306,9 @@ async function gatesText(reader: GitFileReader, commit: string): Promise<Uint8Ar
 }
 
 /**
- * The diff of one changed path between the content at the approval's recorded base commit and
- * the base tip now (D-04). Refuses, before reading anything, a path not in the change list.
+ * The diff of one changed path between the content at the approval's recorded base commit and the
+ * base tip now (needs-you: Change view reads like a PR review). Refuses, before reading anything, a
+ * path not in the change list.
  */
 export async function changedInputDiff(options: {
   root: string;
@@ -314,12 +318,12 @@ export async function changedInputDiff(options: {
   changes: readonly InputChange[];
   gatesChange: GatesChange | null;
   tip: string;
-  phaseId: string;
+  changeId: string;
   path: string;
   tmpDir: string;
 }): Promise<{ path: string } & DiffResult> {
   const { root, reader, adapter, statement, path, tmpDir } = options;
-  const phaseId = assertPhaseId(options.phaseId);
+  const changeId = assertChangeId(options.changeId);
   const tip = assertCommit(options.tip);
   const base = assertCommit(statement.base.commit);
 
@@ -338,9 +342,9 @@ export async function changedInputDiff(options: {
   const change = options.changes.find((c) => c.path === path);
   if (change === undefined) throw new NotAChangedPathError(path);
   const before =
-    change.change === 'added' ? null : await inputBytes(adapter, reader, base, phaseId, path);
+    change.change === 'added' ? null : await inputBytes(adapter, reader, base, changeId, path);
   const after =
-    change.change === 'removed' ? null : await inputBytes(adapter, reader, tip, phaseId, path);
+    change.change === 'removed' ? null : await inputBytes(adapter, reader, tip, changeId, path);
   const result = await diffBytes({ root, tmpDir, logicalPath: path, before, after });
   return { path, ...result };
 }
@@ -405,23 +409,23 @@ function readWorkingFile(root: string, relPath: string): Uint8Array | null {
 }
 
 /**
- * D-03's soft hint: true when the owner's checkout has uncommitted edits to the files the
- * phase's inputs come from that change an input. Both sides are relative to the checkout's own
- * HEAD. A plain input counts as soon as its file is dirty; a derived input counts only when its
- * recomputed bytes differ (an edit to another phase's slice of a shared file does not). The
- * approval itself is never affected.
+ * The soft hint of runway: Uncommitted edits do not change the runway: true when the owner's
+ * checkout has uncommitted edits to the files the change's inputs come from that change an input.
+ * Both sides are relative to the checkout's own HEAD. A raw input counts as soon as its file is
+ * dirty; a normalized input counts only when its recomputed bytes differ (ticking a task box does
+ * not). The approval itself is never affected.
  */
 export async function uncommittedEditsHint(options: {
   root: string;
   reader: GitFileReader;
   adapter: FrameworkAdapter;
-  phaseId: string;
+  changeId: string;
 }): Promise<boolean> {
   const { root, reader, adapter } = options;
-  const phaseId = assertPhaseId(options.phaseId);
+  const changeId = assertChangeId(options.changeId);
   const head = await reader.resolve('HEAD');
   if (head === null) return false;
-  const inputs = await inputsAt(adapter, reader, head, phaseId);
+  const inputs = await inputsAt(adapter, reader, head, changeId);
   const sources = [...new Set(inputs.map((input) => input.sourcePath))];
   if (sources.length === 0) return false;
 
@@ -436,8 +440,8 @@ export async function uncommittedEditsHint(options: {
 
   for (const input of inputs) {
     if (!dirty.has(input.sourcePath)) continue;
-    if (input.sourcePath === input.path) return true;
-    // A derived input: recompute it with only its source file taken from the working tree.
+    if (input.sourcePath === input.path && input.normalization === null) return true;
+    // A normalized input: recompute it with only its source file taken from the working tree.
     try {
       const working = readWorkingFile(root, input.sourcePath);
       const overlay: GitFileReader = {
@@ -448,12 +452,12 @@ export async function uncommittedEditsHint(options: {
             ? Promise.resolve(working)
             : reader.read(commit, path),
       };
-      const now = (await adapter.approvalInputs(overlay, head, phaseId)).find(
+      const now = (await adapter.approvalInputs(overlay, head, changeId)).find(
         (i) => i.path === input.path,
       );
       if (now === undefined || sha256Digest(now.bytes) !== sha256Digest(input.bytes)) return true;
     } catch {
-      // The edited source cannot be read or no longer yields this phase: that is an edit to it.
+      // The edited source cannot be read or no longer yields this change: that is an edit to it.
       return true;
     }
   }

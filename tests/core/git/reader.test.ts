@@ -1,9 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  comparePhaseNumbers,
-  formatPhaseId,
-  parsePhaseNumber,
-} from '../../../src/core/framework/port.ts';
 import { createGitFileReader, UnsafeTreeEntryError } from '../../../src/core/git/reader.ts';
 import { GitError } from '../../../src/core/git/run.ts';
 import {
@@ -44,42 +39,42 @@ describe('GitFileReader.resolve', () => {
 describe('GitFileReader.list', () => {
   it('lists the direct children of a directory with name, full path, type and mode', async () => {
     const reader = createGitFileReader(repo.root);
-    const entries = await reader.list(repo.commit, '.planning/phases/02-ready-thing');
-    const plan = entries.find((entry) => entry.name === '02-01-PLAN.md');
-    expect(plan).toEqual({
-      name: '02-01-PLAN.md',
-      path: '.planning/phases/02-ready-thing/02-01-PLAN.md',
+    const entries = await reader.list(repo.commit, 'openspec/changes/ready-thing');
+    const proposal = entries.find((entry) => entry.name === 'proposal.md');
+    expect(proposal).toEqual({
+      name: 'proposal.md',
+      path: 'openspec/changes/ready-thing/proposal.md',
       type: 'blob',
       mode: '100644',
       oid: expect.stringMatching(/^[0-9a-f]{40}$/),
     });
     expect(entries.map((entry) => entry.name).sort()).toEqual([
-      '02-01-PLAN.md',
-      '02-02-PLAN.md',
-      '02-05-PERMISSION-MATRIX.md',
-      '02-CONTEXT.md',
-      '02-DISCUSSION-LOG.md',
-      '02-PATTERNS.md',
-      '02-RESEARCH.md',
-      '02-UI-SPEC.md',
+      '.openspec.yaml',
+      'design.md',
+      'proposal.md',
+      'specs',
+      'tasks.md',
     ]);
   });
 
   it('reports subdirectories as trees', async () => {
     const reader = createGitFileReader(repo.root);
-    const entries = await reader.list(repo.commit, '.planning/phases');
+    const entries = await reader.list(repo.commit, 'openspec/changes');
     expect(entries.map((entry) => [entry.name, entry.type])).toEqual([
-      ['01-built-thing', 'tree'],
-      ['02-ready-thing', 'tree'],
-      ['02.1-inserted-thing', 'tree'],
-      ['04-broken-yaml', 'tree'],
+      ['Not_A_Change', 'tree'],
+      ['archive', 'tree'],
+      ['broken-yaml', 'tree'],
+      ['built-thing', 'tree'],
+      ['no-proposal', 'tree'],
+      ['no-tasks', 'tree'],
+      ['ready-thing', 'tree'],
     ]);
-    expect(entries[0]?.path).toBe('.planning/phases/01-built-thing');
+    expect(entries[2]?.path).toBe('openspec/changes/broken-yaml');
   });
 
   it('returns [] for a directory that does not exist', async () => {
     const reader = createGitFileReader(repo.root);
-    expect(await reader.list(repo.commit, '.planning/phases/99-nope')).toEqual([]);
+    expect(await reader.list(repo.commit, 'openspec/changes/no-such-change')).toEqual([]);
   });
 });
 
@@ -103,16 +98,16 @@ describe('GitFileReader.read', () => {
 
   it('returns null for a missing path', async () => {
     const reader = createGitFileReader(repo.root);
-    expect(await reader.read(repo.commit, '.planning/NOPE.md')).toBeNull();
+    expect(await reader.read(repo.commit, 'openspec/NOPE.md')).toBeNull();
   });
 
   it('returns null for a directory', async () => {
     const reader = createGitFileReader(repo.root);
-    expect(await reader.read(repo.commit, '.planning/phases')).toBeNull();
+    expect(await reader.read(repo.commit, 'openspec/changes')).toBeNull();
   });
 
   it('refuses a symlink tree entry (mode 120000)', async () => {
-    const commit = await commitSymlink(repo.root, 'docs/link.md', '../.planning/ROADMAP.md');
+    const commit = await commitSymlink(repo.root, 'docs/link.md', '../openspec/config.yaml');
     const reader = createGitFileReader(repo.root);
     const entries = await reader.list(commit, 'docs');
     expect(entries.find((entry) => entry.name === 'link.md')?.mode).toBe('120000');
@@ -137,15 +132,15 @@ describe('GitFileReader.read', () => {
 
   it('does not treat a path as a pathspec pattern', async () => {
     const reader = createGitFileReader(repo.root);
-    expect(await reader.read(repo.commit, '.planning/ROADMAP.m?')).toBeNull();
-    expect(await reader.read(repo.commit, '.planning/*.md')).toBeNull();
+    expect(await reader.read(repo.commit, 'openspec/config.yam?')).toBeNull();
+    expect(await reader.read(repo.commit, 'openspec/*.yaml')).toBeNull();
   });
 
   it.each([
-    ['a `..` segment', '.planning/../secret.md'],
+    ['a `..` segment', 'openspec/../secret.md'],
     ['a leading `..`', '../outside.md'],
     ['a leading `/`', '/etc/passwd'],
-    ['a NUL byte', '.planning/ROADMAP.md\u0000x'],
+    ['a NUL byte', 'openspec/config.yaml\u0000x'],
     ['an empty path', ''],
   ])('refuses %s before git runs', async (_label, path) => {
     // A reader over a directory that is not a repository: if git ran, it would fail with GitError.
@@ -162,52 +157,17 @@ describe('GitFileReader.read', () => {
 
   it('refuses a commit argument that is not an object id', async () => {
     const reader = createGitFileReader(repo.root);
-    await expect(reader.read('--output=x', '.planning/ROADMAP.md')).rejects.toBeInstanceOf(
+    await expect(reader.read('--output=x', 'openspec/config.yaml')).rejects.toBeInstanceOf(
       UnsafeTreeEntryError,
     );
   });
 
   it('positive control: a real repository path reads fine', async () => {
     const reader = createGitFileReader(repo.root);
-    const roadmap = await reader.read(repo.commit, '.planning/ROADMAP.md');
-    expect(new TextDecoder().decode(roadmap as Uint8Array)).toContain('### Phase 02: Ready Thing');
+    const proposal = await reader.read(repo.commit, 'openspec/changes/ready-thing/proposal.md');
+    expect(new TextDecoder().decode(proposal as Uint8Array)).toContain('# Ready thing');
     // and the symlink fixture really is a symlink in git's eyes
     const out = await gitIn(repo.root, ['ls-tree', 'HEAD', '--', 'docs/link.md']);
     expect(out.startsWith('120000')).toBe(true);
-  });
-});
-
-describe('phase numbers', () => {
-  it('orders [1], [1,1], [1,9], [1,10], [2] as integer tuples', () => {
-    const shuffled = [[2], [1, 10], [1], [1, 9], [1, 1]];
-    expect([...shuffled].sort(comparePhaseNumbers)).toEqual([[1], [1, 1], [1, 9], [1, 10], [2]]);
-  });
-
-  it('compares equal tuples as 0', () => {
-    expect(comparePhaseNumbers([1, 1], [1, 1])).toBe(0);
-  });
-
-  it.each([
-    [[1, 1], '01.1'],
-    [[2], '02'],
-    [[1, 10], '01.10'],
-    [[12], '12'],
-  ])('formatPhaseId(%j) = %s', (number, id) => {
-    expect(formatPhaseId(number)).toBe(id);
-  });
-
-  it.each([
-    ['1', [1]],
-    ['01', [1]],
-    ['1.1', [1, 1]],
-    ['01.1', [1, 1]],
-    ['1.10', [1, 10]],
-    ['1.9', [1, 9]],
-  ])('parsePhaseNumber(%s) = %j', (text, number) => {
-    expect(parsePhaseNumber(text)).toEqual(number);
-  });
-
-  it.each(['', '1.', '.1', 'a', '1.1.1', '-1', '1e2'])('parsePhaseNumber(%j) is null', (text) => {
-    expect(parsePhaseNumber(text)).toBeNull();
   });
 });
