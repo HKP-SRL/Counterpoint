@@ -89,13 +89,6 @@ This was found while building the probe evaluator. `allowWrite: []` confines onl
 
 It has since been fixed: the launch profile grants edits only inside the working folder, adds the outside-write block, and has its own probe row. The plan was to give the builder a narrow extra grant into the git common dir (objects, its own branch ref, its own worktree entry). Spike 3.6 showed that grant cannot be expressed; see "Research spike results" below.
 
-### Build lane (to detail before implementation)
-
-- **Unit of work.** One OpenSpec change = one feature = one branch, worktree and PR. Its tasks are internal steps. Worktrees are siblings outside the repository, locked while a run holds them.
-- **Budget.** The orchestrator enforces the budget from per-message usage and the model's reported context window. A model-obeyed hook is not enough. The handoff is a file committed in the worktree.
-- **Gates.** Process groups, `CI=1`, no TTY, exit code only. The test lock is a SQLite exclusive lock on a well-known file, shared with the owner's existing tooling.
-- **Planning writes.** One queue in the daemon. Builds never write the host's planning files directly. Task ticks and archiving a merged change go through the queue (task ticks do not invalidate approvals; see `signed-approvals`).
-
 ### Research spike results (2026-11-11, claude 2.1.322, macOS)
 
 **3.1 Context window.** The reported window is in the final `result` event only: `modelUsage[model].contextWindow` (1,000,000 for `claude-haiku-5-5`). The `system/init` event names the model but no window. Context fill per request is the latest assistant message's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`; one message id repeats across its content blocks, so de-duplicate by id. Consequence: the first session of a model cannot know its denominator in advance. The orchestrator learns the window per (model, claude version) from any finished session's `result` and stores it; before one is known, a short calibration session (one turn, no tools) provides it. No window size is ever hard-coded.
@@ -110,10 +103,61 @@ It has since been fixed: the launch profile grants edits only inside the working
 
 **3.6 Builder git access.** When a session's working folder is a linked worktree, Claude Code's sandbox lets it write the main repository's whole shared `.git`, except `hooks/` and `config` (docs, "Filesystem isolation"; confirmed live: from a worktree, a sandboxed shell moved `main` and wrote a `refs/replace/` ref). A `denyWrite` beats a narrower `allowWrite` (denying `refs` while allowing the builder's own branch folder refused the builder's own commit too), so a narrow grant cannot be expressed. The current profile's `Edit` deny on the whole git dir becomes an OS write-deny, so today a builder in a worktree can write no git state at all (`index.lock` refused). Decision: **builders never write git state.** The orchestrator, outside the sandbox, commits each session's work with its hardened git runner (and pushes). The doctor probe gains a row run from a linked worktree, proving a sandboxed shell there cannot move a ref.
 
-### Open decisions (before detailing the build lane)
+### Owner decisions on the spikes (2026-11-11)
 
-- **Host instructions and skills (3.5).** Either load the `project` setting source (doctor then also judges the host's committed `.claude/settings.json` at the approved base, with no hooks allowed), or keep `user` only and have Counterpoint pass the host's `CLAUDE.md`/`AGENTS.md` and skills to the session itself.
-- **Gate sandbox mechanism (3.4).** Which tool confines gate commands (for example the sandbox runtime Claude Code itself uses, or a Counterpoint-written Seatbelt profile), and how a gate names the localhost ports it may reach.
+- **Builder sessions load the host's project setting source** (`--setting-sources user,project`), so the host's `CLAUDE.md`/`AGENTS.md`, skills, commands and agents load exactly as when the owner works there. Doctor judges the host's committed `.claude/settings.json` like the user file (no isolation widening), and its `hooks` are part of the host's integrity baseline, shown by `counterpoint trust`. The builder cannot change `.claude/` in its worktree (deny rule, also an OS write-deny).
+- **Gates run under Claude Code's sandbox runtime** (`@anthropic-ai/sandbox-runtime`, `srt`, Apache-2.0, exact-pinned). Its `network.allowedDomains` accepts an IP literal with a port (`127.0.0.1:54321`), routed through its proxy, which is exactly what Cena's HTTP-only test traffic needs. Node clients use the proxy with `NODE_USE_ENV_PROXY=1`.
+
+### Build lane
+
+**Shape.** One run at a time per machine, one change at a time within it (parallel builds are a later change). A run is a queue of runway changes in runway order (dependencies first). The orchestrator lives in the daemon; the CLI only asks it to start, stop and report, over the control socket, whose token agents cannot read.
+
+**State.** New SQLite tables (one migration): `runs` (host, settings, state, stop time, started/ended, end reason), `run_changes` (run, change, order, state `queued | building | green | parked | skipped | stopped`, approval commit, base commit, branch, worktree, attempts, PR URL, preview URL, flags), `agent_sessions` (run change, number, kind `builder | calibration`, model, started/ended, end reason, peak context tokens, usage), `gate_results` (run change, attempt, gate, verdict, reason, exit code, duration, log path, tail), `model_windows` (model, claude version, window, learned at) and `governor` (paused until, reason, last utilization per window). Logs, raw streams, handoffs and reports are files under `hosts/<id>/runs/<run>/`. Events go to the existing `events` outbox, so the console can follow a run later.
+
+**Starting a run.** `counterpoint run <host> [--changes a,b] --until HH:MM --model <m> --budget <percent>`. The daemon refuses unless the last doctor verdict passes (accepted risks only) and every listed change verifies at that moment. The budget is shown as tokens from the learned window ("40% of 1M = 400k tokens"); when the model's window is not known yet, a calibration session (one turn, no tools) learns it first. `counterpoint run stop` ends the run at the next clean point; `counterpoint run status` prints progress.
+
+**Per change.**
+1. Verify the approval again (only runway changes build). Note its signed base commit.
+2. Create the worktree: branch `cp/<change>` from that commit, at `<repo>-worktrees/<change>` (outside the repository), `git worktree lock` while the run holds it. All git calls use the hardened runner.
+3. Run builder sessions until the change is done (see below), then the gates. A failing gate's last lines go into the next session's prompt; after N failed attempts (host config, default 3) the change parks in Needs You and the run moves on.
+4. When every gate passes: run the protected-path check, push the branch, open the PR, attach the preview link, mark the change green.
+
+**Builder sessions.** Launched with the one agent profile (`buildAgentSandboxSettings`, workdir = the worktree, git dir = the host's common dir, so the whole git dir stays write-denied), auto mode, `--setting-sources user,project`, through the governor. The prompt names the change, tells the builder to work through `tasks.md` with the host's own apply workflow, and passes the previous handoff and any failing gate output. Builders write no git state; after every session the orchestrator commits the worktree's changes as one commit (`cp: <change> session <n>`), after:
+- moving the builder's `.cp-handoff.md` and `.cp-assumptions.md` out of the worktree into the run folder (never committed);
+- restoring the change's `tasks.md` and any other planning file the session touched, recording task ticks in SQLite instead (builds never write planning files; ticks reach the host later through the planning-write path).
+
+**Context budget.** The CLI runner gains a streaming mode (`--input-format stream-json`): the orchestrator reads per-message usage as it arrives and computes fill against the learned window. At the budget it sends one user message ("finish the current task, write `.cp-handoff.md`, stop"); at the budget plus a margin (default 15 points of the window) it ends the session itself and writes a minimal handoff from the diff and the task list. A first implementation task proves the streaming input on claude 2.1.322 before the rest builds on it.
+
+**Governor.** One in-daemon gate in front of every agent spawn, across hosts. It reads every session's `rate_limit_event` and error results:
+- `rejected`, or a usage-limit error: pause all lanes until `resetsAt` + 2 minutes (persisted, so a restart keeps the pause).
+- `allowed_warning` with high utilization: let running sessions finish; start new ones only while utilization stays under a configured ceiling.
+- transient API errors: exponential backoff, then retry the session.
+- authentication, credit or spend-limit errors: stop the run, put the error in Needs You.
+
+**Gates.** Defined in the host's `.counterpoint/config.yaml` at the approved base: each gate has a name, a command, a timeout, whether it needs the shared test lock, the localhost ports it may reach, and optionally a test-count pattern for the zero-test guard. Host services (Cena: `supabase start`, `supabase db reset`, the env from `supabase status -o env`) are fixed commands the gate runner runs itself, outside any sandbox, before a gate that needs them; they come from the approved config, never from the worktree. Each gate command runs:
+- under `srt`: writes only the worktree and a temp dir, reads nothing protected (the agent profile's read denies), network only to its listed ports;
+- detached in its own process group with `CI=1`, no TTY and `CP_GATE_RUN=<id>`; on timeout or stop the group is killed and the owner's processes are swept for that tag;
+- with output streamed to `gates/<attempt>/<gate>.log` and the last lines stored with the result. Exit code 0 is the only pass.
+
+**Protected paths.** Diff of the branch against its base: edits to existing test files, the gate config, visual baselines, planning files and the host-listed protected paths are flagged on the change, in the PR body and in the run report. Planning-file edits also keep the PR from being offered for merge.
+
+**Pull requests.** The branch is pushed by a push helper that, for that one call, lets git use the owner's own credentials (`gh` as credential helper, or the SSH agent for SSH remotes); every other git call keeps the clean environment. `gh pr create` opens the PR with a body generated from the change (title, why, task list with ticks), the assumed decisions, the protected-path flags and a gate summary. Preview: the host's own deploy when its PR gets one (read with `gh pr view --json statusCheckRollup`); otherwise the host config's preview command, run under `srt` from the worktree on a free loopback port (from 4174 up).
+
+**Planning writes.** One serialized queue in the daemon that commits one planning write at a time to the host (never into the owner's checkout). This change needs it only for its own bookkeeping path and the PR flag; task ticks and archiving use it from `morning-review-signed-merge`.
+
+**Crash recovery.** At daemon start, any run left `running` is reconciled: process groups and tagged processes from its gates and sessions are killed (pids and tags are stored), a session cut off mid-way gets its worktree changes committed as `cp: <change> session <n> (interrupted)`, and the run resumes from the last handoff unless its stop time has passed.
+
+**Run report.** When a run ends for any reason, a report goes to `runs/<run>/report.md` and the store: merge-ready PRs with preview links, parked changes with their last failing gate, items waiting on the owner, assumed decisions, flags, and why the run ended. `counterpoint run report` prints the latest one.
+
+**Doctor additions.** Three new rows before the first run:
+- **Worktree git access:** the treatment session runs in a temporary linked worktree of the host (removed afterwards) and tries to create a probe ref; it must be refused, and the control (a mirror repo with its own worktree) must succeed.
+- **Project settings:** the host's committed `.claude/settings.json` joins the isolation check as a source.
+- **Gate sandbox:** a probe command under the gate profile must fail to read a protected canary, write outside its folder or reach the console port, and must reach a probe listener on an allowed port.
+
+### Owner steps for the first run
+
+- Review and commit Cena's `.counterpoint/config.yaml` (Counterpoint drafts it: the gates, the Supabase service and the ports).
+- Approve one real Cena change for the first overnight run (task 4.3).
 
 ### Built for Cena, kept open for self-hosting
 

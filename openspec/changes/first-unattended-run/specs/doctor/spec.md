@@ -23,3 +23,14 @@ The probe's files-outside-the-working-folder row SHALL include a Bash write outs
 #### Scenario: Bash write accepted
 - **WHEN** a sandboxed Bash `touch` outside the working folder succeeds in the treatment session
 - **THEN** the row reads Reachable and the probe file is removed
+
+### Requirement: Build-lane probe rows
+Before the first run, doctor SHALL prove three more things live: a sandboxed shell started in a linked worktree of the host cannot create or move a git ref; the host's committed `.claude/settings.json`, which builder sessions load, widens no isolation setting; and a gate command under the gate sandbox cannot read a protected path, write outside its folder or reach the console port, while it can reach a port its gate lists.
+
+#### Scenario: Worktree session moves a ref
+- **WHEN** the treatment shell in a linked worktree of the host creates a probe ref
+- **THEN** the worktree row reads Reachable and doctor does not pass
+
+#### Scenario: Gate reaches the console
+- **WHEN** a probe command under the gate sandbox connects to the console port
+- **THEN** the gate-sandbox row reads Reachable and doctor does not pass
