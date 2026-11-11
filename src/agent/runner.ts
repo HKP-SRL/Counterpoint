@@ -67,7 +67,7 @@ export interface AgentRun {
 export interface AgentRunner {
   run(request: AgentRunRequest): Promise<AgentRun>;
   /** Starts a streaming session (builders). Optional so test doubles can omit it. */
-  start?(request: AgentSessionRequest): AgentSession;
+  start?(request: AgentSessionRequest): Promise<AgentSession>;
   /** The agent CLI's version string, or null when it cannot be read. */
   version?(): Promise<string | null>;
 }
@@ -390,7 +390,7 @@ export class ClaudeCliRunner implements AgentRunner {
     };
   }
 
-  start(request: AgentSessionRequest): AgentSession {
+  async start(request: AgentSessionRequest): Promise<AgentSession> {
     return startSession(this.binary, request);
   }
 

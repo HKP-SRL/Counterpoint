@@ -30,7 +30,7 @@ import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
 import { runSandboxProbe } from '../agent/probe.ts';
 import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
-import { ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
+import { type AgentRunner, ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
 import { printable } from '../cli/trust.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
@@ -85,11 +85,13 @@ export interface ProbeSummary {
 export type DoctorProbe = (input: {
   protectedPaths: ProtectedPaths;
   logDir: string;
+  /** The runner to launch sessions with; the daemon passes one that goes through the governor. */
+  runner?: AgentRunner;
 }) => Promise<ProbeSummary>;
 
 /** The live probe: two headless claude sessions through the production sandbox settings. */
-export const liveSandboxProbe: DoctorProbe = async ({ protectedPaths, logDir }) => {
-  const runner = new ClaudeCliRunner();
+export const liveSandboxProbe: DoctorProbe = async ({ protectedPaths, logDir, runner: given }) => {
+  const runner = given ?? new ClaudeCliRunner();
   const outcome = await runSandboxProbe({ protectedPaths, runner, logDir });
   return {
     targets: outcome.targets,
@@ -109,6 +111,8 @@ export interface RunDoctorInput {
   home: string;
   host: DoctorHost;
   probe?: DoctorProbe;
+  /** Passed to the probe (the daemon's governed runner). */
+  runner?: AgentRunner;
   tools?: () => Promise<Check[]>;
   keyChecks?: (trust: TrustResult) => Promise<Check[]>;
   now?: () => Date;
@@ -298,7 +302,11 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
   // null until the probe ran: the mode check then reads Not checked.
   let agentSession: ProbeSummary['agentSession'] | null = null;
   try {
-    const summary = await (input.probe ?? liveSandboxProbe)({ protectedPaths, logDir });
+    const summary = await (input.probe ?? liveSandboxProbe)({
+      protectedPaths,
+      logDir,
+      ...(input.runner === undefined ? {} : { runner: input.runner }),
+    });
     claudeVersion = summary.claudeVersion;
     agentSession = summary.agentSession;
     const stale = new Map<ProbeTargetId, string[]>();

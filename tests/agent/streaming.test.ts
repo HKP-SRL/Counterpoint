@@ -94,10 +94,12 @@ describe('buildClaudeArgv with streaming input', () => {
 describe('streaming session (fake claude)', () => {
   const runner = new ClaudeCliRunner({ binary: FAKE });
 
-  function start(tag = 'tag-0123456789'): { session: AgentSession; events: KnownStreamEvent[] } {
+  async function start(
+    tag = 'tag-0123456789',
+  ): Promise<{ session: AgentSession; events: KnownStreamEvent[] }> {
     const dir = makeScratchDir('cp-stream');
     const events: KnownStreamEvent[] = [];
-    const session = runner.start({
+    const session = await runner.start({
       argv: [],
       cwd: dir,
       timeoutMs: 20_000,
@@ -113,7 +115,7 @@ describe('streaming session (fake claude)', () => {
   }
 
   it('delivers events live, tags the process and ends when input closes', async () => {
-    const { session, events } = start();
+    const { session, events } = await start();
     session.send('first');
     await waitFor(events, (e) => e.type === 'result');
     session.send('second');
@@ -130,7 +132,7 @@ describe('streaming session (fake claude)', () => {
   it('writes the raw stream to the log as it arrives', async () => {
     const dir = makeScratchDir('cp-stream');
     const log = join(dir, 'raw.jsonl');
-    const session = runner.start({
+    const session = await runner.start({
       argv: [],
       cwd: dir,
       timeoutMs: 20_000,
@@ -145,7 +147,7 @@ describe('streaming session (fake claude)', () => {
   });
 
   it('interrupts a running turn and keeps the session usable', async () => {
-    const { session, events } = start();
+    const { session, events } = await start();
     session.send('SLOW work');
     await waitFor(events, (e) => e.type === 'assistant');
     expect(await session.interrupt()).toBe(true);
@@ -157,7 +159,7 @@ describe('streaming session (fake claude)', () => {
   });
 
   it('lets the current turn finish when input closes mid-turn', async () => {
-    const { session, events } = start();
+    const { session, events } = await start();
     session.send('SLOW work');
     await waitFor(events, (e) => e.type === 'assistant');
     session.endInput();
@@ -170,7 +172,7 @@ describe('streaming session (fake claude)', () => {
   });
 
   it('kills the whole process group, children included', async () => {
-    const { session, events } = start();
+    const { session, events } = await start();
     session.send('CHILD SLOW');
     await waitFor(events, (e) => e.subtype === 'fake_child');
     const childPid = events.find((e) => e.subtype === 'fake_child')?.pid as number;
@@ -193,7 +195,7 @@ describe('streaming session (fake claude)', () => {
   });
 
   it('escalates to SIGKILL when SIGTERM is ignored', async () => {
-    const { session, events } = start();
+    const { session, events } = await start();
     session.send('HANG SLOW');
     await waitFor(events, (e) => e.type === 'assistant');
     session.kill(300);
@@ -203,7 +205,7 @@ describe('streaming session (fake claude)', () => {
 
   it('kills the session at its timeout', async () => {
     const dir = makeScratchDir('cp-stream');
-    const session = runner.start({
+    const session = await runner.start({
       argv: [],
       cwd: dir,
       timeoutMs: 500,
@@ -215,8 +217,8 @@ describe('streaming session (fake claude)', () => {
     expect(end).toMatchObject({ timedOut: true, killed: true });
   });
 
-  it('refuses a malformed process tag', () => {
-    expect(() =>
+  it('refuses a malformed process tag', async () => {
+    await expect(
       runner.start({
         argv: [],
         cwd: '/',
@@ -224,6 +226,6 @@ describe('streaming session (fake claude)', () => {
         rawLogPath: '/dev/null',
         processTag: 'bad tag;rm',
       }),
-    ).toThrow(/tag/);
+    ).rejects.toThrow(/tag/);
   });
 });

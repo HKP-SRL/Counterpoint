@@ -5,6 +5,7 @@
 // which covers a gh row reached through the Keychain lookup alone.
 import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readPause } from '../build/governor.ts';
 import type { TrustResult } from '../core/approvals/trust-store.ts';
 import type { Check } from '../core/security/doctor-report.ts';
 import { reportVerdict } from '../core/security/doctor-report.ts';
@@ -86,6 +87,24 @@ export interface DoctorCommandOptions {
   settingsLocations?: SettingsSourceLocations;
 }
 
+/**
+ * The governor's pause, read from the store (build-runs: Single governor in front of every spawn).
+ * The CLI's probe runs in its own process, so it reads the daemon's persisted pause; a store from
+ * before the build lane, or none at all, has no pause.
+ */
+function currentPause(home: string, now: number): { until: number; reason: string } | null {
+  if (statSync(stateDbPath(home), { throwIfNoEntry: false }) === undefined) return null;
+  let store: ReturnType<typeof openStoreReadOnly> | undefined;
+  try {
+    store = openStoreReadOnly(home);
+    return readPause(store, now);
+  } catch {
+    return null;
+  } finally {
+    store?.close();
+  }
+}
+
 /** Runs doctor for one host. Returns the exit code: 0 only when every check passes. */
 export async function doctorCommand(
   home: string,
@@ -100,6 +119,13 @@ export async function doctorCommand(
     return found.code;
   }
   const { host } = found;
+  const pause = currentPause(home, (options.now ?? (() => new Date()))().getTime());
+  if (pause !== null) {
+    err(
+      `Agent work is paused until ${new Date(pause.until).toLocaleString()} (${printable(pause.reason)}). Doctor's probe starts agent sessions, so it waits for the pause too. Run it again after that time.`,
+    );
+    return 1;
+  }
   out(
     `Checking ${host.id}. The sandbox probe runs two short claude sessions (haiku); this takes about a minute.`,
   );

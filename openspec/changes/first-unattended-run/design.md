@@ -144,6 +144,8 @@ It has since been fixed: the launch profile grants edits only inside the working
 - `allowed_warning` with high utilization: let running sessions finish; start new ones only while utilization stays under a configured ceiling.
 - transient API errors: exponential backoff, then retry the session.
 - authentication, credit or spend-limit errors: stop the run, put the error in Needs You.
+- doctor: a spawn for a host is refused unless that host's last doctor report passes (accepted risks only) **and** was made with the claude version the session would run; probes are exempt (doctor runs them). An auto-updated claude therefore needs one doctor run (console Run doctor) before the next build.
+- The pause lives in the store, so a CLI doctor run (its own process) sees it and refuses to start its probe until the pause ends.
 
 **Gates.** Defined in the host's `.counterpoint/config.yaml` at the approved base: each gate has a name, a command, a timeout, whether it needs the shared test lock, the localhost ports it may reach, and optionally a test-count pattern for the zero-test guard. Host services (Cena: `supabase start`, `supabase db reset`, the env from `supabase status -o env`) are fixed commands the gate runner runs itself, outside any sandbox, before a gate that needs them; they come from the approved config, never from the worktree. Each gate command runs:
 - under `srt`: writes only the worktree and a temp dir, reads nothing protected (the agent profile's read denies), network only to its listed ports;

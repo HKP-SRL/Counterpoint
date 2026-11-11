@@ -56,7 +56,7 @@ describe.skipIf(!LIVE)('streaming session (live claude)', () => {
     const runner = new ClaudeCliRunner();
     if (runner.start === undefined) throw new Error('The CLI runner streams.');
     const tag = `live-${Date.now()}`;
-    const session = runner.start({
+    const session = await runner.start({
       argv,
       cwd: workdir,
       timeoutMs: 180_000,

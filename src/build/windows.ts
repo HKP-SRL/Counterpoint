@@ -100,7 +100,7 @@ export async function calibrateWindow(input: CalibrateInput): Promise<number> {
   });
   const meter = new ContextMeter();
   let resolved: string | null = null;
-  const session = runner.start({
+  const session = await runner.start({
     argv,
     cwd: input.cwd,
     timeoutMs: input.timeoutMs ?? 120_000,

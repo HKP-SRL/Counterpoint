@@ -49,10 +49,10 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 6. Governor
 
-- [ ] 6.1 One governor in front of every agent spawn (probe, calibration, builder), across hosts
-- [ ] 6.2 Pause on `rejected` or a usage-limit error until reset + 2 minutes, persisted across restarts; pace new sessions on `allowed_warning`
+- [x] 6.1 One governor in front of every agent spawn (probe, calibration, builder), across hosts
+- [x] 6.2 Pause on `rejected` or a usage-limit error until reset + 2 minutes, persisted across restarts; pace new sessions on `allowed_warning`
 - [ ] 6.3 Backoff for transient API errors; stop the run on authentication, credit and spend-limit errors, with a Needs You item
-- [ ] 6.4 Refuse every spawn while the last doctor verdict does not pass
+- [x] 6.4 Refuse every spawn while the last doctor verdict does not pass
 
 ## 7. Doctor rows for the build lane
 

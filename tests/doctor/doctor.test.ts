@@ -20,6 +20,7 @@ import {
   type AgentRunRequest,
   sessionModeEvidence,
 } from '../../src/agent/runner.ts';
+import { Governor } from '../../src/build/governor.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import {
@@ -290,6 +291,24 @@ describe('counterpoint doctor', () => {
       '  BLOCKED      Credentials in the shell environment: evidence for credential-env',
     );
     expect(run.out).toContain('Agents are boxed in');
+  });
+
+  it('refuses to start the probe while the governor pauses agent work', async () => {
+    const host = await scratchHost();
+    const db = openStore(host.home);
+    const until = Date.now() + 3_600_000;
+    new Governor({ db, doctorGate: () => ({ ok: true }) }).pause(until, 'usage limit reached');
+    db.close();
+    let probed = false;
+    const run = await runDoctorCommand(host, {
+      probe: async () => {
+        probed = true;
+        throw new Error('must not run');
+      },
+    });
+    expect(run.code).toBe(1);
+    expect(probed).toBe(false);
+    expect(run.err.join('\n')).toMatch(/Agent work is paused until .*usage limit reached/);
   });
 
   it('writes a schema-valid report with mode 0600', async () => {
