@@ -56,7 +56,10 @@ export interface GovernorState {
 }
 
 /** Whether the host's last doctor verdict lets agents spawn. */
-export type DoctorGate = (hostId: string) => { ok: true } | { ok: false; reason: string };
+export type DoctorGate = (hostId: string) =>
+  | { ok: true }
+  /** `rerun`: only the claude version changed, so a doctor run Counterpoint starts itself can clear it. */
+  | { ok: false; reason: string; rerun?: boolean };
 
 export class GovernorRefusal extends Error {
   readonly kind: 'doctor' | 'aborted';

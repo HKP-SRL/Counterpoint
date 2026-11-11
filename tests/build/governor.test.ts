@@ -451,9 +451,13 @@ describe('doctorGate', () => {
     const newer = doctorGate({ home, claudeVersion: () => '2.1.323 (Claude Code)' });
     expect(newer('cena')).toMatchObject({
       ok: false,
+      rerun: true,
       reason: expect.stringMatching(/checked claude 2.1.322.*would run claude 2.1.323/),
     });
     const unknown = doctorGate({ home, claudeVersion: () => null });
-    expect(unknown('cena').ok).toBe(false);
+    expect(unknown('cena')).toMatchObject({ ok: false, rerun: false });
+    // A failing report is never something an automatic rerun is assumed to fix.
+    writeReport(home, { agentMode: undefined });
+    expect(newer('cena')).not.toHaveProperty('rerun');
   });
 });

@@ -40,6 +40,7 @@ export function doctorGate(options: {
       return {
         ok: false,
         reason: `The last doctor run for ${hostId} checked claude ${checked ?? 'unknown'}, but sessions would run claude ${current ?? 'unknown'}. ${fix}`,
+        rerun: current !== null && checked !== null,
       };
     }
     return { ok: true };
