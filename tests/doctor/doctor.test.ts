@@ -13,7 +13,7 @@ import {
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type KeychainPort, runSandboxProbe } from '../../src/agent/probe.ts';
-import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../../src/agent/probe-evaluator.ts';
+import { MATCHER_REVISION } from '../../src/agent/probe-evaluator.ts';
 import {
   type AgentRun,
   type AgentRunner,
@@ -331,9 +331,9 @@ describe('counterpoint doctor', () => {
     const host = await scratchHost();
     await runDoctorCommand(host);
     const { matcherVersion } = readReport(host.home);
-    // Revision 4: the credential-env row, on top of 3's deterministic refusals only.
-    expect(matcherVersion).toBe(`${MATCHER_CLAUDE_VERSION}+r${MATCHER_REVISION}`);
-    expect(matcherVersion.endsWith('+r4')).toBe(true);
+    // Revision 5: refusals judged by protocol fields and outcomes, so no claude version in it.
+    expect(matcherVersion).toBe(`r${MATCHER_REVISION}`);
+    expect(matcherVersion).toBe('r5');
   });
 
   it('names a stale outside-workdir canary in the Files outside the working folder row', async () => {

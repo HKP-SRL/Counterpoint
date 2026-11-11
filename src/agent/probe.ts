@@ -13,7 +13,7 @@
 //   canaries. Every step should succeed. C never receives any grant on a real protected
 //   directory or the real git dir, inherited or added.
 // A target counts as Blocked only if C reached its mirror and T did not reach the real one; that
-// judgement (and the denial-text classifier) lives in probe-evaluator.ts. This module plans,
+// judgement (and the refusal classifier, by protocol fields) lives in probe-evaluator.ts. This module plans,
 // launches, captures, evaluates (through evaluateProbe) and cleans up.
 //
 // The probe never reads a real secret: it targets only files it created, Grep patterns match only

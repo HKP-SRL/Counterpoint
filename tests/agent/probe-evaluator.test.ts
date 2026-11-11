@@ -17,12 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_PERMISSION_MODE } from '../../src/agent/claude-argv.ts';
 import { isCredentialName } from '../../src/agent/env-listing.ts';
 import { type ProbePlan, planProbe } from '../../src/agent/probe.ts';
-import {
-  classifyStep,
-  evaluateProbe,
-  MATCHER_CLAUDE_VERSION,
-  MATCHER_REVISION,
-} from '../../src/agent/probe-evaluator.ts';
+import { classifyStep, evaluateProbe, MATCHER_REVISION } from '../../src/agent/probe-evaluator.ts';
 import { parseStreamJson, type StreamEvent, sessionModeEvidence } from '../../src/agent/runner.ts';
 import {
   judgeAgentMode,
@@ -53,9 +48,9 @@ const LEGACY_PROTECTED_VALUES: Record<string, string> = {
   gh: '22222222222222222222222222222222',
   state: '33333333333333333333333333333333',
 };
-/** "The matching version": the version the matcher was verified against, as claude prints it. */
-const MATCHING_VERSION = `${MATCHER_CLAUDE_VERSION} (Claude Code)`;
-/** "Another version": one the matcher was never verified against. */
+/** The claude version the live pair was recorded on, as claude prints it. */
+const RECORDED_VERSION = '2.1.322 (Claude Code)';
+/** "Another version": one no fixture was recorded on. Since MATCHER_REVISION 5 it reads the same. */
 const OTHER_VERSION = '2.2.0 (Claude Code)';
 
 /** The probe plan of the first live run, rebuilt over the redacted /FIXTURE paths. */
@@ -245,13 +240,77 @@ function bashStream(command: string, result: string, isError: boolean): StreamEv
   ];
 }
 
-describe('MATCHER_CLAUDE_VERSION', () => {
-  it('is the claude version the denial matcher was verified against (re-verified in the nine-row live run)', () => {
-    expect(MATCHER_CLAUDE_VERSION).toBe('2.1.322');
-    // It names exactly the version the refrozen live pair recorded.
-    expect(/\b(\d+\.\d+\.\d+)\b/.exec(LIVE.claudeVersion)?.[1]).toBe(MATCHER_CLAUDE_VERSION);
+/**
+ * A copy of a stream with every claude-worded refusal reworded, as a later claude version might
+ * print it: the result text of every call with a reject decision, its `tool_use_result` and the
+ * `decision_reason` of its permission_denied event. Every protocol field is kept, and so is the
+ * OS sandbox's own `Operation not permitted` (macOS prints it, not claude).
+ */
+function reworded(events: readonly StreamEvent[]): StreamEvent[] {
+  let n = 0;
+  return events.map((event) => {
+    const copy = structuredClone(event) as Record<string, unknown>;
+    if (copy.type === 'system' && copy.subtype === 'permission_denied') {
+      copy.decision_reason = 'Not allowed here (reworded).';
+    }
+    if (copy.type !== 'user' || !Array.isArray(copy.tool_result_meta)) return copy as StreamEvent;
+    const rejected = new Set(
+      (copy.tool_result_meta as Array<Record<string, unknown>>)
+        .filter((m) => (m.permission_decision as { decision?: string })?.decision === 'reject')
+        .map((m) => m.id),
+    );
+    const content = (copy.message as { content?: Array<Record<string, unknown>> }).content;
+    for (const block of content ?? []) {
+      if (block.type !== 'tool_result' || !rejected.has(block.tool_use_id)) continue;
+      n += 1;
+      block.content = `<tool_use_error>Refused by a policy (reworded ${n}).</tool_use_error>`;
+      copy.tool_use_result = `Error: Refused by a policy (reworded ${n}).`;
+    }
+    return copy as StreamEvent;
   });
-});
+}
+
+/**
+ * A copy of a stream whose call `id` carries `reasonType` in its permission decision and its
+ * permission_denied event instead of the recorded one.
+ */
+function withReasonType(name: string, id: string, reasonType: string): StreamEvent[] {
+  return load(name).map((event) => {
+    const copy = structuredClone(event) as Record<string, unknown>;
+    if (copy.type === 'system' && copy.subtype === 'permission_denied' && copy.tool_use_id === id) {
+      copy.decision_reason_type = reasonType;
+    }
+    for (const meta of (copy.tool_result_meta as Array<Record<string, unknown>> | undefined) ??
+      []) {
+      if (meta.id === id)
+        (meta.permission_decision as Record<string, unknown>).reason_type = reasonType;
+    }
+    return copy as StreamEvent;
+  });
+}
+
+/** The id of the `tool` call whose `file_path` or `path` input is `path`. */
+function toolUseIdFor(events: readonly StreamEvent[], tool: string, path: string): string {
+  for (const event of events) {
+    if (event.type !== 'assistant') continue;
+    const content = (event as { message?: { content?: Array<Record<string, unknown>> } }).message
+      ?.content;
+    for (const block of content ?? []) {
+      const input = (block.input ?? {}) as { file_path?: string; path?: string };
+      if (
+        block.type === 'tool_use' &&
+        block.name === tool &&
+        (input.file_path ?? input.path) === path
+      ) {
+        return String(block.id);
+      }
+    }
+  }
+  throw new Error(`${tool} tool_use for ${path} not found`);
+}
+
+/** The ssh Read step of the legacy treatment, refused by a deny rule. */
+const LEGACY_SSH_READ_ID = 'toolu_018wrjpUJVViHjPcCUmoZLGC';
 
 describe('classifyStep', () => {
   const plan = legacyPlan();
@@ -325,10 +384,29 @@ describe('classifyStep', () => {
     ).toBe('denied-mode');
   });
 
-  it('reads an unrecognised refusal as unknown (unknown-message.jsonl)', () => {
+  it('reads a reworded rule refusal with the same protocol fields as denied-rule (unknown-message.jsonl)', () => {
+    // unknown-message.jsonl changes only the text ("restricted by an administrator policy"):
+    // the reject decision, its rule reason type and the permission_denials entry are unchanged.
     expect(
       classifyStep(step(plan, 'treatment', 'signing-key', 'read'), load('unknown-message.jsonl')),
-    ).toBe('unknown');
+    ).toBe('denied-rule');
+  });
+
+  it('reads a reject with an unrecognised reason type as unknown, whatever its text', () => {
+    const events = withReasonType('legacy-treatment.jsonl', LEGACY_SSH_READ_ID, 'policy');
+    expect(classifyStep(step(plan, 'treatment', 'ssh', 'read'), events)).toBe('unknown');
+  });
+
+  it('reads a reject whose permission_denied event names another decider as unknown', () => {
+    // The ssh Grep has a permission_denied event; make it disagree with the rule decision.
+    const grep = step(plan, 'treatment', 'ssh', 'grep');
+    const id = toolUseIdFor(load('legacy-treatment.jsonl'), 'Grep', grep.path as string);
+    const events = load('legacy-treatment.jsonl').map((event) => {
+      const copy = structuredClone(event) as Record<string, unknown>;
+      if (copy.type === 'system' && copy.tool_use_id === id) copy.decision_reason_type = 'mode';
+      return copy as StreamEvent;
+    });
+    expect(classifyStep(grep, events)).toBe('unknown');
   });
 
   it('reads a sandbox "Operation not permitted" on the step path as denied-os', () => {
@@ -374,7 +452,7 @@ describe('classifyStep', () => {
 
   it('reads a rule-family text whose permission decision came from the mode as denied-mode', () => {
     const text = fixtureText('legacy-treatment.jsonl');
-    const id = 'toolu_018wrjpUJVViHjPcCUmoZLGC'; // the ssh Read step
+    const id = LEGACY_SSH_READ_ID;
     const mutated = text
       .split('\n')
       .map((line) => {
@@ -392,7 +470,7 @@ describe('evaluateProbe', () => {
   const plan = legacyPlan();
   const treatment = load('legacy-treatment.jsonl');
   const control = load('legacy-control.jsonl');
-  const options = { claudeVersion: MATCHING_VERSION, leftovers: [] as string[] };
+  const options = { claudeVersion: RECORDED_VERSION, leftovers: [] as string[] };
 
   it('classifies the real live pair: six targets Blocked, gh credentials Reachable (Keychain)', () => {
     const targets = evaluateProbe(plan, treatment, control, options);
@@ -467,9 +545,15 @@ describe('evaluateProbe', () => {
     expect(results(targets).state).toBe('not-checked');
   });
 
-  it('reports Not checked for an unrecognised denial message (unknown-message.jsonl)', () => {
+  it('reads a reworded refusal with the same protocol fields Blocked (unknown-message.jsonl)', () => {
     const targets = evaluateProbe(plan, load('unknown-message.jsonl'), control, options);
-    expect(results(targets)['signing-key']).toBe('not-checked');
+    expect(results(targets)).toEqual(LEGACY_EXPECTED);
+  });
+
+  it('reports Not checked for a reject with an unrecognised reason type', () => {
+    const events = withReasonType('legacy-treatment.jsonl', LEGACY_SSH_READ_ID, 'policy');
+    const targets = evaluateProbe(plan, events, control, options);
+    expect(results(targets)).toEqual({ ...LEGACY_EXPECTED, ssh: 'not-checked' });
   });
 
   it('reports Not checked when the control never reached the mirror canary', () => {
@@ -497,9 +581,13 @@ describe('evaluateProbe', () => {
   });
 
   it('never reads Blocked from the model prose or is_error alone', () => {
-    // Every tool_result says only "Error" with is_error set, and the model claims success.
-    const stripped = treatment.map((event) => {
+    // Every tool_result says only "Error" with is_error set, no refusal record is left (no
+    // decision, no permission_denied event, no permission_denials entry), and the model claims
+    // the sandbox denied every call.
+    const stripped = treatment.flatMap((event) => {
       const copy = structuredClone(event) as Record<string, unknown>;
+      if (copy.type === 'system' && copy.subtype === 'permission_denied') return [];
+      if (copy.type === 'result') copy.permission_denials = [];
       if (copy.type === 'user') {
         const content = (copy.message as { content?: Array<Record<string, unknown>> }).content;
         for (const block of content ?? []) {
@@ -509,8 +597,9 @@ describe('evaluateProbe', () => {
           }
         }
         delete copy.tool_use_result;
+        delete copy.tool_result_meta;
       }
-      return copy as StreamEvent;
+      return [copy as StreamEvent];
     });
     const claim: StreamEvent = {
       type: 'assistant',
@@ -535,43 +624,38 @@ describe('evaluateProbe', () => {
     expect(results(targets).state).toBe('not-checked');
   });
 
-  it('never reports Blocked for another claude version that printed an unknown message', () => {
-    const targets = evaluateProbe(
-      plan,
-      keychainDenied(plan, load('unknown-message.jsonl')),
-      control,
-      {
-        ...options,
-        claudeVersion: '2.2.0 (Claude Code)',
-      },
-    );
-    expect(targets.map((t) => t.result)).not.toContain('blocked');
+  it('reads a reworded refusal with the same protocol fields Blocked on another claude version', () => {
+    for (const claudeVersion of [OTHER_VERSION, null]) {
+      const targets = evaluateProbe(
+        plan,
+        keychainDenied(plan, reworded(load('unknown-message.jsonl'))),
+        control,
+        { ...options, claudeVersion },
+      );
+      const { 'outside-workdir': outside, 'credential-env': env, ...earlier } = results(targets);
+      expect(outside).toBe('not-checked');
+      expect(env).toBe('not-checked');
+      expect(new Set(Object.values(earlier)), String(claudeVersion)).toEqual(new Set(['blocked']));
+    }
   });
 
-  it('never reports Blocked for an unreadable claude version with an unknown message', () => {
-    const targets = evaluateProbe(
-      plan,
-      keychainDenied(plan, load('unknown-message.jsonl')),
-      control,
-      {
+  it('reads the legacy pair the same on any claude version, with every refusal reworded', () => {
+    for (const claudeVersion of [RECORDED_VERSION, OTHER_VERSION, null]) {
+      const targets = evaluateProbe(plan, reworded(treatment), control, {
         ...options,
-        claudeVersion: null,
-      },
-    );
-    expect(targets.map((t) => t.result)).not.toContain('blocked');
+        claudeVersion,
+      });
+      expect(results(targets), String(claudeVersion)).toEqual(LEGACY_EXPECTED);
+    }
   });
 
-  it('still trusts fully recognised streams from another claude version', () => {
-    const targets = evaluateProbe(plan, treatment, control, {
+  it('keeps a reject with an unrecognised reason type Not checked on another claude version', () => {
+    const events = withReasonType('legacy-treatment.jsonl', LEGACY_SSH_READ_ID, 'policy');
+    const targets = evaluateProbe(plan, events, control, {
       ...options,
-      claudeVersion: '2.2.0 (Claude Code)',
+      claudeVersion: OTHER_VERSION,
     });
-    expect(results(targets)).toEqual(LEGACY_EXPECTED);
-  });
-
-  it('with the matching version, an unknown message affects only its own target', () => {
-    const targets = evaluateProbe(plan, load('unknown-message.jsonl'), control, options);
-    expect(results(targets)).toEqual({ ...LEGACY_EXPECTED, 'signing-key': 'not-checked' });
+    expect(results(targets)).toEqual({ ...LEGACY_EXPECTED, ssh: 'not-checked' });
   });
 });
 
@@ -601,7 +685,7 @@ const ASYNC_REASON = 'no approval surface in this session; permission request de
 
 /**
  * A classifier refusal. No live run has recorded one (the live runs recorded classifier accepts
- * only), so this text is invented: the evaluator must read it as an unrecognised reject.
+ * only), so this text is invented; its `classifier` reason type is what the evaluator reads.
  */
 const CLASSIFIER_TEXT = (tool: string) => `Permission to use ${tool} was denied by the classifier.`;
 
@@ -841,8 +925,8 @@ function deniedWrite(
 }
 
 describe('MATCHER_REVISION', () => {
-  it('is 4: the credential-env row (env-shape step, with the owner proxy exception) on top of 3', () => {
-    expect(MATCHER_REVISION).toBe(4);
+  it('is 5: refusals judged by protocol fields and outcomes, never by wording or version', () => {
+    expect(MATCHER_REVISION).toBe(5);
   });
 });
 
@@ -850,7 +934,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
   const plan = legacyPlan();
   const treatment = keychainDenied(plan, load('legacy-treatment.jsonl'));
   const control = withOutside(plan, load('legacy-control.jsonl'), 'control');
-  const base = { claudeVersion: MATCHING_VERSION, leftovers: [] as string[] };
+  const base = { claudeVersion: RECORDED_VERSION, leftovers: [] as string[] };
   const outsideRow = (t: StreamEvent[], c: StreamEvent[], extra: object = {}) =>
     evaluateProbe(plan, t, c, { ...base, treatmentWriteBlock: WRITE_BLOCK, ...extra }).find(
       (row) => row.id === 'outside-workdir',
@@ -909,7 +993,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
     ['reason_type is rule, not other', { reasonType: 'rule' }],
     ['reason_type is mode', { reasonType: 'mode' }],
     ['a permission_denied event gives another reason', { deniedEventReason: 'rule' }],
-    ['the text names another path', { textPath: '/FIXTURE/scratch/home/elsewhere' }],
+    ['reason_type is unrecognised', { reasonType: 'policy', deniedEventReason: 'policy' }],
   ] as Array<[string, OutsideScenario]>)(
     'reads the block shape as not denied-block, and the row Not checked, when %s',
     (_name, scenario) => {
@@ -919,6 +1003,19 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
       expect(outsideRow(events, control).result).toBe('not-checked');
     },
   );
+
+  it('reads a reworded block refusal (another text, same protocol fields) as denied-block', () => {
+    const events = reworded(
+      withOutside(plan, treatment, 'treatment', {
+        refusal: 'block',
+        textPath: '/FIXTURE/scratch/home/elsewhere',
+      }),
+    );
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+    expect(classifyStep(edit, events, undefined, WRITE_BLOCK)).toBe('denied-block');
+    expect(outsideRow(events, control, { claudeVersion: OTHER_VERSION }).result).toBe('blocked');
+  });
 
   it("reads the don't-ask mode denial as denied-mode, and the row Not checked (Blocked under r2)", () => {
     const events = withOutside(plan, treatment, 'treatment');
@@ -936,41 +1033,35 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
     expect(outsideRow(events, control).result).toBe('not-checked');
   });
 
-  it('keeps the other rows Blocked on another claude version when the outside steps are asyncAgent (recognised, so no distrust)', () => {
-    const events = withOutside(plan, treatment, 'treatment', { refusal: 'asyncAgent' });
-    const targets = evaluateProbe(
-      plan,
-      withEnv(plan, events, 'treatment'),
-      withEnv(plan, control, 'control'),
-      {
-        ...base,
-        claudeVersion: OTHER_VERSION,
-        treatmentWriteBlock: WRITE_BLOCK,
-        envScriptIntact: true,
-      },
-    );
-    const r = results(targets);
-    expect(r['outside-workdir']).toBe('not-checked');
-    for (const id of SESSION_PROBE_TARGET_IDS.filter((t) => t !== 'outside-workdir')) {
-      expect(r[id], id).toBe('blocked');
-    }
-  });
+  it.each(['asyncAgent', 'classifier'] as const)(
+    'keeps the other rows Blocked on another claude version when the outside steps are %s rejects',
+    (refusal) => {
+      const events = withOutside(plan, treatment, 'treatment', { refusal });
+      const targets = evaluateProbe(
+        plan,
+        withEnv(plan, events, 'treatment'),
+        withEnv(plan, control, 'control'),
+        {
+          ...base,
+          claudeVersion: OTHER_VERSION,
+          treatmentWriteBlock: WRITE_BLOCK,
+          envScriptIntact: true,
+        },
+      );
+      const r = results(targets);
+      expect(r['outside-workdir']).toBe('not-checked');
+      for (const id of SESSION_PROBE_TARGET_IDS.filter((t) => t !== 'outside-workdir')) {
+        expect(r[id], id).toBe('blocked');
+      }
+    },
+  );
 
-  it('reads a classifier reject (no live shape recorded) as unknown, never Blocked', () => {
+  it('reads a classifier reject (no live shape recorded) as denied-mode, never Blocked', () => {
     const events = withOutside(plan, treatment, 'treatment', { refusal: 'classifier' });
-    const { write } = outsideSteps();
-    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('unknown');
+    const { write, edit } = outsideSteps();
+    expect(classifyStep(write, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
+    expect(classifyStep(edit, events, undefined, WRITE_BLOCK)).toBe('denied-mode');
     expect(outsideRow(events, control).result).toBe('not-checked');
-  });
-
-  it('applies version distrust to a classifier reject on another claude version', () => {
-    const events = withOutside(plan, treatment, 'treatment', { refusal: 'classifier' });
-    const targets = evaluateProbe(plan, events, control, {
-      ...base,
-      claudeVersion: OTHER_VERSION,
-      treatmentWriteBlock: WRITE_BLOCK,
-    });
-    expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['not-checked']));
   });
 
   it('says why a missing Read before Edit proves nothing', () => {
@@ -1148,7 +1239,7 @@ describe('the credential-env row (Task 1 tracer cases)', () => {
   const plan = legacyPlan();
   const evaluate = (t: readonly StreamEvent[], c: readonly StreamEvent[], intact = true) =>
     evaluateProbe(plan, t, c, {
-      claudeVersion: MATCHING_VERSION,
+      claudeVersion: RECORDED_VERSION,
       leftovers: [],
       envScriptIntact: intact,
     });
@@ -1279,7 +1370,7 @@ describe('the credential-env row', () => {
   ) =>
     credentialRow(
       evaluateProbe(plan, t, c, {
-        claudeVersion: extra.claudeVersion ?? MATCHING_VERSION,
+        claudeVersion: extra.claudeVersion ?? RECORDED_VERSION,
         leftovers: [],
         envScriptIntact: 'envScriptIntact' in extra ? extra.envScriptIntact : true,
       }),
@@ -1510,15 +1601,14 @@ describe('the credential-env row', () => {
     }
   });
 
-  it('reads Not checked on another claude version that printed an unrecognised message elsewhere', () => {
-    // The outside Write and Edit refused by an unrecognised classifier reject: unknown.
+  it('reads Blocked on another claude version, whatever refused the other rows elsewhere', () => {
+    // The outside Write and Edit refused by a classifier reject (non-deterministic): only the
+    // outside row is affected; no version rule spills onto this one.
     const treatment = withOutside(plan, tStream(), 'treatment', { refusal: 'classifier' });
     const control = withOutside(plan, cStream(), 'control');
-    const row = evaluate(treatment, control, { claudeVersion: OTHER_VERSION });
-    expect(row.result).toBe('not-checked');
-    expect(row.evidence).toContain(`is not the matcher's ${MATCHER_CLAUDE_VERSION}`);
-    // The same streams on the matcher's version read Blocked.
-    expect(evaluate(treatment, control).result).toBe('blocked');
+    for (const claudeVersion of [OTHER_VERSION, RECORDED_VERSION]) {
+      expect(evaluate(treatment, control, { claudeVersion }).result, claudeVersion).toBe('blocked');
+    }
   });
 });
 
@@ -1655,8 +1745,23 @@ describe('the refrozen live pair', () => {
   const row = (targets: readonly ProbeTarget[], id: ProbeTargetId) =>
     targets.find((t) => t.id === id) as ProbeTarget;
 
-  it('was recorded on the version the matcher names', () => {
-    expect(LIVE.claudeVersion).toBe(MATCHING_VERSION);
+  it('was recorded on claude 2.1.322', () => {
+    expect(LIVE.claudeVersion).toBe(RECORDED_VERSION);
+  });
+
+  it('reads the same matrix on another claude version with every claude-worded refusal reworded', () => {
+    // Rule, block and OS refusals all occur in this pair; only macOS's own text is kept.
+    for (const claudeVersion of [OTHER_VERSION, null]) {
+      const targets = evaluate(reworded(treatment), control, { claudeVersion });
+      expect(results(targets), String(claudeVersion)).toEqual(LIVE_PRINTED);
+      expect(new Set(targets.map((t) => t.trusted)), String(claudeVersion)).toEqual(
+        new Set([true]),
+      );
+    }
+    const all = evaluate(keychainDenied(plan, reworded(treatment)), control, {
+      claudeVersion: OTHER_VERSION,
+    });
+    expect(new Set(all.map((t) => t.result))).toEqual(new Set(['blocked']));
   });
 
   it('evaluates to exactly the matrix the live run printed', () => {
@@ -1897,7 +2002,7 @@ describe('structured evidence on the real streams', () => {
       load('legacy-treatment.jsonl'),
       load('legacy-control.jsonl'),
       {
-        claudeVersion: MATCHING_VERSION,
+        claudeVersion: RECORDED_VERSION,
         leftovers: [],
       },
     );
@@ -1910,7 +2015,7 @@ describe('structured evidence on the real streams', () => {
   it('records the planted ssh canary in leak.jsonl as a file-canary leak', () => {
     const plan = legacyPlan();
     const targets = evaluateProbe(plan, load('leak.jsonl'), load('legacy-control.jsonl'), {
-      claudeVersion: MATCHING_VERSION,
+      claudeVersion: RECORDED_VERSION,
       leftovers: [],
     });
     const ssh = byId(targets, 'ssh');
@@ -1926,7 +2031,7 @@ describe('structured evidence on the real streams', () => {
       plan,
       load('legacy-treatment.jsonl'),
       load('legacy-control.jsonl'),
-      { claudeVersion: MATCHING_VERSION, leftovers },
+      { claudeVersion: RECORDED_VERSION, leftovers },
     );
     const hooks = byId(targets, 'git-hooks');
     expect(hooks.result).toBe('reachable');
@@ -1953,7 +2058,7 @@ describe('structured evidence on the real streams', () => {
       load('legacy-treatment.jsonl'),
       load('legacy-control.jsonl'),
       {
-        claudeVersion: MATCHING_VERSION,
+        claudeVersion: RECORDED_VERSION,
         leftovers: [],
         skippedTargets: ['ssh'],
       },

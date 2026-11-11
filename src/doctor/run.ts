@@ -31,7 +31,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
 import { runSandboxProbe } from '../agent/probe.ts';
-import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
+import { MATCHER_REVISION } from '../agent/probe-evaluator.ts';
 import { runWorktreeGitProbe } from '../agent/probe-worktree.ts';
 import { type AgentRunner, ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
 import { printable } from '../cli/trust.ts';
@@ -440,8 +440,9 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     hostId: host.id,
     checkedAt,
     claudeVersion,
-    // The classifier revision rides in this string; the report schema stays v1.
-    matcherVersion: `${MATCHER_CLAUDE_VERSION}+r${MATCHER_REVISION}`,
+    // The classifier revision rides in this string; the report schema stays v1. Since r5 it names
+    // no claude version: refusals are judged by protocol fields and outcomes, not claude's wording.
+    matcherVersion: `r${MATCHER_REVISION}`,
     tools,
     signingKey,
     integrity,

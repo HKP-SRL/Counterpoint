@@ -45,3 +45,24 @@ The owner SHALL be able to run doctor for a host from the console and see its pr
 #### Scenario: Withdraw a risk from the console
 - **WHEN** the owner withdraws the gh-keychain risk on the Trust page
 - **THEN** the risk is removed and the next doctor verdict no longer applies it
+
+## MODIFIED Requirements
+
+### Requirement: No false pass
+The probe verdict SHALL come only from the session's stream records and the probe's observed outcomes (canary values, files left or changed, the control reaching its mirror), never from the model's prose or Claude Code's wording. A row SHALL read Blocked only for a refusal by a deny rule, the OS sandbox or the outside-folder write block, as the refusal's protocol fields record it (the permission decision and its reason type, the permission-denied event and the session's permission denials), every record agreeing. A refusal whose reason type doctor does not know, a refusal by the permission mode, the classifier or the no-approval-surface fallback, or a skipped step after one retry SHALL read Not checked. No verdict SHALL depend on the Claude Code version.
+
+#### Scenario: Refusal by permission mode only
+- **WHEN** a write is refused only because of the permission mode
+- **THEN** the row reads Not checked
+
+#### Scenario: New Claude Code wording
+- **WHEN** a Claude Code update rewords a denial message but records the same refusal fields
+- **THEN** the row reads as it did before the update, and doctor can pass
+
+#### Scenario: Unknown refusal type
+- **WHEN** a refusal carries a reason type doctor does not know
+- **THEN** the affected row reads Not checked and doctor does not pass
+
+#### Scenario: Real sandbox break on a new version
+- **WHEN** after a Claude Code update a treatment session reaches a protected canary
+- **THEN** that row reads Reachable and doctor does not pass

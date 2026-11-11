@@ -12,23 +12,28 @@
 // (one of our deny rules, the OS sandbox, or the outside-write block) AND the matching control
 // step (same index, tool and operation, against the target's mirror canary) reached it. Anything
 // else, including a skipped step, a refusal by the permission mode, the auto-mode classifier or
-// the no-approval-surface fallback, an unrecognised message and a control session that could not
+// the no-approval-surface fallback, an unrecognised refusal and a control session that could not
 // reach its mirror, is Not checked.
 //
-// Since MATCHER_REVISION 3 (auto mode) no permission-mode, classifier or
-// no-approval-surface refusal counts as denied, for any target: those layers are not
-// deterministic, so a confinement claim never rests on them (the earlier scoped
-// acceptance of mode denials is gone). The outside-write block
-// (`permissions.blockWritesOutsideWorkingDirectories`) counts only for Write and Edit steps, only
-// when the launched treatment settings turned it on (`treatmentWriteBlock`), only for a path
-// outside the treatment's working folder, and only when every record agrees with the refusal
-// recorded live on claude 2.1.321.
+// Since MATCHER_REVISION 5 (owner decision 2026-11-11, task 7.5) no verdict depends on claude's
+// wording or on the claude version. Claude Code updates almost daily, and a new version must not
+// stop a run unless it really behaves differently. A refusal is judged by its protocol fields
+// alone, every record agreeing:
+// - who refused: the `permission_decision` reject and its `reason_type` (`rule` or
+//   `subcommandResults` for our deny rules; `other` for the outside-write block; `mode`,
+//   `classifier` and `asyncAgent` for the non-deterministic deciders, never Blocked; any other
+//   type is unrecognised and reads Not checked);
+// - the `system/permission_denied` event's `decision_reason_type`, when there is one;
+// - the call's entry in `result.permission_denials`.
+// The one text still read is macOS's own `Operation not permitted`, which the OS sandbox gives,
+// not claude. The outcomes need no text: a canary value in the treatment stream, a probe file
+// left or changed outside the working folder, and a control that reached its mirror. So a
+// reworded refusal on another claude version reads exactly as before; only a real change in
+// behaviour (an agent reaching a protected target, or a renamed protocol field) changes a row.
 //
-// The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live on 2.1.319,
-// then on 2.1.321, where the nine-row live run recognised every step of both sessions with the
-// same exact texts, then on 2.1.322 with the outside Bash step added, refrozen 2026-11-11). Update the families together with
-// MATCHER_CLAUDE_VERSION when Claude Code changes its messages; until then another version that
-// prints anything unfamiliar reads Not checked.
+// The outside-write block (`permissions.blockWritesOutsideWorkingDirectories`) counts only for
+// Write and Edit steps, only when the launched treatment settings turned it on
+// (`treatmentWriteBlock`), and only for a path outside the treatment's working folder.
 //
 // The credential-env row (replacement 3 for the scrub opt-out) has no canary. Its env-shape
 // step lists the sandboxed command's environment by name, length, shape and host class, and the
@@ -38,7 +43,7 @@
 //
 // Structured evidence: every row also carries `steps` (each treatment step's classes in
 // both sessions, exactly as classified), `leaks` (which canary or finding reached the treatment)
-// and `trusted` (plans matched, baseline held, no version distrust). This module only reports that
+// and `trusted` (plans matched and the baseline held). This module only reports that
 // evidence: it holds no accepted-risk logic and imports nothing from the accepted-risk record;
 // the verdict layer (src/core/security/doctor-report.ts) decides what an accepted risk covers.
 import {
@@ -65,18 +70,16 @@ import {
 import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
-/** The claude version the denial-text families below were verified against. */
-export const MATCHER_CLAUDE_VERSION = '2.1.322';
-
 /**
- * The classifier revision, recorded in the doctor report's `matcherVersion`
- * (`{MATCHER_CLAUDE_VERSION}+r{MATCHER_REVISION}`). 2: Edit steps and the scoped outside-workdir
- * mode-denial rule. 3: auto mode, where only deterministic refusals count (deny rule, OS
- * sandbox, outside-write block); mode, classifier and no-approval-surface refusals never do.
- * 4: the credential-env row (the env-shape step and its reach rule, with the owner's
- * sandbox-proxy-login exception).
+ * The classifier revision, recorded in the doctor report's `matcherVersion` (`r{MATCHER_REVISION}`).
+ * 2: Edit steps and the scoped outside-workdir mode-denial rule. 3: auto mode, where only
+ * deterministic refusals count (deny rule, OS sandbox, outside-write block); mode, classifier and
+ * no-approval-surface refusals never do. 4: the credential-env row (the env-shape step and its
+ * reach rule, with the owner's sandbox-proxy-login exception). 5: refusals judged by protocol
+ * fields and outcomes only; claude's wording and the claude version decide nothing (the
+ * version-distrust rule is gone).
  */
-export const MATCHER_REVISION = 4;
+export const MATCHER_REVISION = 5;
 
 export type StepClass =
   | 'reached'
@@ -129,37 +132,23 @@ export interface WriteBlockContext {
   workdirs: readonly string[];
 }
 
-// --- Denial-text families (claude 2.1.319, re-verified on 2.1.321 and 2.1.322) ---------------
+// --- Protocol fields -----------------------------------------------------------------------------
 
-/** Mode family: a denial by the permission mode, not by any rule of ours. */
-const MODE_FAMILY_TEXT = "running in don't ask mode";
-/** Rule family, Read and Write tools. */
-const RULE_FILE_TEXT = 'File is in a directory that is denied by your permission settings.';
-/** Rule family, Grep and Read through a symlink: `Permission to read <path> has been denied.` */
-const RULE_READ_RE = /^Permission to read ([\s\S]+) has been denied\.$/;
-/** Rule family, Bash (Read/Edit deny rules applied to the command before the sandbox runs). */
-const RULE_BASH_RE = /^Permission to use Bash with command ([\s\S]+) has been denied\.$/;
-/** OS family: the Seatbelt sandbox refused the syscall (`Operation not permitted`). */
+/** OS family: macOS's own text when the Seatbelt sandbox refuses a syscall. Not claude's wording. */
 const OS_FAMILY_TEXT = 'Operation not permitted';
-/**
- * Block family (claude 2.1.321, recorded live): `<path> is outside <dirs>; …`. The docs
- * name a second form, `<path>: Writes outside the working directories are blocked
- * (permissions.blockWritesOutsideWorkingDirectories). …`; it has not appeared live, so it is not
- * accepted and reads `unknown`.
- */
-const BLOCK_TEXT_SUFFIX =
-  '; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.';
-/** The `permission_decision.reason_type` (and permission_denied reason type) of a block refusal. */
-const BLOCK_REASON_TYPE = 'other';
-/**
- * No-approval-surface family (claude 2.1.321, recorded live): a `reason_type` asyncAgent
- * reject with this text. Not deterministic: it refuses whatever would have needed a prompt.
- */
-const ASYNC_FAMILY_PREFIX =
-  'Permission for this tool use was denied. It requires approval, and this session has no approval surface';
-const ASYNC_REASON_TYPE = 'asyncAgent';
 /** `permission_decision.reason_type` values that mean "our deny rules decided". */
 const RULE_REASON_TYPES: ReadonlySet<string> = new Set(['rule', 'subcommandResults']);
+/** The `reason_type` of an outside-write block refusal. */
+const BLOCK_REASON_TYPE = 'other';
+/**
+ * The non-deterministic deciders: the permission mode, the auto-mode classifier and the
+ * no-approval-surface fallback (`asyncAgent`). Their refusals are recognised but never Blocked.
+ */
+const NON_DETERMINISTIC_REASON_TYPES: ReadonlySet<string> = new Set([
+  'mode',
+  'classifier',
+  'asyncAgent',
+]);
 
 const READ_OPERATIONS: ReadonlySet<StepOperation> = new Set([
   'cat',
@@ -170,7 +159,7 @@ const READ_OPERATIONS: ReadonlySet<StepOperation> = new Set([
   'read-before-edit',
 ]);
 
-/** Case-folded, with typographic apostrophes made plain, for family matching. */
+/** Case-folded, with typographic apostrophes made plain, for the OS-text match. */
 function folded(text: string): string {
   return text.replace(/[\u2018\u2019]/g, "'").toLowerCase();
 }
@@ -318,30 +307,27 @@ function classifyUse(
   // A canary value in the result is a reach, whatever else the result says.
   if (expectedValue !== undefined && result.haystack.includes(expectedValue)) return 'reached';
 
-  // Block family: the outside-write block refused a Write or Edit outside the working folder.
+  // Block: the outside-write block refused a Write or Edit outside the working folder.
   if (isBlockRefusal(step, use, result, events, writeBlock)) return 'denied-block';
 
-  // Non-deterministic families (never ours, so never Blocked): the permission mode, and the
-  // no-approval-surface fallback. No classifier refusal has been recorded live (the live runs
-  // recorded only classifier accepts), so there is no classifier family: such a reject reads
-  // `unknown`.
-  if (folded(text).includes(folded(MODE_FAMILY_TEXT))) return 'denied-mode';
-  if (isNoApprovalSurface(use, result, events)) return 'denied-mode';
-  if (decision?.decision === 'reject' && !RULE_REASON_TYPES.has(decision.reasonType)) {
-    return decision.reasonType === 'mode' ? 'denied-mode' : 'unknown';
-  }
-
-  // Rule family: the text, the permission_denials record, the permission decision and (when
-  // present) the permission_denied event must all agree.
-  if (isRuleText(step, use, text)) {
-    const eventReason = deniedEventReasons(events).get(use.id);
-    const agreed =
-      result.isError === true &&
-      deniedIds(events).has(use.id) &&
-      decision?.decision === 'reject' &&
-      RULE_REASON_TYPES.has(decision.reasonType) &&
-      (eventReason === undefined || RULE_REASON_TYPES.has(eventReason));
-    return agreed ? 'denied-rule' : 'unknown';
+  // A reject decision names who refused. Ours (a deny rule) counts only when every record agrees;
+  // the non-deterministic deciders are recognised but never ours; any other type is unrecognised.
+  if (decision?.decision === 'reject') {
+    if (RULE_REASON_TYPES.has(decision.reasonType)) {
+      const eventReason = deniedEventReasons(events).get(use.id);
+      const agreed =
+        result.isError === true &&
+        deniedIds(events).has(use.id) &&
+        (eventReason === undefined || RULE_REASON_TYPES.has(eventReason));
+      return agreed ? 'denied-rule' : 'unknown';
+    }
+    if (NON_DETERMINISTIC_REASON_TYPES.has(decision.reasonType)) {
+      const eventReason = deniedEventReasons(events).get(use.id);
+      return eventReason === undefined || eventReason === decision.reasonType
+        ? 'denied-mode'
+        : 'unknown';
+    }
+    return 'unknown';
   }
 
   // OS family: the command ran and the sandbox refused the step's own path.
@@ -376,22 +362,18 @@ function classifyUse(
       : 'unknown';
   }
   if (step.tool === 'Bash') return result.isError === false ? 'reached' : 'unknown';
-  if (
-    result.isError !== true &&
-    /^(File created successfully at: |The file .+ has been updated successfully)/.test(text)
-  ) {
-    return 'reached';
-  }
-  return 'unknown';
+  // A Write or Edit reached when the call ran without an error and nothing refused it (no reject
+  // decision above, no permission_denials entry). For a treatment step that reads Reachable; the
+  // post-state leftovers check backs it independently of the stream.
+  return result.isError !== true && !deniedIds(events).has(use.id) ? 'reached' : 'unknown';
 }
 
 /**
  * True only when the outside-write block refused this Write or Edit call, with every record
- * agreeing with the refusal recorded live: the block was launched on (`writeBlock`), the
- * step path lies outside every working directory, `is_error`, the text names exactly the step's
- * `file_path` and the launched working directories, a `permission_decision` reject with
- * `reason_type` other, the call listed in `result.permission_denials`, and a
- * `system/permission_denied` event, if any, giving other.
+ * agreeing: the block was launched on (`writeBlock`), the step path lies outside every working
+ * directory, `is_error`, a `permission_decision` reject with `reason_type` other, the call listed
+ * in `result.permission_denials`, and a `system/permission_denied` event, if any, giving other.
+ * The refusal text is not read.
  */
 function isBlockRefusal(
   step: ProbeStep,
@@ -405,51 +387,14 @@ function isBlockRefusal(
   const path = step.path;
   if (path === null || use.input.file_path !== path) return false;
   if (writeBlock.workdirs.some((dir) => isInsideDir(path, dir))) return false;
-  const expected = `${path} is outside ${writeBlock.workdirs.join(', ')}${BLOCK_TEXT_SUFFIX}`;
   const eventReason = deniedEventReasons(events).get(use.id);
   return (
     result.isError === true &&
-    result.text === expected &&
     result.decision?.decision === 'reject' &&
     result.decision.reasonType === BLOCK_REASON_TYPE &&
     deniedIds(events).has(use.id) &&
     (eventReason === undefined || eventReason === BLOCK_REASON_TYPE)
   );
-}
-
-/** The no-approval-surface fallback (the recorded asyncAgent shape), every record agreeing. */
-function isNoApprovalSurface(
-  use: ToolUse,
-  result: ToolResult,
-  events: readonly StreamEvent[],
-): boolean {
-  const eventReason = deniedEventReasons(events).get(use.id);
-  return (
-    result.isError === true &&
-    result.text.startsWith(ASYNC_FAMILY_PREFIX) &&
-    result.decision?.decision === 'reject' &&
-    result.decision.reasonType === ASYNC_REASON_TYPE &&
-    (eventReason === undefined || eventReason === ASYNC_REASON_TYPE)
-  );
-}
-
-function isRuleText(step: ProbeStep, use: ToolUse, text: string): boolean {
-  if (
-    (step.tool === 'Read' || step.tool === 'Write' || step.tool === 'Edit') &&
-    text === RULE_FILE_TEXT
-  ) {
-    return true;
-  }
-  if (step.tool === 'Read' || step.tool === 'Grep') {
-    const match = RULE_READ_RE.exec(text);
-    const target = step.tool === 'Read' ? use.input.file_path : use.input.path;
-    return match !== null && match[1] === target;
-  }
-  if (step.tool === 'Bash') {
-    const match = RULE_BASH_RE.exec(text);
-    return match !== null && match[1] === use.input.command;
-  }
-  return false;
 }
 
 /** A listing the row can judge: no malformed line, and PATH and HOME are named. */
@@ -502,8 +447,11 @@ export function classifyStep(
 // --- Target verdicts -----------------------------------------------------------------------------
 
 export interface EvaluateProbeOptions {
-  /** `claude --version` output (for example `2.1.319 (Claude Code)`), or null if unreadable. */
-  claudeVersion: string | null;
+  /**
+   * `claude --version` output (for example `2.1.322 (Claude Code)`), or null if unreadable. Kept
+   * with the probe's record; since MATCHER_REVISION 5 no verdict depends on it.
+   */
+  claudeVersion?: string | null;
   /** Probe-named files found in the real git dir after the treatment session. */
   leftovers: readonly string[];
   /** Read targets whose directory did not exist, so no canary was planted. */
@@ -521,11 +469,6 @@ export interface EvaluateProbeOptions {
    * Without it the credential-env row can never read Blocked.
    */
   envScriptIntact?: boolean;
-}
-
-/** The `x.y.z` part of a `claude --version` string, or null. */
-export function matcherVersionOf(version: string | null): string | null {
-  return /\b(\d+\.\d+\.\d+)\b/.exec(version ?? '')?.[1] ?? null;
 }
 
 const OPERATION_LABEL: Readonly<Record<StepOperation, string>> = {
@@ -575,7 +518,6 @@ export function evaluateProbe(
   control: readonly StreamEvent[],
   options: EvaluateProbeOptions,
 ): ProbeTarget[] {
-  const version = matcherVersionOf(options.claudeVersion);
   const skipped = new Set(options.skippedTargets ?? []);
 
   // Canary values by the path a step finally reaches.
@@ -607,8 +549,6 @@ export function evaluateProbe(
     cClass.set(step.index, classifyStep(step, control, valueFor(step, controlValues)));
   }
 
-  const anyUnknown = [...tClass.values(), ...cClass.values()].includes('unknown');
-  const versionDistrust = version !== MATCHER_CLAUDE_VERSION && anyUnknown;
   const controlSteps = (steps: readonly ProbeStep[], classes: Map<number, StepClass>) =>
     steps.filter((s) => s.target === 'control').every((s) => classes.get(s.index) === 'reached');
   const baselineOk =
@@ -686,7 +626,7 @@ export function evaluateProbe(
       treatment: REPORT_CLASS[tClass.get(t.index) ?? 'unknown'],
       control: REPORT_CLASS[(c && cClass.get(c.index)) ?? 'unknown'],
     }));
-    fields = { steps, leaks, trusted: baselineOk && !versionDistrust };
+    fields = { steps, leaks, trusted: baselineOk };
 
     if (env !== null) {
       return credentialEnvRow(row, {
@@ -695,8 +635,6 @@ export function evaluateProbe(
         tClass,
         cClass,
         baselineOk,
-        versionDistrust,
-        version,
         envScriptIntact: options.envScriptIntact,
       });
     }
@@ -769,12 +707,6 @@ export function evaluateProbe(
         `a session could not read the unprotected control canary, so denials prove nothing; ${evidence}`,
       );
     }
-    if (versionDistrust) {
-      return row(
-        'not-checked',
-        `claude ${version ?? 'version unknown'} is not the matcher's ${MATCHER_CLAUDE_VERSION} and printed an unrecognised message; ${evidence}`,
-      );
-    }
     return row('blocked', evidence);
   });
 }
@@ -815,8 +747,6 @@ interface CredentialEnvInput {
   tClass: ReadonlyMap<number, StepClass>;
   cClass: ReadonlyMap<number, StepClass>;
   baselineOk: boolean;
-  versionDistrust: boolean;
-  version: string | null;
   envScriptIntact: boolean | undefined;
 }
 
@@ -824,7 +754,7 @@ interface CredentialEnvInput {
  * The credential-env row, decided apart from the canary rows, in this order (the step
  * plans already match): a credential-shaped variable outside the owner's exception in either
  * session's listing is Reachable; a changed script, a step that did not reach, or an unrecognised
- * listing is Not checked; then the baseline and version-distrust rules as for every row; otherwise
+ * listing is Not checked; then the baseline rule as for every row; otherwise
  * Blocked, naming the owner's exception and carrying it in `exceptions` when it was needed.
  */
 function credentialEnvRow(
@@ -882,12 +812,6 @@ function credentialEnvRow(
     return row(
       'not-checked',
       `a session could not read the unprotected control canary, so the listing proves nothing; listed ${n} variables; ${evidenceTail}`,
-    );
-  }
-  if (input.versionDistrust) {
-    return row(
-      'not-checked',
-      `claude ${input.version ?? 'version unknown'} is not the matcher's ${MATCHER_CLAUDE_VERSION} and printed an unrecognised message; listed ${n} variables; ${evidenceTail}`,
     );
   }
 
