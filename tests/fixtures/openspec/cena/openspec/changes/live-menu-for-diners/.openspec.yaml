@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-11-11
+x-depends-on: [owner-ui-on-astryx]

@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Cena is a self-serve QR menu SaaS for independent restaurants in Romania and Hungary (EU later).
+  Product brief: docs/product.md. Build order of the open changes: docs/roadmap.md. Deferred work: docs/backlog.md.
+  Stack is fixed: Next.js 16 (App Router) + Supabase (Postgres, Auth, RLS) + Vercel, pnpm, Vitest. Do not re-litigate it.
+  Tenancy: one owner account holds many venues. Owner/manager may edit everything; staff may only toggle item availability.
+  Every venue-scoped table has RLS from its first migration and joins the role x venue isolation suite, which runs through
+  the client SDK. Writes go through SECURITY DEFINER RPCs that re-derive authority; authenticated holds no INSERT/DELETE grants.
+  A defect in an applied migration is fixed by a new additive migration, never by editing the applied file.
+  List reads selected by position end with an ascending `id` tiebreaker.
+  Design: the --cena-* tokens are the single styling source; typefaces are self-hosted (no third-party font or asset requests);
+  44px touch floor; no venue theme value may produce a text/background pair below WCAG AA 4.5:1.
+  Owner-side UI is built on Astryx (exact-pinned); the diner menu imports no Astryx code, stays server-rendered and hand-built
+  from Cena + venue tokens, must load fast on poor mobile data and show the last-good menu when the network fails.
+  Every user-visible string lives in the copy decks (lib/copy.ts, lib/diner-copy.ts) and has a row in a UI contract under docs/design/.
+  Legal: AI-filled allergen and macro fields stay visibly unverified and need explicit per-field confirmation before publish;
+  no AI-generated food images; analytics are cookieless and non-identifying, so no consent banner ever precedes the menu.
+  Diner surface is web-only (no install). Currencies per venue: RON, HUF, EUR. Diner languages: hu, en, ro.
+  The restaurant, not Cena, issues fiscal receipts; payments, ordering and POS integration are out of v1.
+  On the owner's machine, tools, caches and app data live on /Volumes/Dock, never the internal disk.
+
+rules:
+  proposal:
+    - Name the v1 requirement IDs (ACCT, MENU, INGEST, LANG, THEME, DINE, ANLY) the change delivers.
+    - Record ordering on other open changes in .openspec.yaml as x-depends-on.
+  specs:
+    - Describe observable behaviour (user, database, build output), not implementation.
+  tasks:
+    - Every task says how it is verified.
+    - A step the owner must do by hand starts with "Owner:".

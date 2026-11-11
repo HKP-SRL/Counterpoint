@@ -1,0 +1,60 @@
+{
+  "name": "@hkp/counterpoint",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local mission control for autonomous spec-driven development with Claude Code",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.18.0",
+  "bin": {
+    "counterpoint": "dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && { [ ! -d ui ] || tsc -p ui/tsconfig.json --noEmit; }",
+    "lint": "biome ci .",
+    "format": "biome format --write .",
+    "test": "vitest run --project unit",
+    "test:e2e": "vitest run --project e2e",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:node": "tsdown",
+    "build": "pnpm lint && pnpm typecheck && pnpm clean && pnpm build:node && pnpm build:ui",
+    "pack:local": "pnpm build && pnpm pack --pack-destination .tmp/pack"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.6",
+    "commander": "15.1.0",
+    "execa": "10.2.1",
+    "hono": "4.13.17",
+    "remark-frontmatter": "5.0.0",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@astryxdesign/core": "0.7.11",
+    "@astryxdesign/theme-neutral": "0.7.11",
+    "@biomejs/biome": "2.6.6",
+    "@fontsource/figtree": "5.3.0",
+    "@stylexjs/stylex": "0.19.1",
+    "@tanstack/react-query": "5.107.1",
+    "@tanstack/react-router": "1.170.46",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "playwright-core": "1.65.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tsdown": "0.23.7",
+    "typescript": "7.0.2",
+    "vite": "8.3.7",
+    "vitest": "5.1.0"
+  }
+}
