@@ -85,7 +85,14 @@ describe('host config', () => {
 
   it('defaults to no gates and three attempts without a config file', async () => {
     const config = await readHostConfig(memoryReader({ c: {} }), 'c');
-    expect(config).toEqual({ gates: [], services: {}, attempts: 3, preview: null, protected: [] });
+    expect(config).toEqual({
+      gates: [],
+      services: {},
+      attempts: 3,
+      preview: null,
+      protected: [],
+      worktree: { clone: [] },
+    });
   });
 
   it.each([
@@ -124,12 +131,22 @@ describe('host config', () => {
     ['an absolute protected path', 'protected: [/etc/**]\n', /inside the repository/],
     ['a preview without {port}', 'preview: { command: [pnpm, dev] }\n', /\{port\}/],
     ['zero attempts', 'attempts: 0\n', /attempts/],
+    ['cloning .claude', 'worktree: { clone: [.claude] }\n', /worktree\.clone\.0/],
+    ['cloning inside .git', 'worktree: { clone: [.git/hooks] }\n', /may be cloned/],
+    ['a clone glob', "worktree: { clone: ['packages/*/node_modules'] }\n", /no globs/],
+    ['an escaping clone', 'worktree: { clone: [../node_modules] }\n', /inside the repository/],
     ['a list at the top', '- a\n', /mapping/],
     ['duplicate keys', 'attempts: 2\nattempts: 3\n', /parsed/],
   ])('refuses %s, naming where', async (_label, yaml, message) => {
     const reader = memoryReader({ c: { [COUNTERPOINT_CONFIG_PATH]: yaml } });
     await expect(readHostConfig(reader, 'c')).rejects.toThrow(HostConfigError);
     await expect(readHostConfig(reader, 'c')).rejects.toThrow(message);
+  });
+
+  it('reads the folders to clone into new worktrees', () => {
+    expect(
+      parseHostConfig({ worktree: { clone: ['node_modules', 'apps/web/node_modules'] } }).worktree,
+    ).toEqual({ clone: ['node_modules', 'apps/web/node_modules'] });
   });
 
   it('treats an empty document as no config', () => {

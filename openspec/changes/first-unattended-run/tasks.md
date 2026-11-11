@@ -69,6 +69,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 8.2 Builder prompt: change, apply workflow, previous handoff, failing gate output
 - [x] 8.3 Orchestrator commit after each session: collect handoff and assumptions out of the worktree, restore planning files, record task ticks
 - [x] 8.4 Budget handoff: wrap-up message at the budget, forced end at budget plus margin with a generated handoff
+- [x] 8.5 Dependencies in new worktrees: the host config's `worktree.clone` folders (e.g. `node_modules`) are copied from the owner's checkout as copy-on-write clones; git-ignored only, no link may lead outside the clone
 
 ## 9. Gates
 

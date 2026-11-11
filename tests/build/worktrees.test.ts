@@ -78,6 +78,7 @@ describe('prepareWorktree', () => {
       path: worktreePathFor(root, 'add-menu'),
       branch: 'cp/add-menu',
       created: true,
+      clone: { cloned: [], missing: [], present: [] },
     });
     expect(first.path).toBe(join(`${root}-worktrees`, 'add-menu'));
     expect((await runGit(first.path, ['rev-parse', 'HEAD'])).stdout.trim()).toBe(base);
@@ -138,6 +139,19 @@ describe('prepareWorktree', () => {
     );
     const ok = await prepareWorktree({ ...input, baseCommit: trusted, change: 'at-tip' });
     expect(ok.created).toBe(true);
+  });
+
+  it("clones the host config's worktree.clone folders from the owner's checkout", async () => {
+    const { root, input } = await setup();
+    writeFileIn(root, '.gitignore', 'node_modules\n');
+    await commitAll(root);
+    const base = (await runGit(root, ['rev-parse', 'HEAD'])).stdout.trim();
+    writeFileIn(root, 'node_modules/zod/index.js', 'export {}\n');
+    const made = await prepareWorktree({ ...input, baseCommit: base, clone: ['node_modules'] });
+    expect(made.clone.cloned).toEqual(['node_modules']);
+    expect(existsSync(join(made.path, 'node_modules/zod/index.js'))).toBe(true);
+    // Never part of a commit: the worktree's git ignores it.
+    expect((await runGit(made.path, ['status', '--porcelain'])).stdout).toBe('');
   });
 
   it('refuses an existing branch that does not contain the base, and bad input', async () => {

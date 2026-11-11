@@ -6,6 +6,10 @@
 // `git worktree prune` elsewhere cannot drop it. Every git call goes through the hardened runner
 // (hooks, fsmonitor and pagers off, global config ignored).
 //
+// After it is made, the folders the host config lists under `worktree.clone` (such as
+// `node_modules`) are copied in from the owner's checkout as copy-on-write clones
+// (worktree-clone.ts), since nothing in a run may install dependencies.
+//
 // Before a worktree is made or reused, two checks run, because the builder will load what is in
 // it:
 // - the host's integrity baseline must hold: checking out files can run the repository's own
@@ -30,6 +34,7 @@ import {
 } from '../core/security/project-settings.ts';
 import { judgeSandboxIsolation } from '../core/security/sandbox-isolation.ts';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
+import { CloneRefusal, type CloneResult, cloneIntoWorktree } from './worktree-clone.ts';
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 
@@ -41,7 +46,7 @@ export interface WorktreeHost {
 }
 
 export class WorktreeRefusal extends Error {
-  readonly reason: 'integrity' | 'project-settings' | 'branch' | 'invalid';
+  readonly reason: 'integrity' | 'project-settings' | 'branch' | 'invalid' | 'clone';
 
   constructor(reason: WorktreeRefusal['reason'], message: string) {
     super(message);
@@ -130,6 +135,8 @@ export interface PreparedWorktree {
   branch: string;
   /** False when an existing worktree for the branch was reused (a resumed run). */
   created: boolean;
+  /** What the host config's `worktree.clone` copied in (worktree-clone.ts). */
+  clone: CloneResult;
 }
 
 async function branchExists(root: string, branch: string): Promise<boolean> {
@@ -169,6 +176,8 @@ export async function prepareWorktree(input: {
   runId: string;
   launchSettings: AgentSettings;
   homeDir: string;
+  /** The host config's `worktree.clone`, read at the approved base. */
+  clone?: readonly string[];
 }): Promise<PreparedWorktree> {
   const { host, change, baseCommit } = input;
   if (!isChangeId(change)) throw new WorktreeRefusal('invalid', 'Invalid change name.');
@@ -226,7 +235,18 @@ export async function prepareWorktree(input: {
       allowExitCodes: [0, 128],
     },
   );
-  return { path, branch, created };
+  let clone: CloneResult = { cloned: [], missing: [], present: [] };
+  try {
+    clone = await cloneIntoWorktree({
+      hostRoot: host.root,
+      worktree: path,
+      paths: input.clone ?? [],
+    });
+  } catch (error) {
+    if (error instanceof CloneRefusal) throw new WorktreeRefusal('clone', error.message);
+    throw error;
+  }
+  return { path, branch, created, clone };
 }
 
 /** Unlocks the change's worktree (the run no longer holds it). The worktree stays for review. */

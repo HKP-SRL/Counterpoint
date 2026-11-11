@@ -32,6 +32,8 @@
 //     ports: [54321]
 //   protected:                  # extra protected paths (globs), flagged on the branch diff
 //     - src/core/security/**
+//   worktree:
+//     clone: [node_modules]     # git-ignored folders copied (APFS clone) from your checkout
 import { isAbsolute, normalize } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
@@ -171,6 +173,18 @@ const Service = z.strictObject({
   timeout: Duration.prefault(300),
 });
 
+/** A folder copied into new worktrees: inside the repository, never git or agent state. */
+const ClonePath = RepoPath.refine(
+  (path) =>
+    !['.git', '.claude', '.counterpoint'].includes(path.split('/')[0] ?? '') &&
+    !/[*?[\]{}]/.test(path),
+  'Not a folder that may be cloned (no globs, no .git, .claude or .counterpoint).',
+);
+
+const Worktree = z.strictObject({
+  clone: z.array(ClonePath).max(16).default([]),
+});
+
 const Preview = z.strictObject({
   command: Argv.refine(
     (argv) => argv.some((arg) => arg.includes('{port}')),
@@ -186,6 +200,7 @@ const HostConfigSchema = z
     attempts: z.number().int().min(1).max(10).default(3),
     preview: Preview.nullish(),
     protected: z.array(RepoPath).max(256).nullish(),
+    worktree: Worktree.nullish(),
   })
   .superRefine((config, ctx) => {
     const names = new Set<string>();
@@ -216,6 +231,7 @@ export interface HostConfig {
   attempts: number;
   preview: PreviewConfig | null;
   protected: string[];
+  worktree: { clone: string[] };
 }
 
 /** The defaults for a host with no config file: no gates, three attempts. */
@@ -225,11 +241,20 @@ export const EMPTY_HOST_CONFIG: Readonly<HostConfig> = Object.freeze({
   attempts: 3,
   preview: null,
   protected: [],
+  worktree: { clone: [] },
 });
 
 /** Parses a config document (already read as YAML). Throws HostConfigError naming the key. */
 export function parseHostConfig(document: Record<string, unknown> | null): HostConfig {
-  if (document === null) return { ...EMPTY_HOST_CONFIG, gates: [], services: {}, protected: [] };
+  if (document === null) {
+    return {
+      ...EMPTY_HOST_CONFIG,
+      gates: [],
+      services: {},
+      protected: [],
+      worktree: { clone: [] },
+    };
+  }
   const parsed = HostConfigSchema.safeParse(document);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -245,6 +270,7 @@ export function parseHostConfig(document: Record<string, unknown> | null): HostC
     attempts: config.attempts,
     preview: config.preview ?? null,
     protected: config.protected ?? [],
+    worktree: { clone: config.worktree?.clone ?? [] },
   };
 }
 
