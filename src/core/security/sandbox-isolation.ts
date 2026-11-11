@@ -26,11 +26,12 @@
 // managed key" (https://code.claude.com/docs/en/settings, "Settings precedence").
 //
 // Rules (ISOLATION_RULES): every rule names its doc. `filesystem.disabled`, `excludedCommands`,
-// `allowAppleEvents` and the write and read widenings (CR-01: `filesystem.allowWrite`,
-// `filesystem.allowRead`, `permissions.additionalDirectories`, the unix-socket allowances) fail in
-// every source, the launch source included except for the builder's own `allowWrite` grant,
-// because user, managed and flag values all take effect (a scalar the launch flag leaves unset; a
-// list that merges). The four Booleans the launch flag
+// `allowAppleEvents`, the write and read widenings (CR-01: `filesystem.allowWrite`,
+// `filesystem.allowRead`, `permissions.additionalDirectories`, the unix-socket allowances) and the
+// other documented weakenings (`network.allowLocalBinding`, `enableWeakerNestedSandbox`,
+// `enableWeakerNetworkIsolation`) fail in every source, the launch source included except for the
+// builder's own `allowWrite` grant, because user, managed and flag values all take effect (a
+// scalar the launch flag leaves unset; a list that merges). The four Booleans the launch flag
 // sets explicitly fail only in a managed source, because only managed settings outrank
 // `--settings` ("When managed settings set a Boolean key such as `enabled` or `failIfUnavailable`,
 // Claude Code uses the managed value and ignores anything a developer sets locally",
@@ -184,6 +185,30 @@ export const ISOLATION_RULES: readonly IsolationRule[] = [
     safe: false,
     effect: 'lets sandboxed commands connect to every local socket',
     doc: `${SANDBOXING} "Keep developers from widening the policy": "a developer's user settings or \`--settings\` can turn on the following keys ... Each one weakens the sandbox": \`network.allowAllUnixSockets\`, "which opens every Unix socket to sandboxed commands"`,
+  },
+  // The other keys the same doc section names as weakening the sandbox (owner decision
+  // 2026-11-11: doctor fails on all three).
+  {
+    key: 'sandbox.network.allowLocalBinding',
+    failsIn: 'any',
+    safe: false,
+    effect:
+      "lets sandboxed commands listen on ports and reach every local service, Counterpoint's console included",
+    doc: `${SANDBOXING}: "set \`network.allowLocalBinding\` to \`true\`. Sandboxed commands can then listen on network ports and connect to any port on localhost, which includes every other service listening there"; "Each one weakens the sandbox"`,
+  },
+  {
+    key: 'sandbox.enableWeakerNestedSandbox',
+    failsIn: 'any',
+    safe: false,
+    effect: 'weakens the nested sandbox',
+    doc: `${SANDBOXING} "Keep developers from widening the policy": "a developer's user settings or \`--settings\` can turn on the following keys ... Each one weakens the sandbox": \`enableWeakerNestedSandbox\`; it "exposes process information to sandboxed commands that a fresh \`/proc\` mount would hide"`,
+  },
+  {
+    key: 'sandbox.enableWeakerNetworkIsolation',
+    failsIn: 'any',
+    safe: false,
+    effect: 'weakens network isolation',
+    doc: `${SANDBOXING} "Keep developers from widening the policy": "a developer's user settings or \`--settings\` can turn on the following keys ... Each one weakens the sandbox": \`enableWeakerNetworkIsolation\``,
   },
 ];
 

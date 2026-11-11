@@ -104,6 +104,9 @@ const UNSAFE: Record<string, unknown> = {
   'permissions.additionalDirectories': ['/'],
   'sandbox.network.allowUnixSockets': ['/var/run/docker.sock'],
   'sandbox.network.allowAllUnixSockets': true,
+  'sandbox.network.allowLocalBinding': true,
+  'sandbox.enableWeakerNestedSandbox': true,
+  'sandbox.enableWeakerNetworkIsolation': true,
 };
 
 describe('judgeSandboxIsolation', () => {
@@ -321,6 +324,9 @@ describe('judgeSandboxIsolation', () => {
       ['permissions.additionalDirectories', 'any'],
       ['sandbox.network.allowUnixSockets', 'any'],
       ['sandbox.network.allowAllUnixSockets', 'any'],
+      ['sandbox.network.allowLocalBinding', 'any'],
+      ['sandbox.enableWeakerNestedSandbox', 'any'],
+      ['sandbox.enableWeakerNetworkIsolation', 'any'],
     ]);
     for (const rule of ISOLATION_RULES) expect(rule.doc).toContain('code.claude.com/docs');
   });

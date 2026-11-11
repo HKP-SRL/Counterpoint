@@ -3,11 +3,15 @@
 ## ADDED Requirements
 
 ### Requirement: Write widenings are judged
-Doctor's isolation check SHALL fail, naming the source and key, when any settings source an agent session loads (other than the launch profile's own grant) widens where agents may write or read: sandbox filesystem allow-write or allow-read entries, extra working directories for the file tools, or unix-socket allowances.
+Doctor's isolation check SHALL fail, naming the source and key, when any settings source an agent session loads (other than the launch profile's own grant) widens where agents may write or read: sandbox filesystem allow-write or allow-read entries, extra working directories for the file tools, or unix-socket allowances. It SHALL also fail on the other keys the Claude Code docs name as weakening the sandbox: local port binding, the weaker nested sandbox and weaker network isolation.
 
 #### Scenario: User settings allow writes to home
 - **WHEN** `~/.claude/settings.json` sets a sandbox allow-write entry for `~`
 - **THEN** the isolation check fails naming that file and key, and doctor does not pass
+
+#### Scenario: Local binding allowed
+- **WHEN** user settings turn on sandbox local port binding
+- **THEN** the isolation check fails naming that file and key
 
 #### Scenario: Extra working directory
 - **WHEN** user settings add an additional working directory for the file tools

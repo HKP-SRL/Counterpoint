@@ -20,7 +20,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 2.3 WR-08: clear the run record at daemon start; confirm the process before any pid-based stop
 - [x] 2.4 IN-01: remove-then-exclusive-create for every atomic writer
 - [x] 2.5 IN-02: open the stored doctor report with `O_NONBLOCK`
-- [ ] 2.6 IN-03: decide on the sign-in code in the opener's argv; resolve `xdg-open` by absolute path
+- [x] 2.6 IN-03: decide on the sign-in code in the opener's argv; resolve `xdg-open` by absolute path
 - [x] 2.7 IN-04: tighten or warn about an existing home that is not 0700
 - [x] 2.8 IN-05: use the file-edit grant parser in doctor or move it to test helpers
 

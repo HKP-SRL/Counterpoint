@@ -283,7 +283,15 @@ function browserOpener(): string | undefined {
   });
 }
 
-/** Opens a validated sign-in link in the default browser (argument array, never a shell). */
+/**
+ * Opens a validated sign-in link in the default browser (argument array, never a shell).
+ *
+ * Accepted risk (IN-03, owner decision 2026-11-11): the one-time code is in the opener's argv for
+ * the moment `open` runs, so a process running as the owner could read it with `ps`. The code
+ * works once and expires; whoever uses it first gets a console session, the owner's own sign-in
+ * then fails visibly, and a console session can never sign approvals (that needs the owner's key
+ * and passphrase at a terminal).
+ */
 async function openInBrowser(url: string): Promise<void> {
   const opener = browserOpener();
   if (opener === undefined || !LOGIN_URL_RE.test(url)) return;
