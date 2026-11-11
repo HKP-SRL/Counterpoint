@@ -131,6 +131,22 @@ export async function fingerprintOf(pubPath: string): Promise<string> {
   return match[1] as string;
 }
 
+/**
+ * The SHA256 fingerprint of public key text fed to `ssh-keygen -l -f -` on stdin: no path is
+ * opened, so nothing can be swapped under it.
+ */
+export async function fingerprintOfKeyText(publicKeyLine: string): Promise<string> {
+  const result = await execa(SSH_KEYGEN, ['-l', '-E', 'sha256', '-f', '-'], {
+    env: sshKeygenEnv(),
+    extendEnv: false,
+    input: `${publicKeyLine}\n`,
+    timeout: VERIFY_TIMEOUT_MS,
+  });
+  const match = /^\d+ (SHA256:[A-Za-z0-9+/]+) /.exec(result.stdout);
+  if (!match) throw new Error('ssh-keygen printed no fingerprint.');
+  return match[1] as string;
+}
+
 /** The SHA256 fingerprint of a base64 public key blob, computed exactly as ssh-keygen does. */
 export function fingerprintOfKeyBlob(base64: string): string {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw new Error('Not a base64 key blob.');

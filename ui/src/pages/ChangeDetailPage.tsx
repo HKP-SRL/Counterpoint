@@ -349,7 +349,12 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
         </Text>
         {/* Uncommitted-edits soft hint (shared with the Changes row), reading:
             `Uncommitted edits to this approved change. The approval only follows what is committed on {base}.` */}
-        {change.uncommittedEdits ? <UncommittedHint baseBranch={change.baseBranch} /> : null}
+        {change.uncommittedEdits ? (
+          <UncommittedHint
+            baseBranch={change.baseBranch}
+            notCheckable={change.uncommittedNotCheckable}
+          />
+        ) : null}
       </VStack>
     );
 

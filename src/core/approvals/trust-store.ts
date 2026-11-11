@@ -25,7 +25,7 @@ import {
 import { join } from 'node:path';
 import { z } from 'zod';
 import { homePaths } from '../host/home.ts';
-import { fingerprintOf, fingerprintOfKeyBlob } from './ssh.ts';
+import { fingerprintOfKeyBlob, fingerprintOfKeyText } from './ssh.ts';
 
 export const OWNER_PRINCIPAL = 'owner@counterpoint';
 
@@ -177,23 +177,82 @@ function writeAtomic0600(path: string, content: string): void {
  * Trusts the ed25519 public key at `publicKeyPath`: writes allowed_signers and pins its
  * fingerprint. The private key must sit next to it (same path without `.pub`).
  */
-export async function writeTrust(home: string, options: { publicKeyPath: string }): Promise<Trust> {
-  const { publicKeyPath } = options;
-  const lines = readFileSync(publicKeyPath, 'utf8')
+const MAX_PUBLIC_KEY_BYTES = 16 * 1024;
+
+/** A public key file as read once, without following a symlink. */
+export interface PublicKeyFile {
+  /** The single key line, trimmed. */
+  line: string;
+  /** The ed25519 key blob (base64). */
+  blob: string;
+  /** SHA256 fingerprint of the blob. */
+  fingerprint: string;
+}
+
+/** The public key file changed between the owner's confirmation and the write. */
+export class TrustKeyChangedError extends Error {
+  constructor() {
+    super('The public key file changed after you confirmed it. Nothing saved.');
+    this.name = 'TrustKeyChangedError';
+  }
+}
+
+/**
+ * Reads a public key file without following a symlink (`O_NOFOLLOW`; a symlink fails with
+ * `ELOOP`): a regular file of at most 16 KiB holding exactly one ssh-ed25519 key line. Throws an
+ * error carrying the open error's `code` when it cannot be opened.
+ */
+export function readPublicKey(path: string): PublicKeyFile {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let text: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error('The public key file is not a regular file.');
+    if (stat.size > MAX_PUBLIC_KEY_BYTES) throw new Error('The public key file is too large.');
+    text = readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+  const lines = text
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
   if (lines.length !== 1) throw new Error('The public key file must hold exactly one key.');
-  const match = PUBLIC_KEY_RE.exec(lines[0] as string);
+  const line = lines[0] as string;
+  const match = PUBLIC_KEY_RE.exec(line);
   const blob = match ? ed25519Blob(match[1] as string) : null;
   if (blob === null) throw new Error('The public key must be a single ssh-ed25519 key.');
+  return { line, blob, fingerprint: fingerprintOfKeyBlob(blob) };
+}
+
+/**
+ * Pins exactly the key the owner confirmed (key-trust: Trust-key pins exactly the confirmed key).
+ * `confirmed` is the key as read for the confirmation prompt; the file is read again here, without
+ * following a symlink, and a different key (or a file that became a symlink) refuses with nothing
+ * written. The pinned bytes are the confirmed ones, cross-checked by ssh-keygen over stdin.
+ */
+export async function writeTrust(
+  home: string,
+  options: { publicKeyPath: string; confirmed: PublicKeyFile },
+): Promise<Trust> {
+  const { publicKeyPath, confirmed } = options;
   if (!publicKeyPath.endsWith('.pub')) throw new Error('The public key file must end in .pub.');
+  let now: PublicKeyFile;
+  try {
+    now = readPublicKey(publicKeyPath);
+  } catch {
+    throw new TrustKeyChangedError();
+  }
+  if (now.blob !== confirmed.blob || now.fingerprint !== confirmed.fingerprint) {
+    throw new TrustKeyChangedError();
+  }
+  const blob = confirmed.blob;
   const privateKeyPath = publicKeyPath.slice(0, -4);
   if (!statSync(privateKeyPath, { throwIfNoEntry: false })?.isFile()) {
     throw new Error('The matching private key was not found next to the public key.');
   }
-  const fingerprint = await fingerprintOf(publicKeyPath);
-  if (fingerprint !== fingerprintOfKeyBlob(blob)) {
+  const fingerprint = await fingerprintOfKeyText(`ssh-ed25519 ${blob}`);
+  if (fingerprint !== confirmed.fingerprint) {
     throw new Error('ssh-keygen reported a different fingerprint for the public key.');
   }
 

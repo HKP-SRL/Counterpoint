@@ -8,7 +8,7 @@
 // Pinning the key and accepting a baseline are always the owner's act at a terminal: both need
 // a TTY and an explicit `y`, and write nothing otherwise. Counterpoint never runs ssh-keygen to
 // create the key and never sees the passphrase.
-import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   compareIntegrity,
@@ -18,8 +18,12 @@ import {
   snapshotIntegrity,
   writeBaseline,
 } from '../core/approvals/integrity.ts';
-import { fingerprintOf } from '../core/approvals/ssh.ts';
-import { writeTrust } from '../core/approvals/trust-store.ts';
+import {
+  type PublicKeyFile,
+  readPublicKey,
+  TrustKeyChangedError,
+  writeTrust,
+} from '../core/approvals/trust-store.ts';
 import { assertHostId, InvalidIdError } from '../core/ids.ts';
 import {
   getHost,
@@ -29,9 +33,6 @@ import {
   stateDbPath,
 } from '../core/store/db.ts';
 import { readOpenSshKeyHeader } from '../doctor/signing-key.ts';
-
-const MAX_PUBLIC_KEY_BYTES = 16 * 1024;
-const PUBLIC_KEY_LINE_RE = /^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?$/;
 
 export interface TrustCommandOptions {
   /** True only when both stdin and stdout are terminals. */
@@ -80,19 +81,6 @@ export function initKeyCommand(out: (line: string) => void = console.log): void 
   out('  counterpoint trust-key ~/.ssh/counterpoint_approval.pub');
 }
 
-/** Reads a small public key file without following a symlink. */
-function readPublicKeyFile(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new Error('not a regular file');
-    if (stat.size > MAX_PUBLIC_KEY_BYTES) throw new Error('too large');
-    return readFileSync(fd, 'utf8');
-  } finally {
-    closeSync(fd);
-  }
-}
-
 /**
  * Pins the ed25519 key at `pubPath` for approvals. Requires exactly one ssh-ed25519 key in the
  * file, a passphrase-protected private key next to it, a terminal, and the owner's `y`.
@@ -111,22 +99,20 @@ export async function trustKeyCommand(
     err(`${printable(publicKeyPath)} is not a .pub file. Nothing saved.`);
     return 1;
   }
-  let text: string;
+  // Read once, without following a symlink: these exact bytes are what the owner confirms and
+  // what gets pinned (key-trust: Trust-key pins exactly the confirmed key).
+  let key: PublicKeyFile;
   try {
-    text = readPublicKeyFile(publicKeyPath);
+    key = readPublicKey(publicKeyPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === undefined) {
+      err('The public key file must hold exactly one ssh-ed25519 key. Nothing saved.');
+      return 1;
+    }
     const why =
       code === 'ELOOP' ? 'is a symlink' : code === 'ENOENT' ? 'does not exist' : 'cannot be read';
     err(`${printable(publicKeyPath)} ${why}. Nothing saved.`);
-    return 1;
-  }
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '');
-  if (lines.length !== 1 || !PUBLIC_KEY_LINE_RE.test(lines[0] as string)) {
-    err('The public key file must hold exactly one ssh-ed25519 key. Nothing saved.');
     return 1;
   }
 
@@ -153,15 +139,23 @@ export async function trustKeyCommand(
     return 1;
   }
 
-  const fingerprint = await fingerprintOf(publicKeyPath);
   out(`Key: ${printable(publicKeyPath)}`);
-  out(`Fingerprint: ${fingerprint}`);
+  out(`Fingerprint: ${key.fingerprint}`);
   const answer = await options.confirm('Trust this key for approvals? [y/N] ');
   if (!isYes(answer)) {
     out('Nothing saved.');
     return 1;
   }
-  const trust = await writeTrust(home, { publicKeyPath });
+  let trust: Awaited<ReturnType<typeof writeTrust>>;
+  try {
+    trust = await writeTrust(home, { publicKeyPath, confirmed: key });
+  } catch (error) {
+    if (error instanceof TrustKeyChangedError) {
+      err(error.message);
+      return 1;
+    }
+    throw error;
+  }
   out(
     `Trusted approval key ${trust.fingerprint} (${printable(publicKeyPath)}). Approvals must be signed by this key.`,
   );
@@ -218,7 +212,10 @@ export function describeChange(change: IntegrityChange): string {
   return `  ${change.area} ${printable(change.name)}: ${value(change.before)} -> ${value(change.after)}`;
 }
 
-/** The full execution-capable surface, grouped config / hooks / info / config.worktree. */
+/**
+ * The full execution-capable surface, grouped config / hooks / info / config.worktree / worktree
+ * configs / included files.
+ */
 export function formatIntegritySnapshot(snapshot: IntegritySnapshot): string[] {
   const lines: string[] = ['config'];
   const keys = Object.keys(snapshot.config);
@@ -237,6 +234,16 @@ export function formatIntegritySnapshot(snapshot: IntegritySnapshot): string[] {
   }
   lines.push('config.worktree');
   lines.push(`  ${describeValue(snapshot.configWorktree)}`);
+  for (const [area, record] of [
+    ['worktree configs', snapshot.worktreeConfigs],
+    ['included files', snapshot.includes],
+  ] as const) {
+    lines.push(area);
+    const entries = Object.entries(record);
+    if (entries.length === 0) lines.push('  (none)');
+    for (const [name, value] of entries)
+      lines.push(`  ${printable(name)}  ${describeValue(value)}`);
+  }
   return lines;
 }
 

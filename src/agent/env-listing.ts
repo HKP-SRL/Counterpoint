@@ -130,12 +130,23 @@ const CREDENTIAL_SUBSTRINGS: readonly string[] = [
 ];
 
 /**
+ * Git's environment config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`;
+ * git-config(1), "ENVIRONMENT"): a `GIT_CONFIG_KEY_<n>` holds a git setting name such as
+ * `http.proxy`, not a secret. Claude Code 2.1.322 sets two pairs in every sandboxed shell. Only
+ * the exact name shape is exempt from the KEY segment; the matching `GIT_CONFIG_VALUE_<n>` is
+ * still judged by its value shape (owner decision 2026-11-11, "GIT_CONFIG_KEY_<n> is not a
+ * credential name").
+ */
+const GIT_CONFIG_KEY_RE = /^GIT_CONFIG_KEY_[0-9]+$/;
+
+/**
  * True when the variable's name marks it as a credential: an upper-cased segment (split on every
  * non-alphanumeric character) is a credential word, or the upper-cased name contains a credential
- * substring. `SSH_AUTH_SOCK` is flagged (an agent socket); `PWD`, `GIT_AUTHOR_NAME` and
- * `CLAUDE_CODE_SESSION_ID` are not.
+ * substring. `SSH_AUTH_SOCK` is flagged (an agent socket); `PWD`, `GIT_AUTHOR_NAME`,
+ * `CLAUDE_CODE_SESSION_ID` and git's `GIT_CONFIG_KEY_<n>` (exact case) are not.
  */
 export function isCredentialName(name: string): boolean {
+  if (GIT_CONFIG_KEY_RE.test(name)) return false;
   const upper = name.toUpperCase();
   if (upper.split(/[^A-Z0-9]+/).some((segment) => CREDENTIAL_SEGMENTS.has(segment))) return true;
   return CREDENTIAL_SUBSTRINGS.some((part) => upper.includes(part));

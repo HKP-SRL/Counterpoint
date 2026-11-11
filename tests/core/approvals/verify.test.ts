@@ -14,8 +14,10 @@ import {
 import { fingerprintOf, signPayload } from '../../../src/core/approvals/ssh.ts';
 import {
   OWNER_PRINCIPAL,
+  readPublicKey,
   readTrust,
   type Trust,
+  TrustKeyChangedError,
   writeTrust,
 } from '../../../src/core/approvals/trust-store.ts';
 import { verifyApprovalCommit } from '../../../src/core/approvals/verify.ts';
@@ -378,7 +380,10 @@ describe('verifyApprovalCommit', () => {
 describe('trust store', () => {
   it('writes the allowed-signers line and pinned fingerprint, then reads them back', async () => {
     const h = makeScratchDir('thome');
-    const written = await writeTrust(h, { publicKeyPath: owner.publicKeyPath });
+    const written = await writeTrust(h, {
+      publicKeyPath: owner.publicKeyPath,
+      confirmed: readPublicKey(owner.publicKeyPath),
+    });
     expect(written.fingerprint).toBe(await fingerprintOf(owner.publicKeyPath));
     expect(written.privateKeyPath).toBe(owner.privateKeyPath);
     const read = readTrust(h);
@@ -401,7 +406,10 @@ describe('trust store', () => {
 
   it('refuses a symlinked allowed_signers file', async () => {
     const h = makeScratchDir('thome');
-    const written = await writeTrust(h, { publicKeyPath: owner.publicKeyPath });
+    const written = await writeTrust(h, {
+      publicKeyPath: owner.publicKeyPath,
+      confirmed: readPublicKey(owner.publicKeyPath),
+    });
     const elsewhere = writeAllowedSigners(makeScratchDir('tother'), owner.publicKeyPath);
     rmSync(written.allowedSignersPath);
     symlinkSync(elsewhere, written.allowedSignersPath);
@@ -413,14 +421,20 @@ describe('trust store', () => {
     ['world-writable', 0o602],
   ])('refuses a %s allowed_signers file', async (_label, mode) => {
     const h = makeScratchDir('thome');
-    const written = await writeTrust(h, { publicKeyPath: owner.publicKeyPath });
+    const written = await writeTrust(h, {
+      publicKeyPath: owner.publicKeyPath,
+      confirmed: readPublicKey(owner.publicKeyPath),
+    });
     chmodSync(written.allowedSignersPath, mode);
     expect(readTrust(h)).toMatchObject({ ok: false, error: 'bad-allowed-signers' });
   });
 
   it('reports fingerprint-mismatch when the pinned fingerprint no longer matches', async () => {
     const h = makeScratchDir('thome');
-    const written = await writeTrust(h, { publicKeyPath: owner.publicKeyPath });
+    const written = await writeTrust(h, {
+      publicKeyPath: owner.publicKeyPath,
+      confirmed: readPublicKey(owner.publicKeyPath),
+    });
     const otherLine = `owner@counterpoint namespaces="git" ${publicKeyText(other.publicKeyPath)}\n`;
     writeFileSync(written.allowedSignersPath, otherLine, { mode: 0o600 });
     expect(readTrust(h)).toMatchObject({ ok: false, error: 'fingerprint-mismatch' });
@@ -434,6 +448,12 @@ describe('trust store', () => {
       `${publicKeyText(k.publicKeyPath)}\n${publicKeyText(other.publicKeyPath)}\n`,
     );
     mkdirSync(join(dir, 'h'));
-    await expect(writeTrust(join(dir, 'h'), { publicKeyPath: k.publicKeyPath })).rejects.toThrow();
+    expect(() => readPublicKey(k.publicKeyPath)).toThrow(/exactly one key/);
+    await expect(
+      writeTrust(join(dir, 'h'), {
+        publicKeyPath: k.publicKeyPath,
+        confirmed: readPublicKey(other.publicKeyPath),
+      }),
+    ).rejects.toThrow(TrustKeyChangedError);
   });
 });

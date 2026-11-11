@@ -99,6 +99,13 @@ It has since been fixed: the launch profile grants edits only inside the working
 - **Gates.** Process groups, `CI=1`, no TTY, exit code only. The test lock is a SQLite exclusive lock on a well-known file, shared with the owner's existing tooling.
 - **Planning writes.** One queue in the daemon. Builds never write the host's planning files directly. Task ticks and archiving a merged change go through the queue (task ticks do not invalidate approvals; see `signed-approvals`).
 
+### Built for Cena, kept open for self-hosting
+
+The first target is Cena. Later, the owner will develop Counterpoint itself through Counterpoint, so this change must not close that door. Self-hosting is not built here (see `docs/backlog.md`). Three things in this change keep it possible:
+- **The running code is never the code being built.** The daemon and every guard it enforces (sandbox profile, approval verification, doctor) run from an installed copy outside every host repository and worktree. Nothing in a run reads or executes code from a build worktree or the owner's checkout. A build changes Counterpoint only after the owner merges and reinstalls.
+- **Protected paths are per host.** Besides tests, gate configs and baselines, the host config can list its own protected paths, read at the approved base. On Counterpoint these will be the trust code: `src/core/security`, `src/core/approvals`, `src/doctor`, `src/agent`.
+- **Nothing Cena-specific in core.** Gate commands, escape hatches, preview commands and ports all come from the host config. Cena's needs (Supabase, Docker) are answered per gate, never as built-in behaviour.
+
 ## Risks / Trade-offs
 
 - **Context window.** The denominator on 1M-window models is unverified. Spike it before the budget logic.

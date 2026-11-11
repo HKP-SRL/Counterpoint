@@ -38,11 +38,15 @@ A failing gate's output SHALL go back to the builder for a bounded number of ret
 - **THEN** it parks with the failing output and three attempts listed, and the next change starts
 
 ### Requirement: Protected-path check
-Edits by the builder to tests, gate configs or visual baselines SHALL be flagged by a protected-path check and shown on the change.
+Edits by the builder to tests, gate configs or visual baselines SHALL be flagged by a protected-path check and shown on the change. The host's Counterpoint config MAY list further protected paths; that list SHALL be read at the approved base, like the gates.
 
 #### Scenario: Test weakened
 - **WHEN** the builder edits an existing test file
 - **THEN** the change is flagged with the edited protected paths
+
+#### Scenario: Host-listed protected path
+- **WHEN** the host config lists `src/core/security/**` as protected and the builder edits a file there
+- **THEN** the change is flagged with that path, even if the builder also removed the entry from the config in its worktree
 
 ### Requirement: Zero-test guard
 A test gate that ran zero tests SHALL fail.

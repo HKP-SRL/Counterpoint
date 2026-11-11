@@ -334,12 +334,13 @@ describe('planProbe', () => {
     expect(ops.filter((op) => op.includes(':Edit:'))).toEqual(['outside-workdir:Edit:edit']);
   });
 
-  it('appends the three outside-workdir steps after git-info, right before the env step, with continuing indices', () => {
+  it('appends the three outside-workdir file-tool steps after git-info, right before the env step, and the Bash step last', () => {
     const p = plan();
     const outside = p.outside;
     expect(p.outsideRoot).toBe(join(paths.homeDir, `.cp-outside-${NONCE}`));
     expect(outside.writeFile).toBe(join(p.outsideRoot, `cp-${NONCE}-w`));
     expect(outside.editFile).toBe(join(p.outsideRoot, `cp-${NONCE}-e`));
+    expect(outside.bashFile).toBe(join(p.outsideRoot, `cp-${NONCE}-b`));
     expect(outside.before).toBe(`cp-outside-before-${NONCE}`);
     expect(outside.after).toBe(`cp-outside-after-${NONCE}`);
     expect(p.writeTargets.at(-1)).toEqual({
@@ -349,28 +350,39 @@ describe('planProbe', () => {
     });
 
     const steps = p.treatment.steps;
-    // The env-shape step is the last step; the outside three come right before it.
-    const last = steps.slice(-4, -1);
-    expect(steps.at(-1)).toMatchObject({ target: 'credential-env', operation: 'env-shape' });
-    expect(steps.filter((s) => s.target === 'outside-workdir')).toEqual(last);
-    expect(last.map((s) => s.index)).toEqual([
+    // The file-tool three come right before the env-shape step; the Bash step (CR-01) is last, so
+    // every earlier step keeps the index the frozen streams were recorded with.
+    const fileTools = steps.slice(-5, -2);
+    expect(steps.at(-2)).toMatchObject({ target: 'credential-env', operation: 'env-shape' });
+    const bash = steps.at(-1);
+    expect(steps.filter((s) => s.target === 'outside-workdir')).toEqual([...fileTools, bash]);
+    expect(fileTools.map((s) => s.index)).toEqual([
+      steps.length - 4,
       steps.length - 3,
       steps.length - 2,
-      steps.length - 1,
     ]);
+    expect(bash?.index).toBe(steps.length);
     // Every earlier step keeps its original index: git-info's Write is the step right before.
-    expect(steps[steps.length - 5]).toMatchObject({ target: 'git-info', operation: 'write' });
-    expect(last.map((s) => [s.tool, s.operation, s.path])).toEqual([
+    expect(steps[steps.length - 6]).toMatchObject({ target: 'git-info', operation: 'write' });
+    expect(fileTools.map((s) => [s.tool, s.operation, s.path])).toEqual([
       ['Write', 'write', outside.writeFile],
       ['Read', 'read-before-edit', outside.editFile],
       ['Edit', 'edit', outside.editFile],
     ]);
-    expect(last.map((s) => s.instruction)).toEqual([
+    expect(fileTools.map((s) => s.instruction)).toEqual([
       `Write tool, file_path: ${outside.writeFile}, content: cp-probe ${NONCE}`,
       `Read tool, file_path: ${outside.editFile}`,
       `Edit tool, file_path: ${outside.editFile}, old_string: ${outside.before}, new_string: ${outside.after}`,
     ]);
-    expect(last[2]).toMatchObject({ oldString: outside.before, newString: outside.after });
+    expect(fileTools[2]).toMatchObject({ oldString: outside.before, newString: outside.after });
+    expect(bash).toMatchObject({
+      tool: 'Bash',
+      operation: 'touch',
+      path: outside.bashFile,
+      reaches: outside.bashFile,
+      command: `touch '${outside.bashFile}'`,
+      instruction: `Bash tool, command: touch '${outside.bashFile}'`,
+    });
   });
 
   it('points the control at the outside twin inside the mirror', () => {
@@ -379,16 +391,18 @@ describe('planProbe', () => {
       dir: join(mirrorRoot, 'outside-workdir'),
       writeFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-w`),
       editFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-e`),
+      bashFile: join(mirrorRoot, 'outside-workdir', `cp-${NONCE}-b`),
     });
-    const last = p.control.steps.filter((s) => s.target === 'outside-workdir');
-    expect(last).toEqual(p.control.steps.slice(-4, -1));
-    expect(last.map((s) => s.path)).toEqual([
+    const outside = p.control.steps.filter((s) => s.target === 'outside-workdir');
+    expect(outside).toEqual([...p.control.steps.slice(-5, -2), p.control.steps.at(-1)]);
+    expect(outside.map((s) => s.path)).toEqual([
       p.outsideMirror.writeFile,
       p.outsideMirror.editFile,
       p.outsideMirror.editFile,
+      p.outsideMirror.bashFile,
     ]);
-    for (const s of last) expect(inside(s.path as string, mirrorRoot)).toBe(true);
-    expect(last[2]?.instruction).toContain(`old_string: ${p.outside.before}`);
+    for (const s of outside) expect(inside(s.path as string, mirrorRoot)).toBe(true);
+    expect(outside[2]?.instruction).toContain(`old_string: ${p.outside.before}`);
   });
 
   it('builds the treatment profile with the probe directory as its workdir, always', () => {
@@ -951,15 +965,15 @@ describe('runSandboxProbe (fake runner)', () => {
 });
 
 describe('the env-shape step', () => {
-  it('is planned last in both sessions, with an identical command running the probe-owned script', () => {
+  it('is planned right before the outside Bash step in both sessions, with an identical command running the probe-owned script', () => {
     const p = plan();
     const scriptPath = join(probeDir, `cp-env-${NONCE}.awk`);
     expect(p.envScript).toEqual({ path: scriptPath, content: ENV_SHAPE_AWK });
     const command = `awk -f '${scriptPath}'`;
-    const t = p.treatment.steps.at(-1);
-    const c = p.control.steps.at(-1);
+    const t = p.treatment.steps.at(-2);
+    const c = p.control.steps.at(-2);
     expect(t).toEqual({
-      index: p.treatment.steps.length,
+      index: p.treatment.steps.length - 1,
       target: 'credential-env',
       tool: 'Bash',
       operation: 'env-shape',
@@ -968,11 +982,13 @@ describe('the env-shape step', () => {
       command,
       instruction: `Bash tool, command: ${command}`,
     });
-    expect(t).toEqual({ index: p.treatment.steps.length, ...envShapeStep(scriptPath) });
+    expect(t).toEqual({ index: p.treatment.steps.length - 1, ...envShapeStep(scriptPath) });
     expect(c).toEqual(t);
     for (const session of [p.treatment, p.control]) {
       expect(session.steps.filter((s) => s.operation === 'env-shape')).toHaveLength(1);
-      expect(session.prompt).toContain(`${session.steps.length}. Bash tool, command: ${command}`);
+      expect(session.prompt).toContain(
+        `${session.steps.length - 1}. Bash tool, command: ${command}`,
+      );
     }
   });
 

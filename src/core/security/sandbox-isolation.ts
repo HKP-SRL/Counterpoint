@@ -25,9 +25,12 @@
 // Managed settings always apply: "Nothing in your own settings files or `--settings` overrides a
 // managed key" (https://code.claude.com/docs/en/settings, "Settings precedence").
 //
-// Rules (ISOLATION_RULES): every rule names its doc. `filesystem.disabled`, `excludedCommands` and
-// `allowAppleEvents` fail in every source, because user, managed and flag values all take effect
-// (a scalar the launch flag leaves unset; a list that merges). The four Booleans the launch flag
+// Rules (ISOLATION_RULES): every rule names its doc. `filesystem.disabled`, `excludedCommands`,
+// `allowAppleEvents` and the write and read widenings (CR-01: `filesystem.allowWrite`,
+// `filesystem.allowRead`, `permissions.additionalDirectories`, the unix-socket allowances) fail in
+// every source, the launch source included except for the builder's own `allowWrite` grant,
+// because user, managed and flag values all take effect (a scalar the launch flag leaves unset; a
+// list that merges). The four Booleans the launch flag
 // sets explicitly fail only in a managed source, because only managed settings outrank
 // `--settings` ("When managed settings set a Boolean key such as `enabled` or `failIfUnavailable`,
 // Claude Code uses the managed value and ignores anything a developer sets locally",
@@ -37,7 +40,8 @@
 // key fails closed here.
 //
 // Shown values are limited to a Boolean, a sanitised string of at most 40 characters, or an entry
-// count; problems never contain file content; paths show the home directory as `~`.
+// count; problems never contain file content; paths show the home directory as `~`. The check's
+// pass wording says "turns sandbox isolation off or widens it".
 import type { SandboxIsolationCheck } from './doctor-report.ts';
 
 export const SETTINGS_SOURCE_KINDS = [
@@ -73,12 +77,17 @@ export interface SettingsSourceRead {
 }
 
 export interface IsolationRule {
-  /** The dotted settings key. */
+  /** The dotted settings key, from the settings root. */
   key: string;
   /** `any`: fails in every source; `managed`: fails only in a managed source. */
   failsIn: 'any' | 'managed';
   /** A Boolean key with its safe value, or a list that is safe only when empty. */
   safe: boolean | 'empty-list';
+  /**
+   * `builder-grant`: in the launch source the list must equal the grant the caller passes
+   * (`LaunchGrant`), not be empty. Every other source still needs an empty list.
+   */
+  launch?: 'builder-grant';
   /** What an unsafe value does, completing "which {effect}". */
   effect: string;
   /** The doc page and the quoted phrase this rule rests on. */
@@ -138,7 +147,55 @@ export const ISOLATION_RULES: readonly IsolationRule[] = [
     effect: 'lets sandboxed commands launch applications outside the sandbox',
     doc: `${SANDBOXING} "Security limitations": "it removes code-execution isolation: sandboxed commands can launch other applications unsandboxed with no user prompt"; "It is only honored from user, managed, or CLI settings"`,
   },
+  // Write and read widenings (CR-01 from the trusted-shell review). Filesystem arrays merge across
+  // every scope the session loads, so a user or managed entry widens every agent session.
+  {
+    key: 'sandbox.filesystem.allowWrite',
+    failsIn: 'any',
+    safe: 'empty-list',
+    launch: 'builder-grant',
+    effect: 'lets sandboxed commands write there',
+    doc: `${SANDBOXING} "Configure sandboxing": "use \`sandbox.filesystem.allowWrite\` to grant access to specific paths"; "When you define the same filesystem array in multiple settings scopes, Claude Code merges them, combining the paths rather than replacing one scope's array with another's"`,
+  },
+  {
+    key: 'sandbox.filesystem.allowRead',
+    failsIn: 'any',
+    safe: 'empty-list',
+    effect: 'lets sandboxed commands read inside denied folders',
+    doc: `${SANDBOXING} "Configure sandboxing": "re-allow specific paths within a denied region using \`sandbox.filesystem.allowRead\`"; "For array keys such as \`allowRead\`, Claude Code merges entries from the scopes the session loads, so a developer can append entries that widen the policy"`,
+  },
+  {
+    key: 'permissions.additionalDirectories',
+    failsIn: 'any',
+    safe: 'empty-list',
+    effect: 'lets agents write in those directories',
+    doc: `${SANDBOXING} "Run a Bash command": "commands inside the sandbox can write to the working directory, a per-user temp directory, and any directories you've added with \`--add-dir\`, \`/add-dir\`, or \`permissions.additionalDirectories\`"`,
+  },
+  {
+    key: 'sandbox.network.allowUnixSockets',
+    failsIn: 'any',
+    safe: 'empty-list',
+    effect: 'lets sandboxed commands connect to those local sockets',
+    doc: `${SANDBOXING} "Repository settings under an admin-required sandbox": \`network.allowUnixSockets\` is among the settings that loosen the sandbox; "For array keys ... a developer can append entries that widen the policy"`,
+  },
+  {
+    key: 'sandbox.network.allowAllUnixSockets',
+    failsIn: 'any',
+    safe: false,
+    effect: 'lets sandboxed commands connect to every local socket',
+    doc: `${SANDBOXING} "Keep developers from widening the policy": "a developer's user settings or \`--settings\` can turn on the following keys ... Each one weakens the sandbox": \`network.allowAllUnixSockets\`, "which opens every Unix socket to sandboxed commands"`,
+  },
 ];
+
+/**
+ * What the launch source may grant beyond the defaults: the builder's own write grant. Doctor
+ * passes the grant of the profile it checks; with no grant the launch source must grant nothing.
+ */
+export interface LaunchGrant {
+  allowWrite: readonly string[];
+}
+
+const NO_GRANT: LaunchGrant = { allowWrite: [] };
 
 const LABEL = 'Sandbox isolation settings';
 const ID = 'sandbox-isolation';
@@ -209,7 +266,14 @@ function displayPath(path: string, homeDir: string): string {
   return sanitise(path);
 }
 
-function findingsOf(source: SettingsSourceRead): Finding[] {
+/** True when `value` is a list holding exactly the entries of `grant`. */
+function equalsGrant(value: unknown, grant: readonly string[]): boolean {
+  if (!Array.isArray(value) || value.length !== grant.length) return false;
+  const wanted = new Set(grant);
+  return value.every((entry) => typeof entry === 'string' && wanted.has(entry));
+}
+
+function findingsOf(source: SettingsSourceRead, grant: LaunchGrant): Finding[] {
   const findings: Finding[] = [];
   const add = (key: string, shown: string | null, effect: string, safe: string) =>
     findings.push({ source, key, shown, effect, safe });
@@ -220,28 +284,48 @@ function findingsOf(source: SettingsSourceRead): Finding[] {
   }
   const isLaunch = source.kind === 'launch';
   const managed = isManagedKind(source.kind);
-  const sandbox = Object.hasOwn(settings, 'sandbox') ? settings.sandbox : undefined;
-  if (sandbox !== undefined && !isPlainObject(sandbox)) {
-    add('sandbox', shownValue(sandbox), 'Counterpoint cannot check', 'an object');
-    return findings;
-  }
-  const fs =
-    sandbox !== undefined && Object.hasOwn(sandbox, 'filesystem') ? sandbox.filesystem : undefined;
-  if (fs !== undefined && !isPlainObject(fs)) {
-    add('sandbox.filesystem', shownValue(fs), 'Counterpoint cannot check', 'an object');
-  }
+  // A parent of some rule's key that is present but not an object: reported once, and the rules
+  // beneath it are not judged (Counterpoint cannot read them).
+  const badParents = new Set<string>();
 
   for (const rule of ISOLATION_RULES) {
     if (rule.failsIn === 'managed' && !managed && !isLaunch) continue;
-    const [, second, third] = rule.key.split('.');
-    let value: unknown;
-    if (third !== undefined) {
-      value = isPlainObject(fs) && Object.hasOwn(fs, third) ? fs[third] : undefined;
-    } else {
-      value =
-        sandbox !== undefined && Object.hasOwn(sandbox, second as string)
-          ? sandbox[second as string]
-          : undefined;
+    const parts = rule.key.split('.');
+    let node: unknown = settings;
+    let blocked = false;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const name = parts[i] as string;
+      const next = isPlainObject(node) && Object.hasOwn(node, name) ? node[name] : undefined;
+      if (next === undefined) {
+        node = undefined;
+        break;
+      }
+      if (!isPlainObject(next)) {
+        const parent = parts.slice(0, i + 1).join('.');
+        if (!badParents.has(parent)) {
+          badParents.add(parent);
+          add(parent, shownValue(next), 'Counterpoint cannot check', 'an object');
+        }
+        blocked = true;
+        break;
+      }
+      node = next;
+    }
+    if (blocked) continue;
+    const last = parts[parts.length - 1] as string;
+    const value = isPlainObject(node) && Object.hasOwn(node, last) ? node[last] : undefined;
+
+    if (isLaunch && rule.launch === 'builder-grant') {
+      // Unset equals an empty list here: Claude Code adds nothing.
+      if (!equalsGrant(value ?? [], grant.allowWrite)) {
+        add(
+          rule.key,
+          value === undefined ? null : shownValue(value),
+          rule.effect,
+          "the builder's own grant",
+        );
+      }
+      continue;
     }
     const safe = shownSafe(rule.safe);
     if (value === undefined) {
@@ -285,14 +369,16 @@ function findingFix(finding: Finding, homeDir: string): string {
 /**
  * Judges every settings source an agent session loads. Fails on an unreadable source, on a
  * missing launch source, and on any rule finding; passes only when none of those holds.
+ * `launchGrant` is the only write grant the launch source may carry (none by default).
  */
 export function judgeSandboxIsolation(
   sources: readonly SettingsSourceRead[],
   homeDir: string,
+  launchGrant: LaunchGrant = NO_GRANT,
 ): SandboxIsolationCheck {
   const perSource = sources.map((source) => ({
     source,
-    findings: source.state === 'read' ? findingsOf(source) : [],
+    findings: source.state === 'read' ? findingsOf(source, launchGrant) : [],
   }));
   const stored = perSource.map(({ source, findings }) => ({
     kind: source.kind,
@@ -354,6 +440,6 @@ export function judgeSandboxIsolation(
   return {
     ...base,
     result: 'pass',
-    detail: `No settings source Claude Code loads for agent sessions turns sandbox isolation off (${read.length} checked: ${labels}).`,
+    detail: `No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (${read.length} checked: ${labels}).`,
   };
 }

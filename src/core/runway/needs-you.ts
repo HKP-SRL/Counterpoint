@@ -44,11 +44,8 @@ export const GATES_ROW_LABEL = 'Gate config';
 export const GATES_DIFF_PATH = `${COUNTERPOINT_CONFIG_PATH} (gates)`;
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
-const PLUMBING_ENV = {
-  GIT_LITERAL_PATHSPECS: '1',
-  GIT_NO_REPLACE_OBJECTS: '1',
-  GIT_GRAFT_FILE: '/dev/null',
-} as const;
+/** Replace refs and grafts are ignored by runGit itself; pathspecs here are literal. */
+const PLUMBING_ENV = { GIT_LITERAL_PATHSPECS: '1' } as const;
 
 export type ChangedApproval = Runway['changed'][number];
 
@@ -138,7 +135,6 @@ async function lastTouched(
   const args = [
     '-c',
     'core.commitGraph=false',
-    '--no-replace-objects',
     'log',
     '-1',
     '--first-parent',
@@ -350,12 +346,20 @@ export async function changedInputDiff(options: {
 }
 
 /** Paths reported by `git status --porcelain=v1 -z --no-renames`. */
-function statusPaths(stdout: string): Set<string> {
+/** The paths of `check-attr -z filter` output whose filter attribute is set to anything. */
+function filteredPaths(stdout: string): Set<string> {
+  const fields = stdout.split('\0');
   const paths = new Set<string>();
-  for (const record of stdout.split('\0')) {
-    if (record.length > 3) paths.add(record.slice(3));
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2] as string;
+    if (value !== 'unspecified' && value !== 'unset') paths.add(fields[i] as string);
   }
   return paths;
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (a === null || b === null) return a === b;
+  return Buffer.from(a).equals(Buffer.from(b));
 }
 
 /**
@@ -408,39 +412,67 @@ function readWorkingFile(root: string, relPath: string): Uint8Array | null {
   }
 }
 
+/** The soft hint's finding for one change. */
+export interface UncommittedEdits {
+  /** True when an uncommitted edit changes an input, or a covered file is not checkable. */
+  edited: boolean;
+  /** Covered files a content filter applies to: shown as edited, never checked. */
+  notCheckable: string[];
+}
+
 /**
- * The soft hint of runway: Uncommitted edits do not change the runway: true when the owner's
+ * The soft hint of runway: Uncommitted edits do not change the runway: whether the owner's
  * checkout has uncommitted edits to the files the change's inputs come from that change an input.
- * Both sides are relative to the checkout's own HEAD. A raw input counts as soon as its file is
- * dirty; a normalized input counts only when its recomputed bytes differ (ticking a task box does
- * not). The approval itself is never affected.
+ * Both sides are relative to the checkout's own HEAD. A raw input counts as soon as its file
+ * differs; a normalized input counts only when its recomputed bytes differ (ticking a task box
+ * does not). The approval itself is never affected.
+ *
+ * Runs no repository program (runway: Uncommitted-edits hint runs no repository program; WR-06).
+ * `git status` would re-hash stat-dirty files through any configured `clean` filter, a program
+ * from the repository's config. So the only git call is `check-attr filter`, which reads attribute
+ * files and runs nothing; a covered file a filter applies to is reported as not checkable (and
+ * edited). Every other file is compared byte for byte: working tree against HEAD. An end-of-line
+ * conversion can make an unedited file differ; the hint then shows, which is the safe side.
  */
 export async function uncommittedEditsHint(options: {
   root: string;
   reader: GitFileReader;
   adapter: FrameworkAdapter;
   changeId: string;
-}): Promise<boolean> {
+}): Promise<UncommittedEdits> {
   const { root, reader, adapter } = options;
   const changeId = assertChangeId(options.changeId);
+  const clean: UncommittedEdits = { edited: false, notCheckable: [] };
   const head = await reader.resolve('HEAD');
-  if (head === null) return false;
+  if (head === null) return clean;
   const inputs = await inputsAt(adapter, reader, head, changeId);
   const sources = [...new Set(inputs.map((input) => input.sourcePath))];
-  if (sources.length === 0) return false;
+  if (sources.length === 0) return clean;
 
-  // runGit sets GIT_OPTIONAL_LOCKS=0 and core.fsmonitor=false; pathspecs are literal.
-  const { stdout } = await runGit(
-    root,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--', ...sources],
-    { env: { GIT_LITERAL_PATHSPECS: '1' } },
-  );
-  const dirty = statusPaths(stdout);
-  if (dirty.size === 0) return false;
+  const { stdout } = await runGit(root, ['check-attr', '-z', 'filter', '--', ...sources], {
+    env: { GIT_LITERAL_PATHSPECS: '1' },
+  });
+  const filtered = filteredPaths(stdout);
+  const notCheckable = sources.filter((path) => filtered.has(path)).sort();
+  if (notCheckable.length > 0) return { edited: true, notCheckable };
+
+  const dirty = new Set<string>();
+  for (const path of sources) {
+    let working: Uint8Array | null;
+    try {
+      working = readWorkingFile(root, path);
+    } catch {
+      return { edited: true, notCheckable };
+    }
+    if (!sameBytes(working, await reader.read(head, path))) dirty.add(path);
+  }
+  if (dirty.size === 0) return clean;
 
   for (const input of inputs) {
     if (!dirty.has(input.sourcePath)) continue;
-    if (input.sourcePath === input.path && input.normalization === null) return true;
+    if (input.sourcePath === input.path && input.normalization === null) {
+      return { edited: true, notCheckable };
+    }
     // A normalized input: recompute it with only its source file taken from the working tree.
     try {
       const working = readWorkingFile(root, input.sourcePath);
@@ -455,11 +487,13 @@ export async function uncommittedEditsHint(options: {
       const now = (await adapter.approvalInputs(overlay, head, changeId)).find(
         (i) => i.path === input.path,
       );
-      if (now === undefined || sha256Digest(now.bytes) !== sha256Digest(input.bytes)) return true;
+      if (now === undefined || sha256Digest(now.bytes) !== sha256Digest(input.bytes)) {
+        return { edited: true, notCheckable };
+      }
     } catch {
       // The edited source cannot be read or no longer yields this change: that is an edit to it.
-      return true;
+      return { edited: true, notCheckable };
     }
   }
-  return false;
+  return clean;
 }

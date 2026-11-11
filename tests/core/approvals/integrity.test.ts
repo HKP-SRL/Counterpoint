@@ -1,6 +1,6 @@
 // Integrity snapshot (key-trust: Host integrity baseline): only the execution-capable git surface
-// is captured — risky `.git/config` keys plus hashes of real hooks, `.git/info/*` and
-// config.worktree — and compared against the owner's baseline. Churn and sandbox-probe artifacts
+// is captured — risky `.git/config` keys plus hashes of real hooks, `.git/info/*`,
+// config.worktree, every linked worktree's config and every included file — and compared against the owner's baseline. Churn and sandbox-probe artifacts
 // are ignored; nothing runs.
 import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import {
   INTEGRITY_REFUSAL,
   RISKY_CONFIG_KEYS,
   readBaseline,
+  resolveIncludePath,
   snapshotIntegrity,
   writeBaseline,
 } from '../../../src/core/approvals/integrity.ts';
@@ -44,12 +45,14 @@ describe('snapshotIntegrity', () => {
   it('captures no risky config and no hooks on a fresh repo, only the info/exclude hash', async () => {
     const { gitDir } = await freshRepo();
     const snapshot = await snapshotIntegrity(gitDir);
-    expect(snapshot.schema).toBe('counterpoint/integrity/v1');
+    expect(snapshot.schema).toBe('counterpoint/integrity/v2');
     expect(snapshot.config).toEqual({});
     expect(snapshot.hooks).toEqual({});
     expect(Object.keys(snapshot.info)).toEqual(['exclude']);
     expect(snapshot.info.exclude).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(snapshot.configWorktree).toBeNull();
+    expect(snapshot.worktreeConfigs).toEqual({});
+    expect(snapshot.includes).toEqual({});
   });
 
   it('lists a Cena-like signing setup (user.signingkey, gpg.format) in the baseline', async () => {
@@ -96,7 +99,7 @@ describe('checkIntegrity', () => {
     const repo = await freshRepo();
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'no-baseline' });
     writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
-    expect(readBaseline(repo.home, repo.host.id)?.schema).toBe('counterpoint/integrity/v1');
+    expect(readBaseline(repo.home, repo.host.id)?.schema).toBe('counterpoint/integrity/v2');
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
   });
 
@@ -114,12 +117,21 @@ describe('checkIntegrity', () => {
   it.each([
     ['core.hooksPath', 'core.hookspath', '/tmp/hooks'],
     ['alias.x', 'alias.x', '!sh -c id'],
-    ['include.path', 'include.path', '/tmp/inc'],
     ['filter.lfs.smudge', 'filter.lfs.smudge', 'git-lfs smudge %f'],
     ['gpg.ssh.program', 'gpg.ssh.program', '/tmp/keygen'],
-    ['includeIf.gitdir:~/x.path', 'includeif.gitdir:~/x.path', '/tmp/inc'],
     ['credential.helper', 'credential.helper', '!sh -c id'],
     ['diff.foo.textconv', 'diff.foo.textconv', 'cat'],
+    // WR-05: the keys the first baseline missed.
+    ['diff.external', 'diff.external', '/tmp/x'],
+    ['pager.log', 'pager.log', 'sh -c id'],
+    ['sequence.editor', 'sequence.editor', '/tmp/x'],
+    ['submodule.lib.update', 'submodule.lib.update', '!sh -c id'],
+    ['difftool.x.cmd', 'difftool.x.cmd', 'sh -c id'],
+    ['mergetool.x.cmd', 'mergetool.x.cmd', 'sh -c id'],
+    ['core.alternateRefsCommand', 'core.alternaterefscommand', 'sh -c id'],
+    ['http.proxy', 'http.proxy', 'http://evil.example:8080'],
+    ['http.https://github.com.proxy', 'http.https://github.com.proxy', 'http://evil.example'],
+    ['remote.origin.proxy', 'remote.origin.proxy', 'http://evil.example'],
   ])('reports a new %s as changed', async (key, listed, value) => {
     const repo = await baselined();
     await gitIn(repo.dir, ['config', key, value]);
@@ -128,6 +140,109 @@ describe('checkIntegrity', () => {
       state: 'changed',
       changes: [{ area: 'config', name: listed, before: null, after: value }],
     });
+  });
+
+  it.each([
+    ['include.path', 'include.path'],
+    ['includeIf.gitdir:~/x.path', 'includeif.gitdir:~/x.path'],
+  ])('reports a new %s as changed, with its target', async (key, listed) => {
+    const repo = await baselined();
+    const target = '/nonexistent-cp-include/inc';
+    await gitIn(repo.dir, ['config', key, target]);
+    const result = await checkIntegrity(repo.home, repo.host);
+    expect(result).toEqual({
+      state: 'changed',
+      changes: [
+        { area: 'config', name: listed, before: null, after: target },
+        { area: 'include', name: target, before: null, after: 'missing' },
+      ],
+    });
+  });
+
+  it('fails when a file pulled in by include.path changes after the baseline', async () => {
+    const repo = await freshRepo();
+    // A relative include resolves against the including file's directory (.git/).
+    writeFileIn(repo.gitDir, 'extra.inc', '[user]\n\tname = a\n');
+    await gitIn(repo.dir, ['config', 'include.path', 'extra.inc']);
+    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
+    writeFileIn(repo.gitDir, 'extra.inc', '[core]\n\tpager = sh -c id\n');
+    const result = await checkIntegrity(repo.home, repo.host);
+    expect(result.state).toBe('changed');
+    if (result.state !== 'changed') return;
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toMatchObject({
+      area: 'include',
+      name: join(repo.gitDir, 'extra.inc'),
+    });
+    expect(result.changes[0]?.before).toMatch(/^sha256:/);
+    expect(result.changes[0]?.after).toMatch(/^sha256:/);
+  });
+
+  it('follows nested includes', async () => {
+    const repo = await freshRepo();
+    const dir = makeScratchDir('iinc');
+    writeFileIn(dir, 'a.inc', '[include]\n\tpath = b.inc\n');
+    writeFileIn(dir, 'b.inc', '[user]\n\tname = b\n');
+    await gitIn(repo.dir, ['config', 'include.path', join(dir, 'a.inc')]);
+    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    expect(Object.keys(readBaseline(repo.home, repo.host.id)?.includes ?? {})).toEqual([
+      join(dir, 'a.inc'),
+      join(dir, 'b.inc'),
+    ]);
+    writeFileIn(dir, 'b.inc', '[core]\n\tfsmonitor = sh -c id\n');
+    const result = await checkIntegrity(repo.home, repo.host);
+    expect(result.state === 'changed' && result.changes.map((c) => c.name)).toEqual([
+      join(dir, 'b.inc'),
+    ]);
+  });
+
+  it('fails when a linked worktree config sets a pager after the baseline', async () => {
+    const repo = await freshRepo();
+    await gitIn(repo.dir, [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t.invalid',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'x',
+    ]);
+    await gitIn(repo.dir, ['config', 'extensions.worktreeConfig', 'true']);
+    const wt = join(makeScratchDir('iwt'), 'wt');
+    await gitIn(repo.dir, ['worktree', 'add', '-q', '--detach', wt]);
+    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
+    await gitIn(wt, ['config', '--worktree', 'pager.log', 'sh -c id']);
+    const result = await checkIntegrity(repo.home, repo.host);
+    expect(result.state).toBe('changed');
+    if (result.state !== 'changed') return;
+    expect(result.changes).toEqual([
+      {
+        area: 'worktree config',
+        name: 'wt',
+        before: null,
+        after: expect.stringMatching(/^sha256:/),
+      },
+    ]);
+  });
+
+  it('reads a v1 baseline as having no worktree configs or include targets', async () => {
+    const repo = await freshRepo();
+    const v2 = await snapshotIntegrity(repo.gitDir);
+    const { worktreeConfigs: _w, includes: _i, ...rest } = v2;
+    const dir = join(repo.home, 'hosts', repo.host.id);
+    writeFileIn(
+      dir,
+      'integrity.json',
+      JSON.stringify({ ...rest, schema: 'counterpoint/integrity/v1' }),
+    );
+    chmodSync(dir, 0o700);
+    chmodSync(join(dir, 'integrity.json'), 0o600);
+    expect(readBaseline(repo.home, repo.host.id)).toEqual(v2);
+    expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
   });
 
   it('reports a changed remote.origin.url with before and after', async () => {
@@ -183,6 +298,16 @@ describe('checkIntegrity', () => {
   });
 });
 
+describe('resolveIncludePath', () => {
+  it('resolves as git does: ~/ to home, relative to the including file, ~user unresolved', () => {
+    expect(resolveIncludePath('~/x.inc', '/r/.git/config', '/Users/o')).toBe('/Users/o/x.inc');
+    expect(resolveIncludePath('x.inc', '/r/.git/config', '/Users/o')).toBe('/r/.git/x.inc');
+    expect(resolveIncludePath('../x.inc', '/r/.git/config', '/Users/o')).toBe('/r/x.inc');
+    expect(resolveIncludePath('/abs/x.inc', '/r/.git/config', '/Users/o')).toBe('/abs/x.inc');
+    expect(resolveIncludePath('~bob/x.inc', '/r/.git/config', '/Users/o')).toBeNull();
+  });
+});
+
 describe('compareIntegrity and copy', () => {
   it('returns ok for identical snapshots', async () => {
     const { gitDir } = await freshRepo();
@@ -197,6 +322,8 @@ describe('compareIntegrity and copy', () => {
       'includeif.*',
       'gpg.*',
       'remote.*.url',
+      'pager.*',
+      'http.*.proxy',
     ]) {
       expect(RISKY_CONFIG_KEYS).toContain(key);
     }

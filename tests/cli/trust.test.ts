@@ -1,7 +1,14 @@
 // Owner setup commands: init-key, trust-key, trust {host}. Driven as functions with an injected
 // TTY flag and answer, against scratch homes, scratch repositories and throwaway keys. Nothing
 // here touches the real ~/.ssh, ssh-agent, Keychain or Counterpoint home.
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { initKeyCommand, trustHostCommand, trustKeyCommand } from '../../src/cli/trust.ts';
@@ -133,6 +140,94 @@ describe('trustKeyCommand', () => {
     expect(code).not.toBe(0);
     expect(captured.questions).toEqual([]);
     expect(existsSync(join(home, 'trust'))).toBe(false);
+  });
+});
+
+describe('trustKeyCommand: the key is swapped while the prompt is open (WR-02)', () => {
+  /** A protected key copied to its own folder, so the test can replace its public half. */
+  async function ownKey(name: string): Promise<{ pub: string; other: ThrowawayKey }> {
+    const dir = makeScratchDir('tswap');
+    const key = await makeThrowawayKey(dir, { name, passphrase: 'pass' });
+    const other = await makeThrowawayKey(dir, { name: `${name}-other`, passphrase: 'pass' });
+    return { pub: key.publicKeyPath, other };
+  }
+
+  /** Answers y after running `swap`, as if the file changed while the owner read the prompt. */
+  function swapThenYes(swap: () => void) {
+    const { captured, options } = io('y');
+    return {
+      captured,
+      options: {
+        ...options,
+        confirm: async (question: string) => {
+          captured.questions.push(question);
+          swap();
+          return 'y';
+        },
+      },
+    };
+  }
+
+  it('refuses and writes nothing when the file holds another key at write time', async () => {
+    const home = makeScratchDir('thome');
+    const { pub, other } = await ownKey('swapped');
+    const { captured, options } = swapThenYes(() =>
+      writeFileSync(pub, readFileSync(other.publicKeyPath)),
+    );
+    const code = await trustKeyCommand(home, pub, options);
+    expect(code).toBe(1);
+    expect(captured.questions).toHaveLength(1);
+    expect(captured.err).toContain(
+      'The public key file changed after you confirmed it. Nothing saved.',
+    );
+    expect(existsSync(join(home, 'trust'))).toBe(false);
+  });
+
+  it('refuses and writes nothing when the file became a symlink at write time', async () => {
+    const home = makeScratchDir('thome');
+    const { pub, other } = await ownKey('linked');
+    const { captured, options } = swapThenYes(() => {
+      unlinkSync(pub);
+      symlinkSync(other.publicKeyPath, pub);
+    });
+    const code = await trustKeyCommand(home, pub, options);
+    expect(code).toBe(1);
+    expect(captured.err).toContain(
+      'The public key file changed after you confirmed it. Nothing saved.',
+    );
+    expect(existsSync(join(home, 'trust'))).toBe(false);
+  });
+
+  it('pins the confirmed bytes when the file is rewritten with the same key', async () => {
+    const home = makeScratchDir('thome');
+    const { pub } = await ownKey('same');
+    const before = readFileSync(pub, 'utf8');
+    const { options } = swapThenYes(() =>
+      writeFileSync(pub, before.replace(/ \S+\n?$/, ' renamed\n')),
+    );
+    const code = await trustKeyCommand(home, pub, options);
+    expect(code).toBe(0);
+    const pinned = readFileSync(join(home, 'trust', 'allowed_signers'), 'utf8');
+    expect(pinned).toBe(
+      `owner@counterpoint namespaces="git" ${before.split(' ').slice(0, 2).join(' ')}\n`,
+    );
+  });
+
+  it('shows the fingerprint of the bytes it read, without running ssh-keygen on the path', async () => {
+    const home = makeScratchDir('thome');
+    const { pub, other } = await ownKey('shown');
+    const expected = await fingerprintOf(pub);
+    // Swapped right after the read: the shown fingerprint is still the read key's.
+    const { captured, options } = io('n');
+    const code = await trustKeyCommand(home, pub, {
+      ...options,
+      out: (line: string) => {
+        captured.out.push(line);
+        if (line.startsWith('Key: ')) writeFileSync(pub, readFileSync(other.publicKeyPath));
+      },
+    });
+    expect(code).toBe(1);
+    expect(captured.out).toContain(`Fingerprint: ${expected}`);
   });
 });
 

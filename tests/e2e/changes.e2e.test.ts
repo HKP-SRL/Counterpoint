@@ -113,7 +113,7 @@ const AGENT_MODE_FAIL = "The probe's agent session ran in default mode, not auto
 const AGENT_MODE_FIX =
   'Counterpoint launches agent sessions with --permission-mode auto. Check that auto mode is available to your claude (claude --version; no disableAutoMode in your Claude Code settings), then run "counterpoint doctor" again.';
 const ISOLATION_PASS =
-  'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).';
+  'No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (1 checked: launch settings).';
 const ISOLATION_FAIL =
   'user settings sets sandbox.filesystem.disabled to true, which turns filesystem isolation off.';
 const ISOLATION_FIX =

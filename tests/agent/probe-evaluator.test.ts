@@ -6,10 +6,10 @@
 //   frozen from the first live probe run, which the four mutated fixtures (leak, mode-only,
 //   skipped-step, unknown-message) were cut from and which predate the outside-workdir and
 //   credential-env rows and auto mode; read with legacyPlan() and the LEGACY_* constants;
-// - the live pair (live-treatment.jsonl / live-control.jsonl, refrozen by the nine-row live run on
-// the
-//   owner's claude, in auto mode with the scrub opted out), read with livePlan() from
-//   live-plan.json: all nine rows, the outside-write block and the credential-env listing.
+// - the live pair (live-treatment.jsonl / live-control.jsonl, refrozen on claude 2.1.322 by the
+//   nine-row live run with the outside Bash step, on the owner's claude, in auto mode with the
+//   scrub opted out), read with livePlan() from live-plan.json: all nine rows, the outside-write
+//   block, the outside Bash step and the credential-env listing.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -245,7 +245,7 @@ function bashStream(command: string, result: string, isError: boolean): StreamEv
 
 describe('MATCHER_CLAUDE_VERSION', () => {
   it('is the claude version the denial matcher was verified against (re-verified in the nine-row live run)', () => {
-    expect(MATCHER_CLAUDE_VERSION).toBe('2.1.321');
+    expect(MATCHER_CLAUDE_VERSION).toBe('2.1.322');
     // It names exactly the version the refrozen live pair recorded.
     expect(/\b(\d+\.\d+\.\d+)\b/.exec(LIVE.claudeVersion)?.[1]).toBe(MATCHER_CLAUDE_VERSION);
   });
@@ -674,13 +674,15 @@ interface OutsideScenario {
   deniedEventReason?: string;
   /** The path the refusal text names (default: the step's own path). */
   textPath?: string;
+  /** How the treatment's outside Bash touch ends (default: refused by the OS sandbox). */
+  bash?: 'denied-os' | 'created';
 }
 
 /**
- * A copy of a session stream with the three outside-workdir calls appended before its result
- * event (synthetic; the mode shape follows mode-only.jsonl, the block and asyncAgent shapes the
- * live records). The treatment's Write and Edit are refused as the scenario
- * says; the control's three calls succeed in the mirror.
+ * A copy of a session stream with the four outside-workdir calls appended before its result
+ * event (synthetic; the mode shape follows mode-only.jsonl, the block, asyncAgent and OS shapes the
+ * live records). The treatment's Write and Edit are refused as the scenario says and its Bash
+ * touch by the OS sandbox; the control's four calls succeed in the mirror.
  */
 function withOutside(
   plan: ProbePlan,
@@ -694,6 +696,7 @@ function withOutside(
     w: `toolu_outside_${session}_w`,
     r: `toolu_outside_${session}_r`,
     e: `toolu_outside_${session}_e`,
+    b: `toolu_outside_${session}_b`,
   };
   const added: StreamEvent[] = [];
   const denials: unknown[] = [];
@@ -741,6 +744,20 @@ function withOutside(
     );
   } else {
     deny(ids.e, 'Edit', editInput);
+  }
+  // The Bash touch (CR-01), in the shape recorded live on claude 2.1.322: the classifier accepts
+  // the call and the OS sandbox refuses the write.
+  const command = `touch '${files.bashFile}'`;
+  added.push(toolCall(ids.b, 'Bash', { command }));
+  if (session === 'control' || scenario.bash === 'created') {
+    added.push(toolReply(ids.b, '(Bash completed with no output)', false));
+  } else {
+    added.push(
+      toolReply(ids.b, `Exit code 1\ntouch: ${files.bashFile}: Operation not permitted`, true, {
+        decision: 'accept',
+        reason_type: 'classifier',
+      }),
+    );
   }
 
   const out = events.map((event) => structuredClone(event) as Record<string, unknown>);
@@ -861,7 +878,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
     expect(new Set(targets.map((t) => t.result))).toEqual(new Set(['blocked']));
     const row = targets.find((t) => t.id === 'outside-workdir');
     expect(row?.evidence).toBe(
-      'Write: refused: writes outside the working folder are blocked; Read before Edit: reached; Edit: refused: writes outside the working folder are blocked; control reached 3 of 3',
+      'Write: refused: writes outside the working folder are blocked; Read before Edit: reached; Edit: refused: writes outside the working folder are blocked; Bash touch: Operation not permitted (sandbox); control reached 4 of 4',
     );
   });
 
@@ -1518,6 +1535,12 @@ describe('isCredentialName', () => {
     'GIT_ASKPASS',
     'MY_PAT',
     'CLOUDSDK_PROXY_PASSWORD',
+    // Only git's exact GIT_CONFIG_KEY_<n> shape is exempt from the KEY segment.
+    'GIT_CONFIG_KEY',
+    'GIT_CONFIG_KEY_X',
+    'git_config_key_0',
+    'GIT_CONFIG_KEY_0_TOKEN',
+    'MY_GIT_CONFIG_KEY_0',
   ])('flags %s', (name) => {
     expect(isCredentialName(name)).toBe(true);
   });
@@ -1545,12 +1568,17 @@ describe('isCredentialName', () => {
     'GIT_AUTHOR_NAME',
     'CLOUDSDK_PROXY_ADDRESS',
     'CLOUDSDK_PROXY_USERNAME',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_KEY_12',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_CONFIG_PARAMETERS',
   ])('does not flag %s', (name) => {
     expect(isCredentialName(name)).toBe(false);
   });
 });
 
-// --- The refrozen live pair (claude 2.1.321, auto mode, scrub opted out) ----------------------
+// --- The refrozen live pair (claude 2.1.322, auto mode, scrub opted out) ----------------------
 
 /** The matrix the nine-row live run printed (.tmp/live-probe/targets.json, kept in its evidence). */
 const LIVE_PRINTED: Record<ProbeTargetId, ProbeResult> = {
@@ -1798,13 +1826,14 @@ describe('structured evidence on the real streams', () => {
     }
   });
 
-  it('records the outside-workdir Write and Edit as denied-block', () => {
+  it('records the outside-workdir Write and Edit as denied-block and the Bash touch as denied-os', () => {
     const outside = byId(liveTargets, 'outside-workdir');
     const classes = Object.fromEntries(outside.steps.map((s) => [s.operation, s.treatment]));
     expect(classes).toEqual({
       write: 'denied-block',
       'read-before-edit': 'reached',
       edit: 'denied-block',
+      touch: 'denied-os',
     });
   });
 

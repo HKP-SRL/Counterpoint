@@ -283,7 +283,7 @@ describe('readSettingsSources', () => {
     const check = judgeSandboxIsolation(await read(s), s.home);
     expect(check.result).toBe('pass');
     expect(check.detail).toBe(
-      'No settings source Claude Code loads for agent sessions turns sandbox isolation off (3 checked: launch settings, user settings, managed settings file).',
+      'No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (3 checked: launch settings, user settings, managed settings file).',
     );
     const stored = JSON.stringify(check);
     expect(stored).not.toContain('secret');

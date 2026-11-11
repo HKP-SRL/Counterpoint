@@ -25,8 +25,8 @@
 // recorded live on claude 2.1.321.
 //
 // The denial texts are the ones claude MATCHER_CLAUDE_VERSION prints (verified live on 2.1.319,
-// then on 2.1.321, where the nine-row live run recognised
-// every step of both sessions with the same exact texts). Update the families together with
+// then on 2.1.321, where the nine-row live run recognised every step of both sessions with the
+// same exact texts, then on 2.1.322 with the outside Bash step added, refrozen 2026-11-11). Update the families together with
 // MATCHER_CLAUDE_VERSION when Claude Code changes its messages; until then another version that
 // prints anything unfamiliar reads Not checked.
 //
@@ -66,7 +66,7 @@ import type { ProbePlan, ProbeStep, StepOperation } from './probe.ts';
 import type { StreamEvent } from './runner.ts';
 
 /** The claude version the denial-text families below were verified against. */
-export const MATCHER_CLAUDE_VERSION = '2.1.321';
+export const MATCHER_CLAUDE_VERSION = '2.1.322';
 
 /**
  * The classifier revision, recorded in the doctor report's `matcherVersion`
@@ -129,7 +129,7 @@ export interface WriteBlockContext {
   workdirs: readonly string[];
 }
 
-// --- Denial-text families (claude 2.1.319, re-verified on 2.1.321) ---------------------------
+// --- Denial-text families (claude 2.1.319, re-verified on 2.1.321 and 2.1.322) ---------------
 
 /** Mode family: a denial by the permission mode, not by any rule of ours. */
 const MODE_FAMILY_TEXT = "running in don't ask mode";

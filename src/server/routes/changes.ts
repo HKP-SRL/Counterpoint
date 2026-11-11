@@ -13,15 +13,16 @@
 // as invalid with its reason (fail closed). No stored row ever decides a status.
 //
 // Approved rows also carry `uncommittedEdits` (runway: Uncommitted edits do not change the
-// runway): true when the owner's checkout has
-// uncommitted edits that change one of the change's inputs. It is a soft hint only.
+// runway): true when the owner's checkout has uncommitted edits that change one of the change's
+// inputs, or a covered file is not checkable. `uncommittedNotCheckable` lists the covered files a
+// content filter applies to (never run, so never checked). It is a soft hint only.
 import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { sha256Digest } from '../../core/approvals/digest.ts';
 import { type ChangeFacts, ChangeNotFoundError, findChange } from '../../core/framework/port.ts';
 import { UnsafeTreeEntryError } from '../../core/git/reader.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
-import { uncommittedEditsHint } from '../../core/runway/needs-you.ts';
+import { type UncommittedEdits, uncommittedEditsHint } from '../../core/runway/needs-you.ts';
 import type { ApprovalState } from '../../core/runway/runway.ts';
 import { deriveChangeStatus, ownerSteps } from '../../core/runway/status.ts';
 import type { ApprovalViews } from '../approval-views.ts';
@@ -68,25 +69,25 @@ const INPUTS_UNREADABLE = "Couldn't read this change's files.";
 
 /**
  * Approved changes (on the runway or changed) whose files have uncommitted edits in the owner's
- * checkout that change an input (a soft hint only). The approval itself is unaffected; a failed
- * check simply shows no hint.
+ * checkout that change an input (a soft hint only), with any covered files that are not
+ * checkable. The approval itself is unaffected; a failed check simply shows no hint.
  */
 async function uncommittedEdits(
   runtime: HostRuntime,
   states: Map<string, ApprovalState>,
-): Promise<Set<string>> {
-  const flagged = new Set<string>();
+): Promise<Map<string, UncommittedEdits>> {
+  const flagged = new Map<string, UncommittedEdits>();
   const { adapter } = runtime;
   if (adapter === null) return flagged;
   for (const [changeId, state] of states) {
     if (state.state !== 'on-runway' && state.state !== 'changed') continue;
-    const edited = await uncommittedEditsHint({
+    const found = await uncommittedEditsHint({
       root: runtime.host.root,
       reader: runtime.reader,
       adapter,
       changeId,
-    }).catch(() => false);
-    if (edited) flagged.add(changeId);
+    }).catch(() => null);
+    if (found?.edited) flagged.set(changeId, found);
   }
   return flagged;
 }
@@ -94,7 +95,7 @@ async function uncommittedEdits(
 function changeRow(
   change: ChangeFacts,
   approval: ApprovalState | undefined,
-  edited: ReadonlySet<string> = new Set(),
+  edited: ReadonlyMap<string, UncommittedEdits> = new Map(),
 ) {
   // An archived change is done; an approval of the same name belongs to the active one, if any.
   const own = change.archived ? undefined : approval;
@@ -115,6 +116,7 @@ function changeRow(
     unreadable: change.unreadable,
     approval: approvalFacts(own),
     uncommittedEdits: overlay !== null && edited.has(change.id),
+    uncommittedNotCheckable: overlay !== null ? (edited.get(change.id)?.notCheckable ?? []) : [],
   };
 }
 

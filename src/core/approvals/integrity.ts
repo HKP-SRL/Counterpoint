@@ -5,7 +5,10 @@
 // tracking) and train the owner to click through. So only what can make git run a program or
 // change where it talks to is captured: the risky local config keys below (read with
 // `git config --list --local --no-includes -z`, which reads and never executes), the SHA-256 of
-// every hook that is not a `.sample`, every file in info/, and config.worktree. Names matching
+// every hook that is not a `.sample`, every file in info/, config.worktree and every linked
+// worktree's own `worktrees/<id>/config.worktree`, and the content of every file an include
+// directive pulls in (WR-05: `include.path` and `includeIf.*.path`, nested, resolved as git does,
+// in the common config and in every worktree config). Names matching
 // the sandbox probe's artifact pattern are skipped: git never runs or reads files by those
 // names, so a doctor probe killed midway cannot make approve refuse, while any real hook name is
 // always captured. The owner accepts a baseline with `counterpoint trust {host}`;
@@ -25,13 +28,19 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { runGit } from '../git/run.ts';
 import { hostDir } from '../host/home.ts';
 import { PROBE_GIT_ARTIFACT_RE } from '../ids.ts';
 
-const SCHEMA = 'counterpoint/integrity/v1';
+const SCHEMA = 'counterpoint/integrity/v2';
+/** The first format: no worktree configs, no include targets. Read as v2 with both empty. */
+const SCHEMA_V1 = 'counterpoint/integrity/v1';
+/** git's own include depth limit (config.c MAX_INCLUDE_DEPTH). */
+const MAX_INCLUDE_DEPTH = 10;
+const MAX_INCLUDE_BYTES = 1024 * 1024;
 
 /**
  * Lowercased matchers for execution-capable config keys. `section.*` matches any key in the
@@ -47,11 +56,20 @@ export const RISKY_CONFIG_KEYS: readonly string[] = [
   'core.gitproxy',
   'core.worktree',
   'core.attributesfile',
+  'core.alternaterefscommand',
   'gpg.*',
   'user.signingkey',
   'commit.gpgsign',
+  'diff.external',
   'diff.*.command',
   'diff.*.textconv',
+  'difftool.*.cmd',
+  'mergetool.*.cmd',
+  'pager.*',
+  'sequence.editor',
+  'submodule.*.update',
+  'http.proxy',
+  'http.*.proxy',
   'filter.*',
   'merge.*.driver',
   'credential.*',
@@ -64,6 +82,7 @@ export const RISKY_CONFIG_KEYS: readonly string[] = [
   'remote.*.receivepack',
   'remote.*.uploadpack',
   'remote.*.vcs',
+  'remote.*.proxy',
   'extensions.*',
   'receive.*',
   'uploadpack.*',
@@ -98,10 +117,17 @@ export interface IntegritySnapshot {
   /** info/ entry name → same encoding as hooks. */
   info: Record<string, string>;
   configWorktree: string | null;
+  /** Linked worktree id → its own `worktrees/<id>/config.worktree` (same encoding as hooks). */
+  worktreeConfigs: Record<string, string>;
+  /**
+   * Include target (the resolved absolute path, `~/` expanded) → `sha256:…` of its content read
+   * through symlinks, `missing`, `other` or `unresolved` (a `~user/` path).
+   */
+  includes: Record<string, string>;
 }
 
 export interface IntegrityChange {
-  area: 'config' | 'hooks' | 'info' | 'config.worktree';
+  area: 'config' | 'hooks' | 'info' | 'config.worktree' | 'worktree config' | 'include';
   name: string;
   before: string | null;
   after: string | null;
@@ -113,7 +139,31 @@ const SnapshotSchema = z.object({
   hooks: z.record(z.string(), z.string()),
   info: z.record(z.string(), z.string()),
   configWorktree: z.string().nullable(),
+  worktreeConfigs: z.record(z.string(), z.string()),
+  includes: z.record(z.string(), z.string()),
 });
+
+/**
+ * A baseline in either format. A v1 baseline reads as v2 with no worktree configs and no include
+ * targets, so anything those now capture shows as a change the owner reviews with `trust`.
+ */
+const StoredSchema = z.union([
+  SnapshotSchema,
+  z
+    .object({
+      schema: z.literal(SCHEMA_V1),
+      config: z.record(z.string(), z.array(z.string())),
+      hooks: z.record(z.string(), z.string()),
+      info: z.record(z.string(), z.string()),
+      configWorktree: z.string().nullable(),
+    })
+    .transform((v1) => ({
+      ...v1,
+      schema: SCHEMA,
+      worktreeConfigs: {} as Record<string, string>,
+      includes: {} as Record<string, string>,
+    })),
+]);
 
 function sha256File(path: string): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -178,15 +228,113 @@ async function readRiskyConfig(gitCommonDir: string): Promise<Record<string, str
   return config;
 }
 
+/** Every `include.path` and `includeIf.*.path` value of one config file, in file order. */
+async function includeDirectives(gitCommonDir: string, file: string): Promise<string[]> {
+  const { stdout } = await runGit(gitCommonDir, [
+    'config',
+    '--file',
+    file,
+    '--list',
+    '--no-includes',
+    '-z',
+  ]);
+  const paths: string[] = [];
+  for (const record of stdout.split('\0')) {
+    if (record === '') continue;
+    const newline = record.indexOf('\n');
+    if (newline < 0) continue;
+    const key = record.slice(0, newline).toLowerCase();
+    if (key === 'include.path' || (key.startsWith('includeif.') && key.endsWith('.path'))) {
+      paths.push(record.slice(newline + 1));
+    }
+  }
+  return paths;
+}
+
+/**
+ * Where git looks for an include path written in `fromFile` (git-config(1), "Includes"): `~/`
+ * expands to HOME, a relative path is relative to the including file's directory. `~user/` is
+ * not resolved here (null).
+ */
+export function resolveIncludePath(path: string, fromFile: string, homeDir: string): string | null {
+  if (path === '~' || path.startsWith('~/')) return join(homeDir, path.slice(1));
+  if (path.startsWith('~')) return null;
+  return isAbsolute(path) ? resolve(path) : resolve(dirname(fromFile), path);
+}
+
+/** An include target's content, read through symlinks as git reads it. */
+function describeIncludeTarget(path: string): string {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'other';
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_INCLUDE_BYTES) return 'other';
+    return `sha256:${createHash('sha256').update(readFileSync(fd)).digest('hex')}`;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The content of every file the given config files include, nested includes followed up to
+ * git's depth limit. Reading a config file never executes anything (`--no-includes`, `--file`).
+ */
+async function describeIncludes(
+  gitCommonDir: string,
+  roots: readonly string[],
+  homeDir: string,
+): Promise<Record<string, string>> {
+  const found = new Map<string, string>();
+  let frontier = roots.filter((file) => describeEntry(file) !== null);
+  for (let depth = 0; depth < MAX_INCLUDE_DEPTH && frontier.length > 0; depth += 1) {
+    const next: string[] = [];
+    for (const file of frontier) {
+      for (const written of await includeDirectives(gitCommonDir, file)) {
+        const target = resolveIncludePath(written, file, homeDir);
+        const key = target ?? `unresolved:${written}`;
+        if (found.has(key)) continue;
+        const described = target === null ? 'unresolved' : describeIncludeTarget(target);
+        found.set(key, described);
+        if (target !== null && described.startsWith('sha256:')) next.push(target);
+      }
+    }
+    frontier = next;
+  }
+  const includes: Record<string, string> = {};
+  for (const key of [...found.keys()].sort()) includes[key] = found.get(key) as string;
+  return includes;
+}
+
 /** Snapshots the execution-capable surface of the repository whose common git dir is given. */
-export async function snapshotIntegrity(gitCommonDir: string): Promise<IntegritySnapshot> {
+export async function snapshotIntegrity(
+  gitCommonDir: string,
+  options: { homeDir?: string } = {},
+): Promise<IntegritySnapshot> {
   const isProbe = (name: string) => PROBE_GIT_ARTIFACT_RE.test(name);
+  const homeDir = options.homeDir ?? homedir();
+  // Each linked worktree's own config: `worktrees/<id>/config.worktree`.
+  const worktreesDir = join(gitCommonDir, 'worktrees');
+  const worktreeConfigs: Record<string, string> = {};
+  const configFiles = [join(gitCommonDir, 'config'), join(gitCommonDir, 'config.worktree')];
+  for (const id of Object.keys(describeDir(worktreesDir, () => false))) {
+    const file = join(worktreesDir, id, 'config.worktree');
+    const described = describeEntry(file);
+    if (described === null) continue;
+    worktreeConfigs[id] = described;
+    configFiles.push(file);
+  }
   return {
     schema: SCHEMA,
     config: await readRiskyConfig(gitCommonDir),
     hooks: describeDir(join(gitCommonDir, 'hooks'), (n) => n.endsWith('.sample') || isProbe(n)),
     info: describeDir(join(gitCommonDir, 'info'), isProbe),
     configWorktree: describeEntry(join(gitCommonDir, 'config.worktree')),
+    worktreeConfigs,
+    includes: await describeIncludes(gitCommonDir, configFiles, homeDir),
   };
 }
 
@@ -224,6 +372,8 @@ export function compareIntegrity(
   }
   compareRecords('hooks', baseline.hooks, current.hooks, changes);
   compareRecords('info', baseline.info, current.info, changes);
+  compareRecords('worktree config', baseline.worktreeConfigs, current.worktreeConfigs, changes);
+  compareRecords('include', baseline.includes, current.includes, changes);
   if (baseline.configWorktree !== current.configWorktree) {
     changes.push({
       area: 'config.worktree',
@@ -254,9 +404,9 @@ export function readBaseline(home: string, hostId: string): IntegritySnapshot | 
     if (!stat.isFile() || (stat.mode & 0o022) !== 0) {
       throw new Error(`The integrity baseline ${file} is not a private regular file.`);
     }
-    const parsed = SnapshotSchema.safeParse(JSON.parse(readFileSync(fd, 'utf8')));
+    const parsed = StoredSchema.safeParse(JSON.parse(readFileSync(fd, 'utf8')));
     if (!parsed.success) throw new Error(`The integrity baseline ${file} is not valid.`);
-    return parsed.data;
+    return parsed.data as IntegritySnapshot;
   } finally {
     closeSync(fd);
   }

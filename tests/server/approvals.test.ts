@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { approveCommand } from '../../src/cli/approve.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
@@ -168,7 +168,11 @@ async function land(changeId: string, notify?: () => Promise<void>): Promise<voi
 /** A second home trusting the same key (or not) with or without a baseline. */
 async function otherHome(options: { trust: boolean; baseline: 'none' | 'same' | 'other' }) {
   const dir = makeScratchDir('ohome');
-  if (options.trust) await writeTrust(dir, { publicKeyPath: key.publicKeyPath });
+  if (options.trust)
+    await writeTrust(dir, {
+      publicKeyPath: key.publicKeyPath,
+      confirmed: readPublicKey(key.publicKeyPath),
+    });
   if (options.baseline !== 'none') {
     const snapshot = await snapshotIntegrity(join(repo.root, '.git'));
     if (options.baseline === 'other') {
@@ -196,7 +200,10 @@ beforeAll(async () => {
   approvals = createApprovalViews({ home });
 
   key = await makeThrowawayKey(makeScratchDir('appr-keys'), { name: 'approval' });
-  await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  await writeTrust(home, {
+    publicKeyPath: key.publicKeyPath,
+    confirmed: readPublicKey(key.publicKeyPath),
+  });
   writeBaseline(home, hostId, await snapshotIntegrity(join(repo.root, '.git')));
 
   const code = mintLoginCode(db);

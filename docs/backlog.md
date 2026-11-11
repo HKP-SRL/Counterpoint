@@ -27,6 +27,11 @@ Work deliberately deferred past the first milestone (the six changes from `trust
 - **Gamification panel.** Runway length trend, questions resolved, rounds to converge and more. v1 has only the runway and a few honest counters.
 
 ### Platform
+- **Self-hosting: Counterpoint builds Counterpoint.** After `first-unattended-run`, register this repository as a second host.
+  - Add `.counterpoint/config.yaml` with gates (`pnpm lint`, `pnpm typecheck`, `pnpm test`, maybe `pnpm build`) and protected paths for the trust code (`src/core/security`, `src/core/approvals`, `src/doctor`, `src/agent`).
+  - Check that every test gate uses a scratch home and port, so it can run next to the live daemon and inside the builder's sandbox. Live tests that start real `claude` sessions stay out of the gates.
+  - Run the daemon from an installed copy only (see the `first-unattended-run` design).
+  - A rehearsal run on a change outside the protected paths is a good first use.
 - **"No framework" adapter.** A plain markdown or YAML list. The adapter boundary is already in core; only the OpenSpec adapter ships.
 - **Public npm release.** Publish as `@hkp/counterpoint`, so `npx @hkp/counterpoint` works. Re-check the Claude Code terms before publishing. Run `publint` and `@arethetypeswrong/cli` first.
 - **Touch ID or FIDO2 signing on click.** This would replace the prepared terminal command.

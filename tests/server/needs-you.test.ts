@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { approveCommand } from '../../src/cli/approve.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
@@ -155,7 +155,10 @@ beforeAll(async () => {
   approvals = createApprovalViews({ home });
 
   const key = await makeThrowawayKey(makeScratchDir('ny-keys'), { name: 'approval' });
-  await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  await writeTrust(home, {
+    publicKeyPath: key.publicKeyPath,
+    confirmed: readPublicKey(key.publicKeyPath),
+  });
   writeBaseline(home, hostId, await snapshotIntegrity(join(repo.root, '.git')));
 
   const code = mintLoginCode(db);

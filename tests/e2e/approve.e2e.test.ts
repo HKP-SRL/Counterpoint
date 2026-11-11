@@ -19,7 +19,7 @@ import { execa } from 'execa';
 import { type Browser, chromium, type Locator, type Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
 import {
   commitChange,
@@ -130,7 +130,10 @@ describe('approve a change from the console', () => {
 
     // A throwaway key trusted through the library, and the integrity baseline for the host.
     const key = await makeThrowawayKey(makeScratchDir('keys'), { name: 'approval' });
-    await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+    await writeTrust(home, {
+      publicKeyPath: key.publicKeyPath,
+      confirmed: readPublicKey(key.publicKeyPath),
+    });
     writeBaseline(home, hostId, await snapshotIntegrity(join(repo.root, '.git')));
 
     const started = await cli(['--port', '0', '--no-open'], home, repo.root);

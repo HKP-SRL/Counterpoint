@@ -2,7 +2,7 @@
 // become inbox items, derived from git each time. Approvals are landed with throwaway unprotected
 // ed25519 keys in scratch repositories; the trust store and diff scratch live in scratch dirs.
 // Nothing here touches ~/.ssh, ssh-agent, the Keychain or a real Counterpoint home.
-import { readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, unlinkSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { execa } from 'execa';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -15,7 +15,12 @@ import {
   buildStatement,
   serializeStatement,
 } from '../../../src/core/approvals/statement.ts';
-import { readTrust, type Trust, writeTrust } from '../../../src/core/approvals/trust-store.ts';
+import {
+  readPublicKey,
+  readTrust,
+  type Trust,
+  writeTrust,
+} from '../../../src/core/approvals/trust-store.ts';
 import { diffBytes } from '../../../src/core/git/diff.ts';
 import { createGitFileReader } from '../../../src/core/git/reader.ts';
 import {
@@ -52,7 +57,10 @@ let diffTmp: string;
 beforeAll(async () => {
   key = await makeThrowawayKey(makeScratchDir('nkeys'));
   const home = makeScratchDir('nhome');
-  await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  await writeTrust(home, {
+    publicKeyPath: key.publicKeyPath,
+    confirmed: readPublicKey(key.publicKeyPath),
+  });
   const read = readTrust(home);
   if (!read.ok) throw new Error(read.detail);
   trust = read;
@@ -570,15 +578,17 @@ describe('uncommittedEditsHint (soft hint for uncommitted edits)', () => {
     });
 
   const restore = (path: string) => gitIn(repo.root, ['checkout', '--', path]);
+  const CLEAN = { edited: false, notCheckable: [] };
+  const EDITED = { edited: true, notCheckable: [] };
 
   it('is false for a clean checkout', async () => {
-    expect(await hint()).toBe(false);
+    expect(await hint()).toEqual(CLEAN);
   });
 
   it('is true for an unstaged edit to the proposal', async () => {
     writeFileIn(repo.root, PROPOSAL, `${text(repo.root, PROPOSAL)}\nNot committed.\n`);
     try {
-      expect(await hint()).toBe(true);
+      expect(await hint()).toEqual(EDITED);
     } finally {
       await restore(PROPOSAL);
     }
@@ -591,7 +601,7 @@ describe('uncommittedEditsHint (soft hint for uncommitted edits)', () => {
       text(repo.root, TASKS).replace(TASK_21, '- [x] 2.1 Finish the ready thing'),
     );
     try {
-      expect(await hint()).toBe(false);
+      expect(await hint()).toEqual(CLEAN);
     } finally {
       await restore(TASKS);
     }
@@ -604,9 +614,36 @@ describe('uncommittedEditsHint (soft hint for uncommitted edits)', () => {
       text(repo.root, TASKS).replace(TASK_21, '- [ ] 2.1 Edited, not committed'),
     );
     try {
-      expect(await hint()).toBe(true);
+      expect(await hint()).toEqual(EDITED);
     } finally {
       await restore(TASKS);
     }
+  });
+
+  it('is true when the proposal is deleted locally', async () => {
+    unlinkSync(join(repo.root, PROPOSAL));
+    try {
+      expect(await hint()).toEqual(EDITED);
+    } finally {
+      await restore(PROPOSAL);
+    }
+  });
+
+  it('runs no clean filter and shows a filtered file as not checkable (WR-06)', async () => {
+    const marker = join(makeScratchDir('filter'), 'ran');
+    const attributes = join(repo.root, '.git', 'info', 'attributes');
+    await gitIn(repo.root, ['config', 'filter.cpevil.clean', `touch '${marker}'; cat`]);
+    writeFileIn(repo.root, '.git/info/attributes', `${PROPOSAL} filter=cpevil\n`);
+    // Stat-dirty without a content change: what makes git status re-hash through the filter.
+    const later = new Date(Date.now() + 5_000);
+    utimesSync(join(repo.root, PROPOSAL), later, later);
+    try {
+      expect(await hint()).toEqual({ edited: true, notCheckable: [PROPOSAL] });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      unlinkSync(attributes);
+      await gitIn(repo.root, ['config', '--unset', 'filter.cpevil.clean']);
+    }
+    expect(await hint()).toEqual(CLEAN);
   });
 });

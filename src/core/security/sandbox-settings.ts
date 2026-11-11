@@ -38,6 +38,12 @@
 // and, in auto mode, the classifier. The `--settings` flag outranks user, project and local
 // settings but not managed settings; doctor checks managed sources for it.
 //
+// WR-01, verified live on claude 2.1.322 (2026-11-11): bare `Bash` in AGENT_TOOLS does not make
+// Bash calls accepted by rule in auto mode. With or without it, no Bash call was decided by
+// `rule`, and the decision was the same. The setting is not inert: an in-folder `touch` was
+// decided by `mode` with it off and by `classifier` with it on; in the doctor probe (off), every
+// other Bash command went to the classifier. No confinement guarantee rests on either path.
+//
 // Credential env vars (replacement 3 for the scrub). With the scrub off, a sandboxed Bash
 // command sees what Claude Code itself exports to it. The first live listing on claude
 // 2.1.321 found two credential-named variables there: `CLAUDE_CODE_MESSAGING_TOKEN` (the

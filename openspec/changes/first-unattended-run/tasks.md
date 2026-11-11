@@ -4,13 +4,13 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 1. Trust fixes before any unattended run
 
-- [ ] 1.1 CR-01: judge user/managed `sandbox.filesystem.allowWrite` and `allowRead`, `permissions.additionalDirectories` and unix-socket allowances in the isolation check (launch source exempt only for the builder's own grant)
-- [ ] 1.2 CR-01: add a Bash outside-write step to the files-outside-the-working-folder probe row (treatment and control), with leftovers check and cleanup; refreeze fixtures
-- [ ] 1.3 WR-02: `trust-key` pins exactly the confirmed key bytes, opens without following symlinks, refuses on mismatch
-- [ ] 1.4 WR-04: one hardened git helper for the input reader and the verifier (no replace objects, no grafts)
-- [ ] 1.5 WR-05: add the missing execution-capable keys, snapshot every worktree config, digest include targets
-- [ ] 1.6 WR-06: the uncommitted-edits hint runs no repository filter (filter check first, or direct byte comparison)
-- [ ] 1.7 WR-01: verify live whether `autoAllowBashIfSandboxed: false` has any effect with bare `Bash` allow-listed; drop bare `Bash` or correct the record in code and `docs/decisions.md`
+- [x] 1.1 CR-01: judge user/managed `sandbox.filesystem.allowWrite` and `allowRead`, `permissions.additionalDirectories` and unix-socket allowances in the isolation check (launch source exempt only for the builder's own grant)
+- [x] 1.2 CR-01: add a Bash outside-write step to the files-outside-the-working-folder probe row (treatment and control), with leftovers check and cleanup; refreeze fixtures
+- [x] 1.3 WR-02: `trust-key` pins exactly the confirmed key bytes, opens without following symlinks, refuses on mismatch
+- [x] 1.4 WR-04: one hardened git helper for the input reader and the verifier (no replace objects, no grafts)
+- [x] 1.5 WR-05: add the missing execution-capable keys, snapshot every worktree config, digest include targets
+- [x] 1.6 WR-06: the uncommitted-edits hint runs no repository filter (filter check first, or direct byte comparison)
+- [x] 1.7 WR-01: verify live whether `autoAllowBashIfSandboxed: false` has any effect with bare `Bash` allow-listed; drop bare `Bash` or correct the record in code and `docs/decisions.md`
 - [ ] 1.8 Live doctor proof on the owner's machine after 1.1 to 1.7
 
 ## 2. Review backlog

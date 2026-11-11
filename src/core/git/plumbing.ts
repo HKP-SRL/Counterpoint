@@ -2,9 +2,7 @@
 // the base branch).
 //
 // Everything goes through runGit (absolute git, allow-listed environment, hooks and fsmonitor
-// disabled). On top of that, every call here also:
-// - ignores replace refs and grafts (`--no-replace-objects`, GIT_GRAFT_FILE=/dev/null), so a
-//   ref under refs/replace/ cannot substitute a commit the verifier looks at;
+// disabled, replace refs and grafts ignored). On top of that, every call here also:
 // - ignores the commit-graph cache (`core.commitGraph=false`), so parents and root trees always
 //   come from the content-addressed commit objects themselves;
 // - pins `log.follow=false` so a repository setting cannot change which commit `log` reports.
@@ -13,15 +11,7 @@
 // `ls-tree` → `mktree` round trip byte for byte.
 import { GitError, type GitResult, type RunGitOptions, runGit } from './run.ts';
 
-const PLUMBING_ARGS = [
-  '-c',
-  'core.commitGraph=false',
-  '-c',
-  'log.follow=false',
-  '--no-replace-objects',
-] as const;
-
-const PLUMBING_ENV = { GIT_NO_REPLACE_OBJECTS: '1', GIT_GRAFT_FILE: '/dev/null' } as const;
+const PLUMBING_ARGS = ['-c', 'core.commitGraph=false', '-c', 'log.follow=false'] as const;
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
@@ -40,11 +30,10 @@ function git(
   args: readonly string[],
   opts: RunGitOptions = {},
 ): Promise<GitResult<string | Uint8Array>> {
-  const merged = { ...opts, env: { ...opts.env, ...PLUMBING_ENV } };
   if (opts.encoding === 'buffer') {
-    return runGit(root, [...PLUMBING_ARGS, ...args], { ...merged, encoding: 'buffer' });
+    return runGit(root, [...PLUMBING_ARGS, ...args], { ...opts, encoding: 'buffer' });
   }
-  return runGit(root, [...PLUMBING_ARGS, ...args], { ...merged, encoding: 'utf8' });
+  return runGit(root, [...PLUMBING_ARGS, ...args], { ...opts, encoding: 'utf8' });
 }
 
 function oneSha(stdout: string, what: string): string {

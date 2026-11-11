@@ -22,7 +22,7 @@ import { type Browser, type BrowserContext, chromium, type Page } from 'playwrig
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { controlRequest } from '../../src/cli/control-client.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
 import {
   type AcceptedRisk,
@@ -193,7 +193,7 @@ function allPassReport(
       label: 'Sandbox isolation settings',
       result: 'pass',
       detail:
-        'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
+        'No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (1 checked: launch settings).',
       sources: [
         { kind: 'launch', label: 'launch settings', path: null, state: 'read', findings: [] },
       ],
@@ -253,7 +253,10 @@ describe('Needs You: an approved change is edited, reviewed, and signed again', 
     proposal = readFileSync(join(repo.root, PROPOSAL), 'utf8');
 
     const key = await makeThrowawayKey(makeScratchDir('keys'), { name: 'approval' });
-    await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+    await writeTrust(home, {
+      publicKeyPath: key.publicKeyPath,
+      confirmed: readPublicKey(key.publicKeyPath),
+    });
     writeBaseline(home, hostId, await snapshotIntegrity(join(repo.root, '.git')));
 
     const daemon = await startDaemon(home, repo.root);

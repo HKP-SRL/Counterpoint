@@ -10,8 +10,8 @@
 // The Sandbox isolation settings check (replacement 2 for the scrub opt-out): doctor reads
 // every settings source an agent session loads (the launch settings, the user file, the
 // server-managed cache and the managed sources; src/doctor/settings-sources.ts) and fails when any
-// of them turns sandbox isolation off (src/core/security/sandbox-isolation.ts). While that check
-// does not pass, no probe row counts as Blocked: each measured Blocked row is stored Not checked.
+// of them turns sandbox isolation off or widens it (src/core/security/sandbox-isolation.ts). While
+// that check does not pass, no probe row counts as Blocked: each measured Blocked row is stored Not checked.
 //
 // The Agent permission mode check: doctor records the permission mode the probe's
 // treatment session really ran in, from claude's own `system/init` events (every attempt) and a

@@ -13,7 +13,12 @@ import {
   buildStatement,
   serializeStatement,
 } from '../../../src/core/approvals/statement.ts';
-import { readTrust, type Trust, writeTrust } from '../../../src/core/approvals/trust-store.ts';
+import {
+  readPublicKey,
+  readTrust,
+  type Trust,
+  writeTrust,
+} from '../../../src/core/approvals/trust-store.ts';
 import { createGitFileReader } from '../../../src/core/git/reader.ts';
 import { approvalState, compareInputs, computeRunway } from '../../../src/core/runway/runway.ts';
 import {
@@ -42,7 +47,10 @@ beforeAll(async () => {
   const keysDir = makeScratchDir('rkeys');
   key = await makeThrowawayKey(keysDir);
   const home = makeScratchDir('rhome');
-  await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  await writeTrust(home, {
+    publicKeyPath: key.publicKeyPath,
+    confirmed: readPublicKey(key.publicKeyPath),
+  });
   const read = readTrust(home);
   if (!read.ok) throw new Error(read.detail);
   trust = read;

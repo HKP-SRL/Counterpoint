@@ -22,7 +22,11 @@ import {
 } from '../../src/agent/runner.ts';
 import { doctorCommand, resolveHostForCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { type TrustResult, writeTrust } from '../../src/core/approvals/trust-store.ts';
+import {
+  readPublicKey,
+  type TrustResult,
+  writeTrust,
+} from '../../src/core/approvals/trust-store.ts';
 import {
   readAcceptedRisks,
   revokeAcceptedRisk,
@@ -89,7 +93,11 @@ async function scratchHost(
   } finally {
     store.close();
   }
-  if (options.trusted ?? true) await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  if (options.trusted ?? true)
+    await writeTrust(home, {
+      publicKeyPath: key.publicKeyPath,
+      confirmed: readPublicKey(key.publicKeyPath),
+    });
   if (options.baseline ?? true)
     writeBaseline(home, options.id ?? 'demo', await snapshotIntegrity(gitDir));
   return { home, root, gitDir };
@@ -878,7 +886,7 @@ describe('counterpoint doctor', () => {
       expect(run.code).toBe(0);
       const rows = group(run.out, 'Sandbox probe');
       expect(rows[1]).toBe(
-        '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
+        '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (1 checked: launch settings).',
       );
       expect(rows.slice(2)).toHaveLength(9);
       for (const row of rows.slice(2)) expect(row).toMatch(/^ {2}BLOCKED {5}/);

@@ -58,6 +58,7 @@ export type ChangeRow = {
   approval: ApprovalFacts | null;
   /** The owner's checkout has uncommitted edits to this approved change's files. */
   uncommittedEdits: boolean;
+  uncommittedNotCheckable: string[];
 };
 
 export type ChangesSnapshot = {
@@ -127,6 +128,9 @@ export function parseChangeRow(value: unknown): ChangeRow | null {
     unreadable: parseUnreadable(value.unreadable),
     approval: parseApproval(value.approval),
     uncommittedEdits: value.uncommittedEdits === true,
+    uncommittedNotCheckable: Array.isArray(value.uncommittedNotCheckable)
+      ? value.uncommittedNotCheckable.filter((p): p is string => typeof p === 'string')
+      : [],
   };
 }
 
@@ -192,12 +196,22 @@ export function notReadyText(
  * owner's checkout has uncommitted edits to an approved change. Purely
  * informational; the approval and the runway only follow what is committed on the base branch.
  */
-export function UncommittedHint({ baseBranch }: { baseBranch: string }) {
+export function UncommittedHint({
+  baseBranch,
+  notCheckable = [],
+}: {
+  baseBranch: string;
+  notCheckable?: readonly string[];
+}) {
+  const text =
+    notCheckable.length === 0
+      ? `Uncommitted edits to this approved change. The approval only follows what is committed on ${baseBranch}.`
+      : `Uncommitted edits can't be checked: a content filter applies to ${notCheckable.join(', ')}. The approval only follows what is committed on ${baseBranch}.`;
   return (
     <HStack gap={1} vAlign="start">
       <Icon icon="info" size="xsm" color="secondary" />
       <Text type="supporting" color="secondary">
-        {`Uncommitted edits to this approved change. The approval only follows what is committed on ${baseBranch}.`}
+        {text}
       </Text>
     </HStack>
   );
@@ -332,7 +346,10 @@ export function ChangesPage({ hostId }: { hostId: string }) {
         row.uncommittedEdits ? (
           <VStack gap={1} hAlign="start">
             <StatusBadge status={row.status} />
-            <UncommittedHint baseBranch={data?.baseBranch ?? ''} />
+            <UncommittedHint
+              baseBranch={data?.baseBranch ?? ''}
+              notCheckable={row.uncommittedNotCheckable}
+            />
           </VStack>
         ) : (
           <StatusBadge status={row.status} />

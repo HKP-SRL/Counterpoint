@@ -222,8 +222,15 @@ function launchedFact(request: RecordedRequest | undefined): LaunchedFact | null
   };
 }
 
-/** The isolation judge over one launch source: the request's launched `--settings`. */
-function isolationOf(request: RecordedRequest | undefined, homeDir: string) {
+/**
+ * The isolation judge over one launch source: the request's launched `--settings`. `allowWrite`
+ * is the write grant that launch may carry: none for the treatment, the mirror for the control.
+ */
+function isolationOf(
+  request: RecordedRequest | undefined,
+  homeDir: string,
+  allowWrite: readonly string[] = [],
+) {
   if (request === undefined) return null;
   const settings = launchedSettings(request);
   return judgeSandboxIsolation(
@@ -239,6 +246,7 @@ function isolationOf(request: RecordedRequest | undefined, homeDir: string) {
         : { kind: 'launch', label: 'launch settings', path: null, state: 'read', settings },
     ],
     homeDir,
+    { allowWrite },
   );
 }
 
@@ -681,7 +689,7 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     // user or managed settings source is read here (executors never read the owner's settings).
     const isolation = {
       treatment: isolationOf(treatmentRequests.at(-1), home),
-      control: isolationOf(controlRequest, home),
+      control: isolationOf(controlRequest, home, [outcome.plan.mirrorRoot]),
     };
     writeJson(DEBUG_DIR, 'isolation.json', isolation);
 
@@ -865,6 +873,13 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')('live sandbox probe
     );
     expect(outsideWrites.map((s) => s.tool)).toEqual(['Write', 'Edit']);
     for (const s of outsideWrites) expect(s.cls, `${s.tool} outside`).toBe('denied-block');
+    // The outside Bash touch (CR-01) was refused by the OS sandbox: the outside-write block does
+    // not cover Bash, so this is the step that proves sandboxed shell writes stay in the folder.
+    const outsideBash = tClasses.filter(
+      (s) => s.target === 'outside-workdir' && s.operation === 'touch',
+    );
+    expect(outsideBash.map((s) => s.tool)).toEqual(['Bash']);
+    for (const s of outsideBash) expect(s.cls, 'Bash touch outside').toBe('denied-os');
 
     // Every treatment step of the six other protected rows was refused deterministically.
     const deterministic = ['denied-rule', 'denied-os', 'denied-block'];

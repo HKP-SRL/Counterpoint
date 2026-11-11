@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { doctorCommand } from '../../src/cli/doctor.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
-import { writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import {
   readAcceptedRisks,
   revokeAcceptedRisk,
@@ -93,7 +93,10 @@ describe.skipIf(process.env.COUNTERPOINT_LIVE_PROBE !== '1')(
         name: 'approval',
         passphrase: randomBytes(12).toString('hex'),
       });
-      await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+      await writeTrust(home, {
+        publicKeyPath: key.publicKeyPath,
+        confirmed: readPublicKey(key.publicKeyPath),
+      });
       const root = makeScratchDir('lrepo');
       await initScratchRepo(root);
       writeFileIn(root, 'README.md', 'live doctor\n');

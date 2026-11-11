@@ -9,7 +9,7 @@ import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import { approveCommand } from '../../src/cli/approve.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { signPayload } from '../../src/core/approvals/ssh.ts';
-import { readTrust, writeTrust } from '../../src/core/approvals/trust-store.ts';
+import { readPublicKey, readTrust, writeTrust } from '../../src/core/approvals/trust-store.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { approvalState } from '../../src/core/runway/runway.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
@@ -52,7 +52,11 @@ async function setup(options: { trust?: boolean; baseline?: boolean } = {}): Pro
   } finally {
     store.close();
   }
-  if (options.trust !== false) await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  if (options.trust !== false)
+    await writeTrust(home, {
+      publicKeyPath: key.publicKeyPath,
+      confirmed: readPublicKey(key.publicKeyPath),
+    });
   if (options.baseline !== false) {
     writeBaseline(home, 'synthetic', await snapshotIntegrity(join(repo.root, '.git')));
   }

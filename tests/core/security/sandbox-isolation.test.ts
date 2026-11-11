@@ -76,16 +76,18 @@ function setting(key: string, value: unknown): Record<string, unknown> {
   return node as Record<string, unknown>;
 }
 
-/** The launch profile with one sandbox key replaced (or removed with `undefined`). */
+/** The launch profile with one key replaced (or removed with `undefined`). */
 function launchWith(key: string, value: unknown): Record<string, unknown> {
-  const settings = structuredClone(launchSettings()) as {
-    sandbox: Record<string, unknown> & { filesystem: Record<string, unknown> };
-  };
-  const [, second, third] = key.split('.');
-  const target = third === undefined ? settings.sandbox : settings.sandbox.filesystem;
-  const name = (third ?? second) as string;
-  if (value === undefined) delete target[name];
-  else target[name] = value;
+  const settings = structuredClone(launchSettings());
+  const parts = key.split('.');
+  let node = settings;
+  for (const part of parts.slice(0, -1)) {
+    if (typeof node[part] !== 'object' || node[part] === null) node[part] = {};
+    node = node[part] as Record<string, unknown>;
+  }
+  const name = parts[parts.length - 1] as string;
+  if (value === undefined) delete node[name];
+  else node[name] = value;
   return settings;
 }
 
@@ -97,6 +99,11 @@ const UNSAFE: Record<string, unknown> = {
   'sandbox.allowUnsandboxedCommands': true,
   'sandbox.autoAllowBashIfSandboxed': true,
   'sandbox.allowAppleEvents': true,
+  'sandbox.filesystem.allowWrite': ['~'],
+  'sandbox.filesystem.allowRead': ['~/.ssh'],
+  'permissions.additionalDirectories': ['/'],
+  'sandbox.network.allowUnixSockets': ['/var/run/docker.sock'],
+  'sandbox.network.allowAllUnixSockets': true,
 };
 
 describe('judgeSandboxIsolation', () => {
@@ -106,7 +113,7 @@ describe('judgeSandboxIsolation', () => {
     expect(check.id).toBe('sandbox-isolation');
     expect(check.label).toBe('Sandbox isolation settings');
     expect(check.detail).toBe(
-      'No settings source Claude Code loads for agent sessions turns sandbox isolation off (1 checked: launch settings).',
+      'No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (1 checked: launch settings).',
     );
     expect(check.fix).toBeUndefined();
     expect(SandboxIsolationCheck.parse(check)).toEqual(check);
@@ -309,8 +316,105 @@ describe('judgeSandboxIsolation', () => {
       ['sandbox.allowUnsandboxedCommands', 'managed'],
       ['sandbox.autoAllowBashIfSandboxed', 'managed'],
       ['sandbox.allowAppleEvents', 'any'],
+      ['sandbox.filesystem.allowWrite', 'any'],
+      ['sandbox.filesystem.allowRead', 'any'],
+      ['permissions.additionalDirectories', 'any'],
+      ['sandbox.network.allowUnixSockets', 'any'],
+      ['sandbox.network.allowAllUnixSockets', 'any'],
     ]);
     for (const rule of ISOLATION_RULES) expect(rule.doc).toContain('code.claude.com/docs');
+  });
+});
+
+describe('write and read widenings (CR-01)', () => {
+  it('fails a user allow-write entry for home, naming the file and key', () => {
+    const check = judgeSandboxIsolation(
+      [launch(), user({ sandbox: { filesystem: { allowWrite: ['~'] } } })],
+      HOME,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.detail).toBe(
+      'user settings sets sandbox.filesystem.allowWrite to 1 entry, which lets sandboxed commands write there.',
+    );
+    expect(check.fix).toBe(
+      'Remove sandbox.filesystem.allowWrite from ~/.claude/settings.json, then run "counterpoint doctor" again.',
+    );
+  });
+
+  it('fails a user additional working directory', () => {
+    const check = judgeSandboxIsolation(
+      [launch(), user({ permissions: { additionalDirectories: ['/Volumes/Dock'] } })],
+      HOME,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.detail).toBe(
+      'user settings sets permissions.additionalDirectories to 1 entry, which lets agents write in those directories.',
+    );
+    expect(check.sources[1]?.findings).toEqual(['permissions.additionalDirectories']);
+  });
+
+  it('passes user permissions that grant nothing extra', () => {
+    const check = judgeSandboxIsolation(
+      [launch(), user({ permissions: { allow: ['Bash(ls)'], additionalDirectories: [] } })],
+      HOME,
+    );
+    expect(check.result).toBe('pass');
+  });
+
+  it('fails a permissions value that is not an object', () => {
+    const check = judgeSandboxIsolation([launch(), user({ permissions: 'all' })], HOME);
+    expect(check.result).toBe('fail');
+    expect(check.detail).toBe(
+      'user settings sets permissions to "all", which Counterpoint cannot check.',
+    );
+  });
+
+  it('fails a sandbox.network value that is not an object, once', () => {
+    const check = judgeSandboxIsolation([launch(), user({ sandbox: { network: [] } })], HOME);
+    expect(check.result).toBe('fail');
+    expect(check.sources[1]?.findings).toEqual(['sandbox.network']);
+  });
+
+  it('accepts the launch allow-write only when it equals the builder grant', () => {
+    const grant = { allowWrite: ['/repo/.git/objects', '/repo/.git/refs/heads/cp/x'] };
+    const granted = launchWith('sandbox.filesystem.allowWrite', [...grant.allowWrite].reverse());
+    expect(judgeSandboxIsolation([launch(granted)], HOME, grant).result).toBe('pass');
+    // The same entries without the grant: fail.
+    const ungranted = judgeSandboxIsolation([launch(granted)], HOME);
+    expect(ungranted.result).toBe('fail');
+    expect(ungranted.fix).toBe(
+      'Counterpoint\'s launch settings must set sandbox.filesystem.allowWrite to the builder\'s own grant. This is a Counterpoint bug: update Counterpoint, then run "counterpoint doctor" again.',
+    );
+    // One entry more than the grant: fail.
+    const wider = launchWith('sandbox.filesystem.allowWrite', [...grant.allowWrite, '/Users']);
+    expect(judgeSandboxIsolation([launch(wider)], HOME, grant).result).toBe('fail');
+    // A grant the launch source does not carry: fail (the profile and the grant disagree).
+    const missing = judgeSandboxIsolation(
+      [launch(launchWith('sandbox.filesystem.allowWrite', undefined))],
+      HOME,
+      grant,
+    );
+    expect(missing.result).toBe('fail');
+    expect(missing.detail).toBe(
+      "launch settings does not set sandbox.filesystem.allowWrite, so Claude Code's default lets sandboxed commands write there.",
+    );
+  });
+
+  it('never exempts a user allow-write entry, even one equal to the builder grant', () => {
+    const grant = { allowWrite: ['/repo/.git/objects'] };
+    const check = judgeSandboxIsolation(
+      [
+        launch(launchWith('sandbox.filesystem.allowWrite', grant.allowWrite)),
+        user({ sandbox: { filesystem: { allowWrite: grant.allowWrite } } }),
+      ],
+      HOME,
+      grant,
+    );
+    expect(check.result).toBe('fail');
+    expect(check.sources.map((source) => source.findings)).toEqual([
+      [],
+      ['sandbox.filesystem.allowWrite'],
+    ]);
   });
 });
 
@@ -412,7 +516,7 @@ describe('several sources at once', () => {
     );
     expect(check.result).toBe('pass');
     expect(check.detail).toBe(
-      'No settings source Claude Code loads for agent sessions turns sandbox isolation off (5 checked: launch settings, user settings, managed settings file, managed settings drop-in 10-a.json, managed preferences).',
+      'No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (5 checked: launch settings, user settings, managed settings file, managed settings drop-in 10-a.json, managed preferences).',
     );
   });
 

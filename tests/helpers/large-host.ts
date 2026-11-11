@@ -21,7 +21,11 @@ import { signAndLand } from '../../src/core/approvals/commit.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { prepareApproval } from '../../src/core/approvals/prepare.ts';
 import { signPayload, verifySignature } from '../../src/core/approvals/ssh.ts';
-import { OWNER_PRINCIPAL, writeTrust } from '../../src/core/approvals/trust-store.ts';
+import {
+  OWNER_PRINCIPAL,
+  readPublicKey,
+  writeTrust,
+} from '../../src/core/approvals/trust-store.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { homePaths } from '../../src/core/host/home.ts';
 import { hostIdFromName } from '../../src/core/ids.ts';
@@ -203,7 +207,10 @@ export async function buildLargeHost(options: BuildLargeHostOptions): Promise<La
   await commitAll(root, `large host with ${options.changes} changes`);
   // The throwaway key and the integrity baseline, in the scratch home only.
   const key = await makeThrowawayKey(makeScratchDir('keys'), { name: 'approval' });
-  const trust = await writeTrust(home, { publicKeyPath: key.publicKeyPath });
+  const trust = await writeTrust(home, {
+    publicKeyPath: key.publicKeyPath,
+    confirmed: readPublicKey(key.publicKeyPath),
+  });
   writeBaseline(home, hostId, await snapshotIntegrity(join(root, '.git')));
 
   const adapter = adapterFor({ adapter: 'openspec' });

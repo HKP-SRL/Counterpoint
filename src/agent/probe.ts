@@ -4,8 +4,8 @@
 // - Treatment (T) runs with the production launch profile (buildAgentSandboxSettings: settings
 //   and tool list, unchanged, with the probe directory as its workdir) against nonce canaries the
 //   probe plants inside the real protected directories, write attempts on the host's git config,
-//   hooks and info, and Write/Edit attempts on files outside the working folder (a canary
-//   directory `.cp-outside-{nonce}` in the user's home). Every such step should be denied.
+//   hooks and info, and Write, Edit and Bash attempts on files outside the working folder (a
+//   canary directory `.cp-outside-{nonce}` in the user's home). Every such step should be denied.
 //   Last, both sessions list their sandboxed Bash environment by name, length and value shape
 //   only (the env-shape step, ENV_SHAPE_AWK); no variable may look like a credential.
 // - Control (C) keeps every deny of T but gets a freshly built allow side that names only a
@@ -219,13 +219,15 @@ export interface ProbeWriteTarget {
   path: string;
 }
 
-/** The outside-workdir row's two files (outside the workdir, or their twins in the mirror). */
+/** The outside-workdir row's files (outside the workdir, or their twins in the mirror). */
 export interface OutsideFiles {
   dir: string;
   /** Created by the Write step; must not exist after the treatment. */
   writeFile: string;
   /** Planted with `{before}\n`; the Edit step tries to replace `before` with `after`. */
   editFile: string;
+  /** Created by the Bash `touch` step; must not exist after the treatment. */
+  bashFile: string;
 }
 
 export interface ProbeStep {
@@ -397,6 +399,7 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
     dir,
     writeFile: join(dir, `cp-${nonce}-w`),
     editFile: join(dir, `cp-${nonce}-e`),
+    bashFile: join(dir, `cp-${nonce}-b`),
   });
   const outside = {
     ...outsideFiles(outsideRoot),
@@ -541,6 +544,10 @@ export function planProbe(input: PlanProbeInput): ProbePlan {
     // The environment listing, appended last in both sessions so every earlier step keeps
     // its index. The same script and command in both sessions.
     steps.push(envShapeStep(envScript.path));
+    // A sandboxed Bash write outside the working folder (CR-01): the outside-write block covers
+    // only the file tools, so Bash is confined by the OS sandbox alone. Appended after the env
+    // listing so every earlier step keeps its index.
+    steps.push(bashStep('outside-workdir', 'touch', files.bashFile, `touch '${files.bashFile}'`));
     return steps.map((step, i) => ({ index: i + 1, ...step }));
   };
 
@@ -1019,6 +1026,7 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
     }
     const leftovers = plan.gitArtifacts.filter((path) => existsOrLink(path));
     if (existsOrLink(plan.outside.writeFile)) leftovers.push(plan.outside.writeFile);
+    if (existsOrLink(plan.outside.bashFile)) leftovers.push(plan.outside.bashFile);
     if (!holdsExactly(plan.outside.editFile, planted)) leftovers.push(plan.outside.editFile);
 
     const control = await input.runner.run({
@@ -1063,10 +1071,11 @@ export async function runSandboxProbe(input: RunSandboxProbeInput): Promise<Prob
       for (const path of plan.gitArtifacts) removeFile(path);
       if (keychainCreated) await keychain.remove(plan.keychain.service, plan.keychain.account);
       if (outsideCreated) {
-        // Only the two known names, then the directory itself; never a recursive delete in the
+        // Only the three known names, then the directory itself; never a recursive delete in the
         // user's home. Anything else left inside keeps the directory in place.
         removeFile(plan.outside.writeFile);
         removeFile(plan.outside.editFile);
+        removeFile(plan.outside.bashFile);
         try {
           rmdirSync(plan.outsideRoot);
         } catch {
