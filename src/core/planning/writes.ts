@@ -28,6 +28,7 @@ import {
   updateIndexCacheinfo,
   updateRefCas,
 } from '../git/plumbing.ts';
+import { ownerIdentity } from '../git/run.ts';
 
 const SQLITE_BUSY = 5;
 const LOCK_POLL_MS = 250;
@@ -35,6 +36,12 @@ const LOCK_WAIT_MS = 2 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 const MAX_FILES = 64;
 const MAX_FILE_BYTES = 1024 * 1024;
+/**
+ * Planning writes are authored as the owner, like session commits (owner decision 2026-11-11:
+ * Counterpoint acts as the owner). A write at the tip of the base branch would otherwise block a
+ * preview host that refuses commits it cannot match to an account. Counterpoint's own identity
+ * remains only as the fallback when git config names no owner.
+ */
 const COUNTERPOINT_IDENT: CommitIdent = { name: 'Counterpoint', email: 'counterpoint@localhost' };
 
 export class PlanningWriteLockTimeout extends Error {
@@ -229,7 +236,7 @@ export class PlanningWrites {
         tree,
         parent: tip,
         message: write.message,
-        ident: this.#o.ident ?? COUNTERPOINT_IDENT,
+        ident: this.#o.ident ?? (await ownerIdentity(host.root)) ?? COUNTERPOINT_IDENT,
       });
       const cas = await updateRefCas(host.root, baseRef, commit, tip, `counterpoint: ${subject}`);
       if (!cas.ok) continue;

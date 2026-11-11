@@ -37,6 +37,24 @@ A failing gate's output SHALL go back to the builder for a bounded number of ret
 - **WHEN** a change fails its e2e gate for the third time with N = 3
 - **THEN** it parks with the failing output and three attempts listed, and the next change starts
 
+### Requirement: Service programs checked before building
+Before a change's first builder session, every program of every host service its gates need SHALL be checked as runnable from Counterpoint's own environment. If one is not, the run SHALL stop before any session, and Needs You SHALL name the program and how to fix it.
+
+#### Scenario: Service program missing from Counterpoint's PATH
+- **WHEN** the gates need the supabase service and `supabase` is not on the PATH Counterpoint was started with
+- **THEN** the run stops before any builder session, no change is parked or charged an attempt, and Needs You says which program is missing and to restart Counterpoint from a terminal that has it
+
+### Requirement: Service programs that cannot start cost no attempt
+A service program that cannot be started during a run SHALL park the change at once, spending no attempt and never going back to the builder. A service program that runs and fails SHALL count as a gate failure like any other, since the change's own code can cause it.
+
+#### Scenario: Service program gone mid-run
+- **WHEN** a service's start program cannot be started during a gate round
+- **THEN** the change parks at once with that reason and zero attempts spent
+
+#### Scenario: Migration breaks the reset
+- **WHEN** a service's reset command runs and exits 1 on the change's own migration
+- **THEN** the failure goes back to the builder as a gate failure and counts one attempt
+
 ### Requirement: Protected-path check
 Edits by the builder to tests, gate configs or visual baselines SHALL be flagged by a protected-path check and shown on the change. The host's Counterpoint config MAY list further protected paths; that list SHALL be read at the approved base, like the gates.
 

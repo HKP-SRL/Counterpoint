@@ -10,7 +10,8 @@
 //    ticked boxes, stays in the worktree uncommitted, so the next session sees its progress, and
 //    the ticks are returned for the store. Any other planning edit, and any edit under `.claude/`,
 //    is put back as it was at HEAD and returned as a flag;
-// 3. commits everything else as one commit `cp: <change> session <n>`.
+// 3. commits everything else as one commit `cp: <change> session <n>`, authored as the owner (see
+//    FALLBACK_IDENTITY) with a `Counterpoint-Run: <run> session <n>` trailer.
 import {
   appendFileSync,
   closeSync,
@@ -24,18 +25,29 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ChangeFacts, FrameworkAdapter } from '../core/framework/port.ts';
-import { runGit } from '../core/git/run.ts';
+import { type GitIdentity, ownerIdentity, runGit } from '../core/git/run.ts';
 import { ASSUMPTIONS_FILE, HANDOFF_FILE } from './prompt.ts';
 
 const MAX_NOTE_BYTES = 256 * 1024;
-const COMMIT_IDENTITY = [
-  '-c',
-  'user.name=Counterpoint',
-  '-c',
-  'user.email=counterpoint@localhost',
-  '-c',
-  'commit.gpgsign=false',
-];
+/**
+ * Session commits carry the owner's git identity (owner decision 2026-11-11): a host whose
+ * previews deploy from the branch, such as Vercel, refuses commits it cannot match to an account
+ * (seen live: "GitHub couldn't verify an account for the commit" on every build PR). That they are
+ * a build session's is in the subject and in the `Counterpoint-Run` trailer. Without an owner
+ * identity in git config the commit falls back to Counterpoint's own. Never signed.
+ */
+const FALLBACK_IDENTITY: GitIdentity = { name: 'Counterpoint', email: 'counterpoint@localhost' };
+
+function commitIdentity(identity: GitIdentity): string[] {
+  return [
+    '-c',
+    `user.name=${identity.name}`,
+    '-c',
+    `user.email=${identity.email}`,
+    '-c',
+    'commit.gpgsign=false',
+  ];
+}
 
 /** Reads a regular file without following a symlink; null when absent or not a small regular file. */
 function readNote(path: string): string | null {
@@ -113,8 +125,12 @@ export interface SessionCommitInput {
   /** `runs/<run>/<change>/`: handoffs and assumptions go here. */
   changeDir: string;
   session: number;
+  /** The run the session belongs to, named in the commit's `Counterpoint-Run` trailer. */
+  runId: string;
   /** The session ended before its turn finished (crash, kill or forced end). */
   interrupted?: boolean;
+  /** Seam for tests: the identity lookup (default: the owner's, from git config). */
+  identity?: (worktree: string) => Promise<GitIdentity | null>;
 }
 
 export interface SessionCommit {
@@ -187,9 +203,13 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
   let commit: string | null = null;
   if (staged.exitCode === 1) {
     const message = `cp: ${change.id} session ${input.session}${input.interrupted === true ? ' (interrupted)' : ''}`;
-    await runGit(worktree, [...COMMIT_IDENTITY, 'commit', '-q', '--no-verify', '-m', message], {
-      timeoutMs: 120_000,
-    });
+    const trailer = `Counterpoint-Run: ${input.runId} session ${input.session}`;
+    const identity = (await (input.identity ?? ownerIdentity)(worktree)) ?? FALLBACK_IDENTITY;
+    await runGit(
+      worktree,
+      [...commitIdentity(identity), 'commit', '-q', '--no-verify', '-m', message, '-m', trailer],
+      { timeoutMs: 120_000 },
+    );
     commit = (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   }
   return { commit, ticked, restored, handoff, assumptions };

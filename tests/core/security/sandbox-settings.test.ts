@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AGENT_PERMISSION_MODE, buildClaudeArgv } from '../../../src/agent/claude-argv.ts';
-import { AGENT_ENV_ALLOW, agentEnv } from '../../../src/core/security/agent-env.ts';
+import { AGENT_ENV_ALLOW, agentEnv, daemonEnv } from '../../../src/core/security/agent-env.ts';
 import {
   DoctorReport,
   isReportStale,
@@ -357,6 +357,7 @@ describe('agentEnv', () => {
     LC_ALL: 'en_US.UTF-8',
     TMPDIR: '/tmp/',
     SHELL: '/bin/zsh',
+    COREPACK_HOME: '/Volumes/Dock/Dev/corepack',
     SSH_AUTH_SOCK: '/tmp/agent.sock',
     SSH_ASKPASS: '/usr/bin/askpass',
     GH_TOKEN: 'gh-secret',
@@ -390,7 +391,7 @@ describe('agentEnv', () => {
     expect(agentEnv(parent)).not.toHaveProperty(key);
   });
 
-  it('allows exactly PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR and SHELL', () => {
+  it('allows exactly PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR, SHELL and COREPACK_HOME', () => {
     expect([...AGENT_ENV_ALLOW]).toEqual([
       'PATH',
       'HOME',
@@ -400,7 +401,22 @@ describe('agentEnv', () => {
       'LC_ALL',
       'TMPDIR',
       'SHELL',
+      'COREPACK_HOME',
     ]);
+  });
+
+  // Agent sessions are started by the daemon, so they only ever see what the daemon inherited.
+  // A daemon list without USER and LOGNAME made every run's `claude` answer "Not logged in".
+  it('gets the same agent environment through the daemon as from the terminal', () => {
+    expect(agentEnv(daemonEnv(parent))).toEqual(agentEnv(parent));
+    expect(agentEnv(daemonEnv(parent)).USER).toBe('someone');
+    expect(agentEnv(daemonEnv(parent)).LOGNAME).toBe('someone');
+  });
+
+  it('gives the daemon the agent allow-list plus its home, and no credentials', () => {
+    const env = daemonEnv(parent);
+    expect(Object.keys(env).sort()).toEqual([...AGENT_ENV_ALLOW, 'COUNTERPOINT_HOME'].sort());
+    expect(env.COUNTERPOINT_HOME).toBe(parent.COUNTERPOINT_HOME);
   });
 });
 

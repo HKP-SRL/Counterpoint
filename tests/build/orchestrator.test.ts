@@ -498,6 +498,34 @@ describe('a run', () => {
     expect(log.stdout.trim()).toBe('cp: a-thing session 1');
   });
 
+  // Seen live: the daemon's PATH predated the owner's Supabase install, and three builder
+  // sessions were spent on a gate whose service could never start.
+  it('stops before any session when a service program cannot be run, and says how to fix it', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions();
+    const g = gates([]);
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+      missingServicePrograms: () => [{ service: 'supabase', step: 'start', program: 'supabase' }],
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(0);
+    expect(g.calls).toEqual([]);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/needs "supabase", which Counterpoint cannot find/),
+    });
+    // The changes are fine: they did not build, they are not parked.
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.state, c.attempts])).toEqual([
+      ['stopped', 0],
+      ['stopped', 0],
+    ]);
+    expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
+  });
+
   it('runs a session again after a usage limit, counting nothing, and backs off on API errors', async () => {
     const ctx = await host();
     const sessions = fakeSessions((n) =>

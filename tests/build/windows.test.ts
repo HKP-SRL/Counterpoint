@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ import {
   knownWindow,
   learnFromResult,
   normalizeClaudeVersion,
+  sessionFailure,
 } from '../../src/build/windows.ts';
 import { openStore, type Store, upsertHost } from '../../src/core/store/db.ts';
 import { getAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
@@ -142,5 +143,60 @@ describe('calibration session (fake claude)', () => {
       }),
     ).rejects.toThrow(CalibrationError);
     expect(getAgentSession(db, 1)?.endReason).toBe('no-window');
+  });
+
+  // Seen live on claude 2.1.322 when the daemon dropped USER: an instant error result, no window.
+  it("names claude's own error when the session fails (not logged in)", async () => {
+    const db = store();
+    const dir = makeScratchDir('cp-cal');
+    const binary = join(dir, 'logged-out-claude.sh');
+    const result = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result: 'Not logged in · Please run /login',
+      modelUsage: {},
+    });
+    writeFileSync(binary, `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '${result}'\n`, {
+      mode: 0o755,
+    });
+    await expect(
+      calibrateWindow({
+        runner: new ClaudeCliRunner({ binary }),
+        db,
+        hostId: 'cena',
+        model: 'opus',
+        claudeVersion: '9.9.9',
+        settings: { permissions: { deny: [] }, sandbox: {} } as never,
+        allowedTools: ['Bash'],
+        cwd: dir,
+        rawLogPath: join(dir, 'raw.jsonl'),
+        processTag: 'cal-0123456789',
+      }),
+    ).rejects.toThrow('The calibration session for opus failed: Not logged in · Please run /login');
+    expect(getAgentSession(db, 1)?.endReason).toBe('no-window');
+  });
+});
+
+describe('sessionFailure', () => {
+  it('is null for a result that is not an error', () => {
+    expect(sessionFailure(null)).toBeNull();
+    expect(sessionFailure({ type: 'result', subtype: 'success', result: 'OK' })).toBeNull();
+  });
+
+  it('keeps one short line of the error text', () => {
+    expect(
+      sessionFailure({
+        type: 'result',
+        is_error: true,
+        result: 'Not logged in\n· Please run /login',
+      }),
+    ).toBe('Not logged in · Please run /login');
+    expect(sessionFailure({ type: 'result', is_error: true })).toBe(
+      'claude reported an error and no message.',
+    );
+    expect(
+      sessionFailure({ type: 'result', is_error: true, result: 'x'.repeat(500) }),
+    ).toHaveLength(200);
   });
 });

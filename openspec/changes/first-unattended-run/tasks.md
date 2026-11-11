@@ -78,6 +78,8 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 9.3 Host services before gates (start, reset, env), outside the sandbox, from the approved config only
 - [x] 9.4 Shared test lock (the owner's existing lock file), zero-test guard, bounded retries with feedback, parking
 - [x] 9.5 Protected-path check on the branch diff (tests, gate config, baselines, planning files, host-listed paths)
+- [x] 9.6 Machine problems never cost builder attempts: service programs checked runnable before a change builds (the run stops and says how to fix it), a service program that cannot start parks at once; the daemon inherits the whole agent environment allow-list (a daemon without USER left every session logged out)
+- [x] 9.7 A gate reads back its own temp dir (it sits inside the read-denied Counterpoint home; Vitest's `forks` pool failed with EPERM) and still binds no port: local binding would let gate code connect to every loopback port, the console's included (checked live), so a Turbopack host builds its gate with `next build --webpack`
 
 ## 10. Runs
 
@@ -98,6 +100,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 11.2 Preview link: host deploy from the PR checks, else a sandboxed loopback preview
 - [x] 11.3 Planning-write queue (serialized) and the planning-file flag that keeps a PR from being offered for merge
 - [x] 11.4 Run report at every run end: file, store, shown in the console, `counterpoint run report`
+- [x] 11.5 Session commits authored with the owner's git identity and a `Counterpoint-Run: <run> session <n>` trailer: Vercel blocked every build PR's preview for commits by `Counterpoint <counterpoint@localhost>` (owner decision 2026-11-11: Counterpoint acts as the owner). Planning write-backs are authored as the owner too; sessions and gates get `COREPACK_HOME`, so `pnpm` finds the owner's package managers offline
 
 ## 12. First run on Cena
 

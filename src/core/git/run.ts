@@ -158,3 +158,46 @@ export async function runGit(
 function decode(value: unknown): string {
   return value instanceof Uint8Array ? new TextDecoder().decode(value) : String(value ?? '');
 }
+
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it refuses.
+const CONTROL_RE = /[\u0000-\u001f\u007f<>]/;
+
+/**
+ * The owner's git identity for `repo`, as their own `git commit` there would use it: the
+ * repository's config, then the global and system config. This is the one read that does not
+ * ignore global config (the owner's name and email usually live there); it reads two values,
+ * runs no hook or helper, and refuses a value with control characters or angle brackets. Null
+ * when either is missing or refused.
+ */
+export async function ownerIdentity(
+  repo: string,
+  parent: NodeJS.ProcessEnv = process.env,
+): Promise<GitIdentity | null> {
+  const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
+  for (const key of PARENT_ALLOW_LIST) {
+    const value = parent[key];
+    if (value !== undefined) env[key] = value;
+  }
+  const read = async (key: string): Promise<string | null> => {
+    const result = await execa(gitBinary(), [...SAFETY_ARGS, 'config', '--get', key], {
+      cwd: repo,
+      env,
+      extendEnv: false,
+      reject: false,
+      timeout: DEFAULT_TIMEOUT_MS,
+      stdin: 'ignore',
+    });
+    if (result.exitCode !== 0 || typeof result.stdout !== 'string') return null;
+    const value = result.stdout.trim();
+    return value === '' || value.length > 254 || CONTROL_RE.test(value) ? null : value;
+  };
+  const name = await read('user.name');
+  const email = await read('user.email');
+  if (name === null || email === null || !/^\S+@\S+$/.test(email)) return null;
+  return { name, email };
+}

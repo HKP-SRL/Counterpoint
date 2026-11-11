@@ -37,6 +37,7 @@ import {
   SocketPathTooLongError,
   tightenHome,
 } from '../core/host/home.ts';
+import { daemonEnv } from '../core/security/agent-env.ts';
 import { packageRoot } from '../server/app.ts';
 import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
@@ -58,9 +59,6 @@ const RUN_STOP_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const KILL_GRACE_MS = 5_000;
 const POLL_MS = 100;
 const SQLITE_BUSY = 5;
-
-/** Parent variables the daemon may inherit. */
-const DAEMON_ENV_ALLOW_LIST = ['PATH', 'HOME', 'LANG', 'TMPDIR', 'COUNTERPOINT_HOME'] as const;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -170,11 +168,7 @@ function spawnDaemon(paths: HomePaths, port: number): { exited: () => boolean } 
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
   rmSync(paths.startResult, { force: true });
   const logFd = openSync(paths.daemonLog, 'a', 0o600);
-  const env: Record<string, string> = {};
-  for (const key of DAEMON_ENV_ALLOW_LIST) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
+  const env = daemonEnv();
   let exited = false;
   try {
     const child = spawn(

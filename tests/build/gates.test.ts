@@ -1,7 +1,14 @@
 // Gates around the runner: the tag sweep, the shared test lock, host services, gate rounds with
 // retries and parking, and the protected-path check.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { GateRunResult } from '../../src/build/gate-runner.ts';
@@ -16,7 +23,10 @@ import {
 } from '../../src/build/protected-paths.ts';
 import {
   createServiceSession,
+  describeMissingPrograms,
+  missingServicePrograms,
   parseEnvLines,
+  runServiceCommand,
   type ServiceCommandRunner,
   type ServiceSession,
   writeWorktreeFile,
@@ -257,6 +267,68 @@ describe('host services', () => {
       detail: 'service supabase reset exited 1',
       tail: 'migration 0042 failed: syntax error',
     });
+  });
+
+  it('reports a program that could not be started as not started, apart from a failing one', async () => {
+    const worktree = makeScratchDir('cp-svc');
+    const config = parseHostConfig({
+      gates: [{ name: 'unit', command: ['vitest'], services: ['db'] }],
+      services: { db: { start: ['cp-no-such-program-0123', 'start'] } },
+    });
+    const session = createServiceSession({ config, worktree, run: runServiceCommand });
+    const prep = await session.prepare(config.gates[0] as never, worktree);
+    expect(prep).toMatchObject({
+      ok: false,
+      service: 'db',
+      step: 'start',
+      notStarted: true,
+      detail: expect.stringMatching(
+        /the db service's start program could not be run \(spawn cp-no-such-program-0123 ENOENT\)/,
+      ),
+    });
+    expect(readFileSync(join(worktree, 'service-db-start.log'), 'utf8')).toMatch(/ENOENT/);
+  });
+
+  it('finds every service program a gate needs on PATH before a build, and names what is missing', () => {
+    const bin = makeScratchDir('cp-bin');
+    writeFileSync(join(bin, 'supabase'), '#!/bin/sh\n', { mode: 0o755 });
+    const env = { PATH: `/nonexistent-cp:${bin}` };
+    expect(missingServicePrograms(SUPABASE_CONFIG, env)).toEqual([]);
+
+    // The terminal that started Counterpoint had an older PATH, without the CLI.
+    const missing = missingServicePrograms(SUPABASE_CONFIG, { PATH: '/nonexistent-cp' });
+    expect(missing).toEqual([
+      { service: 'supabase', step: 'start', program: 'supabase' },
+      { service: 'supabase', step: 'reset', program: 'supabase' },
+      { service: 'supabase', step: 'env', program: 'supabase' },
+    ]);
+    expect(describeMissingPrograms(missing)).toBe(
+      'The supabase service needs "supabase", which Counterpoint cannot find on its PATH. ' +
+        'Counterpoint keeps the PATH of the terminal that started it, and a terminal that was ' +
+        'already open keeps its old PATH. Open a new terminal window, check that ' +
+        '"command -v supabase" prints a path, then run "counterpoint stop" and "counterpoint".',
+    );
+
+    // A file that is there but not executable is not runnable either.
+    chmodSync(join(bin, 'supabase'), 0o644);
+    expect(missingServicePrograms(SUPABASE_CONFIG, env)).toHaveLength(3);
+  });
+
+  it('checks absolute programs as files, leaves worktree paths to run time, and skips unused services', () => {
+    const bin = makeScratchDir('cp-bin');
+    const config = parseHostConfig({
+      gates: [{ name: 'unit', command: ['vitest'], services: ['a', 'b'] }],
+      services: {
+        a: { start: [join(bin, 'missing'), 'up'] },
+        b: { start: ['./bin/local', 'up'] },
+        unused: { start: ['cp-no-such-program-0123'] },
+      },
+    });
+    const missing = missingServicePrograms(config, { PATH: '' });
+    expect(missing).toEqual([{ service: 'a', step: 'start', program: join(bin, 'missing') }]);
+    expect(describeMissingPrograms(missing)).toBe(
+      `The a service needs "${join(bin, 'missing')}", which is not an executable file.`,
+    );
   });
 
   it('fails when the env command does not print a mapped variable', async () => {
@@ -539,6 +611,35 @@ describe('gate rounds', () => {
       },
     });
     expect(cleaned).toBe(1);
+  });
+
+  it('parks at once, spending no attempt, when a service program cannot be started', async () => {
+    const r = round(
+      TWO_GATES,
+      {},
+      {
+        acquireTestLock: async () => ({ env: {}, waitedMs: 0, release() {} }),
+        services: {
+          prepare: async () => ({
+            ok: false,
+            service: 'supabase',
+            step: 'start',
+            detail: "the supabase service's start program could not be run (spawn supabase ENOENT)",
+            tail: '',
+            notStarted: true,
+          }),
+          cleanup: () => {},
+        },
+      },
+    );
+    const out = await runGateRound(r.input);
+    expect(r.ran).toEqual([]);
+    expect(out.kind).toBe('blocked');
+    const next = afterGateRound(r.db, r.runChangeId, out, 3);
+    expect(next).toMatchObject({ next: 'park', attempts: 0 });
+    expect(getRunChange(r.db, r.runChangeId)?.reason).toMatch(
+      /Gates could not run: .*spawn supabase ENOENT/,
+    );
   });
 
   it('a host with no gates is green with nothing run', async () => {

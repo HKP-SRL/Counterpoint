@@ -32,7 +32,11 @@ import { buildGateSandboxSettings, gateArgv } from './gate-sandbox.ts';
 import { sweepTagged } from './process-sweep.ts';
 
 export const GATE_TAG_ENV = 'CP_GATE_RUN';
-/** Parent variables a gate may inherit. Nothing else crosses. */
+/**
+ * Parent variables a gate may inherit. Nothing else crosses. `COREPACK_HOME` tells Corepack where
+ * the owner keeps the package managers it already downloaded; without it a gate's `pnpm` tries to
+ * download one and fails, since gates have no internet.
+ */
 export const GATE_ENV_ALLOW = [
   'PATH',
   'HOME',
@@ -41,6 +45,7 @@ export const GATE_ENV_ALLOW = [
   'LANG',
   'LC_ALL',
   'SHELL',
+  'COREPACK_HOME',
 ] as const;
 const TAIL_LINES = 60;
 const KEEP_BYTES = 256 * 1024;

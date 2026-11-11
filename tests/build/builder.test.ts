@@ -114,8 +114,18 @@ describe('commitSession', () => {
       adapter: createOpenSpecAdapter(),
       changeDir,
       session: 1,
+      runId: '20261111-1739-1cb727',
+      identity: async () => ({ name: 'Owner Name', email: 'owner@example.com' }),
     });
     expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    // Authored as the owner (a preview host refuses commits it cannot match to an account), and
+    // marked as a build session's by the trailer.
+    const meta = (await runGit(root, ['log', '-1', '--format=%an <%ae>|%cn <%ce>|%G?'])).stdout;
+    expect(meta.trim()).toBe('Owner Name <owner@example.com>|Owner Name <owner@example.com>|N');
+    const trailers = (
+      await runGit(root, ['log', '-1', '--format=%(trailers:key=Counterpoint-Run,valueonly)'])
+    ).stdout.trim();
+    expect(trailers).toBe('20261111-1739-1cb727 session 1');
     expect(result.ticked).toEqual(['1.1 Add the table']);
     expect(result.restored.sort()).toEqual([
       'openspec/changes/add-menu/proposal.md',
@@ -156,6 +166,7 @@ describe('commitSession', () => {
       adapter: createOpenSpecAdapter(),
       changeDir,
       session: 2,
+      runId: 'r1',
     });
     expect(result.commit).toBeNull();
     expect(result.ticked).toEqual([]);
@@ -172,6 +183,8 @@ describe('commitSession', () => {
       adapter: createOpenSpecAdapter(),
       changeDir,
       session: 1,
+      runId: 'r1',
+      identity: async () => null,
       interrupted: true,
     });
     expect(result.handoff).toBeNull();

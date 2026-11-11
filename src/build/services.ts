@@ -16,8 +16,15 @@
 //
 // The env file is written without following links and only inside the worktree: the builder could
 // plant a link at that path to a file of the owner's. An existing file there is put back afterwards.
+//
+// A service program that cannot be run at all (not on PATH, not executable) is the machine's
+// problem, never the change's: the orchestrator checks every program before a change builds
+// (missingServicePrograms), and a program that cannot start mid-run is reported as `notStarted`,
+// which parks the change without giving the failure to the builder. A program that runs and fails
+// (a migration the change broke, for instance) goes back to the builder like any gate failure.
 import { spawn } from 'node:child_process';
 import {
+  accessSync,
   closeSync,
   constants,
   fstatSync,
@@ -26,11 +33,12 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, sep } from 'node:path';
 import { killGroup } from '../agent/runner.ts';
 import type { GateConfig, HostConfig, ServiceConfig } from '../core/host/host-config.ts';
 import { lastLines, stripTerminal } from './gate-runner.ts';
@@ -43,7 +51,15 @@ export type ServiceStep = 'start' | 'reset' | 'env';
 
 export type ServicePrep =
   | { ok: true; env: Record<string, string> }
-  | { ok: false; service: string; step: ServiceStep; detail: string; tail: string };
+  | {
+      ok: false;
+      service: string;
+      step: ServiceStep;
+      detail: string;
+      tail: string;
+      /** True when the step's program could not be started at all: nothing the change did. */
+      notStarted?: boolean;
+    };
 
 export interface ServiceCommandResult {
   exitCode: number | null;
@@ -53,6 +69,8 @@ export interface ServiceCommandResult {
   stdout: string;
   /** stdout and stderr together, as they arrived. */
   output: string;
+  /** Why the program could not be started (`spawn supabase ENOENT`); absent when it ran. */
+  spawnError?: string;
 }
 
 export type ServiceCommandRunner = (input: {
@@ -76,6 +94,86 @@ export function serviceEnv(parentEnv: NodeJS.ProcessEnv): Record<string, string>
   return { ...env, CI: '1', NO_COLOR: '1', FORCE_COLOR: '0' };
 }
 
+/** A service program the gates need that cannot be run from here. */
+export interface MissingServiceProgram {
+  service: string;
+  step: ServiceStep;
+  program: string;
+}
+
+/** True when `path` is an executable regular file. */
+function isExecutableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** True when `program` can be run: a bare name found on `path`, or an executable absolute path. */
+function canRun(program: string, path: string): boolean {
+  if (isAbsolute(program)) return isExecutableFile(program);
+  // A relative path names a file in the worktree, which does not exist yet: judged when it runs.
+  if (program.includes('/')) return true;
+  return path
+    .split(delimiter)
+    .some((dir) => dir !== '' && isAbsolute(dir) && isExecutableFile(join(dir, program)));
+}
+
+/**
+ * Every program of every service a gate names (start, reset, env) that cannot be run with the
+ * PATH services get: Counterpoint's own, inherited from the terminal that started it. Checked
+ * before a change builds, so a missing program stops the run before any session is spent.
+ */
+export function missingServicePrograms(
+  config: HostConfig,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): MissingServiceProgram[] {
+  const path = serviceEnv(parentEnv).PATH ?? '';
+  const names = new Set(config.gates.flatMap((gate) => gate.services));
+  const missing: MissingServiceProgram[] = [];
+  for (const service of names) {
+    const commands = config.services[service];
+    if (commands === undefined) continue;
+    const steps: [ServiceStep, readonly string[] | undefined][] = [
+      ['start', commands.start],
+      ['reset', commands.reset],
+      ['env', commands.env?.command],
+    ];
+    for (const [step, argv] of steps) {
+      const program = argv?.[0];
+      if (program !== undefined && !canRun(program, path)) {
+        missing.push({ service, step, program });
+      }
+    }
+  }
+  return missing;
+}
+
+/** The run's stop reason for missing service programs: what is missing and how to fix it. */
+export function describeMissingPrograms(missing: readonly MissingServiceProgram[]): string {
+  const programs = [...new Set(missing.map((entry) => entry.program))];
+  const services = [...new Set(missing.map((entry) => entry.service))];
+  const which = programs.map((program) => `"${program}"`).join(', ');
+  const needs = `The ${services.join(', ')} ${services.length === 1 ? 'service needs' : 'services need'} ${which}`;
+  const absolute = programs.every((program) => isAbsolute(program));
+  if (absolute)
+    return `${needs}, which ${programs.length === 1 ? 'is' : 'are'} not an executable file.`;
+  // Seen live: the owner restarted from a terminal opened before the install, so the advice
+  // says why an open terminal is not enough and gives a check to run first.
+  const check = programs
+    .filter((program) => !isAbsolute(program))
+    .map((program) => `"command -v ${program}"`)
+    .join(' and ');
+  return (
+    `${needs}, which Counterpoint cannot find on its PATH. Counterpoint keeps the PATH of the ` +
+    'terminal that started it, and a terminal that was already open keeps its old PATH. Open a ' +
+    `new terminal window, check that ${check} prints a path, then run "counterpoint stop" and ` +
+    '"counterpoint".'
+  );
+}
+
 /** Runs one service command detached, in its own process group, with its output logged. */
 export const runServiceCommand: ServiceCommandRunner = (input) => {
   mkdirSync(dirname(input.logPath), { recursive: true, mode: 0o700 });
@@ -87,13 +185,21 @@ export const runServiceCommand: ServiceCommandRunner = (input) => {
   let stopped = false;
   return new Promise((resolve) => {
     let settled = false;
+    let spawnError: string | undefined;
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       input.signal?.removeEventListener('abort', onAbort);
       closeSync(log);
-      resolve({ exitCode, timedOut, stopped, stdout, output });
+      resolve({
+        exitCode,
+        timedOut,
+        stopped,
+        stdout,
+        output,
+        ...(spawnError === undefined ? {} : { spawnError }),
+      });
     };
     const child = spawn(input.argv[0] as string, input.argv.slice(1), {
       cwd: input.cwd,
@@ -127,7 +233,12 @@ export const runServiceCommand: ServiceCommandRunner = (input) => {
     });
     child.on('error', (error) => {
       output += `\n${error.message}\n`;
-      if (child.pid === undefined) finish(null);
+      if (child.pid === undefined && !settled) {
+        // Not started, so nothing else writes the log: say why there before closing it.
+        writeSync(log, `${error.message}\n`);
+        spawnError = error.message;
+        finish(null);
+      }
     });
     child.on('close', (exitCode) => finish(exitCode));
   });
@@ -279,6 +390,16 @@ export function createServiceSession(input: {
       signal,
     });
     if (result.exitCode === 0 && !result.timedOut && !result.stopped) return result;
+    if (result.spawnError !== undefined && !result.stopped) {
+      return {
+        ok: false,
+        service: name,
+        step: which,
+        detail: `the ${name} service's ${which} program could not be run (${result.spawnError})`,
+        tail: '',
+        notStarted: true,
+      };
+    }
     const detail = result.stopped
       ? 'stopped'
       : result.timedOut

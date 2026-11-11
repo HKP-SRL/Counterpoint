@@ -129,11 +129,28 @@ export async function calibrateWindow(input: CalibrateInput): Promise<number> {
     peakContextTokens: meter.peak,
   });
   if (window === null) {
+    const failure = sessionFailure(end.result);
     throw new CalibrationError(
-      `The calibration session for ${input.model} reported no context window${end.timedOut ? ' (timed out)' : ''}.`,
+      failure !== null
+        ? `The calibration session for ${input.model} failed: ${failure}`
+        : `The calibration session for ${input.model} reported no context window${end.timedOut ? ' (timed out)' : ''}.`,
     );
   }
   return window;
+}
+
+/**
+ * What `claude` said when a session ended in an error (`is_error` on its result), such as
+ * `Not logged in · Please run /login`; null for a session that did not fail. The text is the
+ * session's own, cut to one short line, so the run's stop reason names the real cause.
+ */
+export function sessionFailure(result: StreamEvent | null): string | null {
+  if (result === null || result.type !== 'result') return null;
+  const fields = result as { readonly [key: string]: unknown };
+  if (fields.is_error !== true) return null;
+  const text = typeof fields.result === 'string' ? fields.result.replace(/\s+/g, ' ').trim() : '';
+  if (text === '') return 'claude reported an error and no message.';
+  return text.length > 200 ? `${text.slice(0, 199)}…` : text;
 }
 
 /** The token budget for `percent` of `windowTokens` (whole tokens, rounded down). */

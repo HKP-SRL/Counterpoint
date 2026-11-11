@@ -6,7 +6,13 @@
 // - writes only the worktree and the gate's own temp dir, never the worktree's `.git` file or its
 //   `.claude/` folder (the next builder session loads `.claude/` as project settings);
 // - reads everything except the agent profile's protected directories (signing key, ~/.ssh, gh,
-//   the Counterpoint home);
+//   the Counterpoint home), but reads its own temp dir again: that dir lives in the run folder,
+//   inside the read-denied Counterpoint home, and a gate that cannot read back what it wrote there
+//   fails (seen live: Vitest's default `forks` pool, EPERM). srt's `allowRead` beats `denyRead`,
+//   and a link planted there still resolves into the denied home;
+// - binds no port. Allowing local binding would also let gate code connect straight to any
+//   loopback port, the console's included (checked live, srt 0.0.82), so a host whose build needs
+//   a port (Turbopack's `next build`) runs its gate with a bundler that does not;
 // - reaches only the loopback ports the gate lists, through srt's proxy. Never the console port.
 //
 // Live facts (srt 0.0.82, macOS, 2026-11-11): srt exports `NO_PROXY=localhost,127.0.0.1,...`, so a
@@ -74,7 +80,7 @@ export function buildGateSandboxSettings(input: GateSandboxInput): GateSandboxSe
     },
     filesystem: {
       denyRead: agent.readTargets.map((target) => target.path),
-      allowRead: [],
+      allowRead: [tmpDir],
       allowWrite: [workdir, tmpDir],
       denyWrite: [join(workdir, '.git'), join(workdir, '.claude'), agent.gitDir],
     },

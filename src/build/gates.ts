@@ -135,8 +135,11 @@ async function runOne(
     }
     const prep = await input.services.prepare(gate, attemptDir, input.signal);
     if (!prep.ok) {
+      // A program that could not be started says nothing about the code: the round is blocked
+      // (the change parks, no attempt spent) instead of going back to the builder.
+      const reason = input.signal?.aborted ? 'stopped' : prep.notStarted ? 'spawn' : 'service';
       end = failedEnd(
-        input.signal?.aborted ? 'stopped' : 'service',
+        reason,
         [prep.detail, prep.tail].filter((part) => part !== '').join('\n'),
         started,
       );

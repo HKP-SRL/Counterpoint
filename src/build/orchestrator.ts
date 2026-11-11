@@ -4,7 +4,8 @@
 // One run at a time per machine, one change at a time within it. A run is a queue of runway
 // changes in the adapter's build order (dependencies first). For each change:
 // 1. its approval must verify now, on the runway (only runway changes build); its signed base
-//    commit is where the branch starts and where the host config is read;
+//    commit is where the branch starts and where the host config is read; every service program
+//    its gates need must be runnable, or the run stops before any session (the machine's problem);
 // 2. its worktree is prepared (`cp/<change>` from the base commit, outside the repository, locked,
 //    with the config's `worktree.clone` folders);
 // 3. builder sessions run until one finishes its work; each is committed by Counterpoint (builders
@@ -85,7 +86,12 @@ import {
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
 import { builderPrompt, type GateFailure } from './prompt.ts';
 import { blocksMerge, checkProtectedPaths } from './protected-paths.ts';
-import { createServiceSession } from './services.ts';
+import {
+  createServiceSession,
+  describeMissingPrograms,
+  type MissingServiceProgram,
+  missingServicePrograms,
+} from './services.ts';
 import { commitSession } from './session-commit.ts';
 import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
 import { prepareWorktree, releaseWorktree, WorktreeRefusal, worktreePathFor } from './worktrees.ts';
@@ -249,6 +255,7 @@ export interface OrchestratorOptions {
   /** Seams for tests. */
   startBuilderSession?: typeof startBuilderSession;
   runGateRound?: typeof runGateRound;
+  missingServicePrograms?: (config: HostConfig) => MissingServiceProgram[];
   commitSession?: typeof commitSession;
   prepareWorktree?: typeof prepareWorktree;
   calibrateWindow?: typeof calibrateWindow;
@@ -787,6 +794,10 @@ export class Orchestrator {
       parkRunChange(db, row.id, error.message, this.#now());
       return;
     }
+    // Every service program must be runnable before a session is spent: a missing one is the
+    // machine's problem (every change needing it would fail), so the run stops and says why.
+    const missing = (this.#o.missingServicePrograms ?? missingServicePrograms)(config);
+    if (missing.length > 0) throw new RunEnd('error', describeMissingPrograms(missing));
 
     // 2. The worktree.
     const paths = protectedPathsFor({ home: this.#o.home, host: runtime.host });
@@ -1093,7 +1104,7 @@ export class Orchestrator {
       });
 
       // Every session's work is committed, whatever ended it.
-      await this.#commit(c, runtime, number, result);
+      await this.#commit(c, runtime, number, result, active.id);
       gateFeedback = null;
 
       switch (result.outcome.kind) {
@@ -1144,6 +1155,7 @@ export class Orchestrator {
     runtime: RunHost,
     number: number,
     result: BuilderSessionResult,
+    runId: string,
   ): Promise<void> {
     const { db } = this.#o;
     const adapter = runtime.adapter;
@@ -1156,6 +1168,7 @@ export class Orchestrator {
       adapter,
       changeDir: c.changeDir,
       session: number,
+      runId,
       interrupted,
     });
     if (commit.ticked.length > 0) updateRunChange(db, c.row.id, { taskTicks: commit.ticked });

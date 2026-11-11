@@ -52,7 +52,10 @@ describe('PlanningWrites', () => {
     );
     expect(await status(repo.root)).toBe('');
     const author = (await runGit(repo.root, ['log', '-1', '--format=%an <%ae>|%s'])).stdout.trim();
-    expect(author).toBe('Counterpoint <counterpoint@localhost>|counterpoint: tick 1.1 of a-thing');
+    // Authored as the owner (the repository's git identity), not as Counterpoint.
+    expect(author).toBe(
+      'Counterpoint Test <test@counterpoint.invalid>|counterpoint: tick 1.1 of a-thing',
+    );
   });
 
   it('lands two writes made at once one after the other, as separate commits', async () => {

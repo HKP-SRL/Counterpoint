@@ -91,6 +91,22 @@ describe('gate sandbox profile', () => {
     expect(settings.network.allowLocalBinding).toBe(false);
   });
 
+  // Seen live: the temp dir lives in the run folder, inside the read-denied Counterpoint home, so
+  // Vitest's forks pool wrote its modules there and could not read them back (EPERM).
+  it('reads back its own temp dir and nothing else of the Counterpoint home', () => {
+    const settings = buildGateSandboxSettings({
+      protectedPaths: paths,
+      workdir: '/wt/change',
+      tmpDir: '/Users/x/cp/hosts/cena/runs/r/c/gates/1/.unit-scratch/tmp',
+      ports: [],
+      consolePort: 4170,
+    });
+    expect(settings.filesystem.allowRead).toEqual([
+      '/Users/x/cp/hosts/cena/runs/r/c/gates/1/.unit-scratch/tmp',
+    ]);
+    expect(settings.filesystem.denyRead).toContain('/Users/x/cp');
+  });
+
   it('refuses the console port and invalid ports', () => {
     const base = { protectedPaths: paths, workdir: '/wt', tmpDir: '/tmp2', consolePort: 4170 };
     expect(() => buildGateSandboxSettings({ ...base, ports: [4170] })).toThrow(/console port/);

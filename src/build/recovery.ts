@@ -115,6 +115,7 @@ export async function recoverRuns(input: {
         adapter: runtime.adapter,
         changeDir,
         session: Math.max(1, number),
+        runId: run.id,
         interrupted: true,
       });
       if (committed.ticked.length > 0)
