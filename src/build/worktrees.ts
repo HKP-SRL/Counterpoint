@@ -12,7 +12,9 @@
 //   filters, and the baseline covers every execution-capable key (key-trust);
 // - the committed `.claude/settings.json` at that base commit (which builder sessions load as
 //   project settings) must widen no isolation setting and must carry the same execution-capable
-//   keys as the baseline. Doctor read the base tip, which may have moved since the approval.
+//   keys as the baseline, and the whole committed `.claude/` folder there (skills, agents,
+//   commands, CLAUDE.md) must equal the baseline's. Doctor read the base tip, which may have moved
+//   since the approval.
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { checkIntegrity, readBaseline } from '../core/approvals/integrity.ts';
@@ -20,6 +22,7 @@ import { createGitFileReader } from '../core/git/reader.ts';
 import { runGit } from '../core/git/run.ts';
 import { isChangeId } from '../core/ids.ts';
 import {
+  describeClaudeFolder,
   describeProjectSettings,
   PROJECT_SETTINGS_PATH,
   type ProjectSettingsRead,
@@ -69,10 +72,8 @@ export async function checkProjectSettingsAt(input: {
   launchSettings: AgentSettings;
   homeDir: string;
 }): Promise<void> {
-  const bytes = await createGitFileReader(input.host.root).read(
-    input.commit,
-    PROJECT_SETTINGS_PATH,
-  );
+  const reader = createGitFileReader(input.host.root);
+  const bytes = await reader.read(input.commit, PROJECT_SETTINGS_PATH);
   const read: ProjectSettingsRead =
     bytes === null ? { state: 'absent' } : parseProjectSettings(bytes);
   const judged = judgeSandboxIsolation(
@@ -110,6 +111,16 @@ export async function checkProjectSettingsAt(input: {
     throw new WorktreeRefusal(
       'project-settings',
       `The hooks, helpers, plugins or env in ${PROJECT_SETTINGS_PATH} at ${input.commit.slice(0, 12)} differ from the baseline you accepted. Review them, then run "counterpoint trust ${input.host.id}".`,
+    );
+  }
+  const folder = await describeClaudeFolder(reader, input.commit);
+  if (JSON.stringify(folder) !== JSON.stringify(baseline.claudeFolder)) {
+    const changed = [
+      ...new Set([...Object.keys(folder), ...Object.keys(baseline.claudeFolder)]),
+    ].filter((path) => folder[path] !== baseline.claudeFolder[path]);
+    throw new WorktreeRefusal(
+      'project-settings',
+      `The .claude folder at ${input.commit.slice(0, 12)} differs from the baseline you accepted (${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ', ...' : ''}). Review it, then run "counterpoint trust ${input.host.id}".`,
     );
   }
 }

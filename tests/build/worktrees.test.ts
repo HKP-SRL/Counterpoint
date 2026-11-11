@@ -124,6 +124,22 @@ describe('prepareWorktree', () => {
     );
   });
 
+  it('refuses a base commit whose .claude folder differs from the baseline, naming the files', async () => {
+    const { root, input, accept } = await setup();
+    writeFileIn(root, '.claude/skills/apply/SKILL.md', '---\nname: apply\n---\n');
+    await commitAll(root);
+    await accept();
+    const trusted = (await runGit(root, ['rev-parse', 'HEAD'])).stdout.trim();
+    // The approval's base is an older commit whose skill differs from what the owner trusted at the
+    // tip (the integrity check at the tip passes, the folder at the base does not).
+    const older = { ...input, baseCommit: input.baseCommit, change: 'older-base' };
+    await expect(prepareWorktree(older)).rejects.toThrow(
+      /\.claude folder .* \(\.claude\/skills\/apply\/SKILL\.md\)/,
+    );
+    const ok = await prepareWorktree({ ...input, baseCommit: trusted, change: 'at-tip' });
+    expect(ok.created).toBe(true);
+  });
+
   it('refuses an existing branch that does not contain the base, and bad input', async () => {
     const { root, input } = await setup();
     await runGit(root, ['checkout', '-q', '--orphan', 'cp/add-menu']);

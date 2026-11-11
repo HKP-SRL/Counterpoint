@@ -201,6 +201,10 @@ export function lookupHost(home: string, hostId: string): HostLookup {
 function describeValue(value: string | null): string {
   if (value === null) return '(none)';
   if (value.startsWith('sha256:')) return value.slice('sha256:'.length, 'sha256:'.length + 12);
+  if (value.startsWith('git:')) {
+    const [, mode, oid] = value.split(':');
+    return `${mode === '100755' ? 'executable ' : mode === '120000' ? 'symlink ' : ''}${(oid ?? '').slice(0, 12)}`;
+  }
   if (value.startsWith('symlink:'))
     return `symlink -> ${printable(value.slice('symlink:'.length))}`;
   return printable(value);
@@ -240,6 +244,8 @@ export function formatIntegritySnapshot(snapshot: IntegritySnapshot): string[] {
     // Keys of the committed .claude/settings.json that run programs or shape sessions, by digest;
     // the values themselves are in the file on the base branch (env may hold secrets).
     ['project settings (.claude/settings.json on the base branch)', snapshot.projectSettings],
+    // Every committed file under .claude/ (skills, agents, commands, CLAUDE.md), by git object id.
+    ['.claude folder (every committed file, on the base branch)', snapshot.claudeFolder],
   ] as const) {
     lines.push(area);
     const entries = Object.entries(record);

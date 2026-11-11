@@ -18,6 +18,11 @@
 // sessions load it (`--setting-sources user,project`), and its hooks, helpers, plugins and env run
 // or shape what runs as the owner (project-settings.ts). Only its execution-capable keys are
 // recorded, by digest. The field is additive: a baseline from before it reads as none.
+//
+// So does the whole committed `.claude/` folder (owner decision 2026-11-11): skills, agents and
+// commands can define hooks in their front matter, and `CLAUDE.md` steers every session. Every
+// entry is pinned by git mode and object id (`claudeFolder`). Also additive: a baseline from before
+// it reads as an empty folder, so a host that commits `.claude/` content needs one `trust` again.
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -38,7 +43,11 @@ import { writeFileAtomic0600 } from '../fs/atomic.ts';
 import { runGit } from '../git/run.ts';
 import { hostDir } from '../host/home.ts';
 import { PROBE_GIT_ARTIFACT_RE } from '../ids.ts';
-import { describeProjectSettings, readProjectSettings } from '../security/project-settings.ts';
+import {
+  describeProjectSettings,
+  readClaudeFolder,
+  readProjectSettings,
+} from '../security/project-settings.ts';
 
 const SCHEMA = 'counterpoint/integrity/v2';
 /** The first format: no worktree configs, no include targets. Read as v2 with both empty. */
@@ -131,6 +140,8 @@ export interface IntegritySnapshot {
   includes: Record<string, string>;
   /** Execution-capable key of the committed `.claude/settings.json` → `sha256:…` of its value. */
   projectSettings: Record<string, string>;
+  /** Every entry of the committed `.claude/` folder → `git:<mode>:<oid>` (project-settings.ts). */
+  claudeFolder: Record<string, string>;
 }
 
 export interface IntegrityChange {
@@ -141,7 +152,8 @@ export interface IntegrityChange {
     | 'config.worktree'
     | 'worktree config'
     | 'include'
-    | 'project settings';
+    | 'project settings'
+    | 'claude folder';
   name: string;
   before: string | null;
   after: string | null;
@@ -156,6 +168,7 @@ const SnapshotSchema = z.object({
   worktreeConfigs: z.record(z.string(), z.string()),
   includes: z.record(z.string(), z.string()),
   projectSettings: z.record(z.string(), z.string()).default({}),
+  claudeFolder: z.record(z.string(), z.string()).default({}),
 });
 
 /**
@@ -178,6 +191,7 @@ const StoredSchema = z.union([
       worktreeConfigs: {} as Record<string, string>,
       includes: {} as Record<string, string>,
       projectSettings: {} as Record<string, string>,
+      claudeFolder: {} as Record<string, string>,
     })),
 ]);
 
@@ -357,6 +371,10 @@ export async function snapshotIntegrity(
         : describeProjectSettings(
             await readProjectSettings(options.project.root, options.project.baseBranch),
           ),
+    claudeFolder:
+      options.project === undefined
+        ? {}
+        : await readClaudeFolder(options.project.root, options.project.baseBranch),
   };
 }
 
@@ -397,6 +415,7 @@ export function compareIntegrity(
   compareRecords('worktree config', baseline.worktreeConfigs, current.worktreeConfigs, changes);
   compareRecords('include', baseline.includes, current.includes, changes);
   compareRecords('project settings', baseline.projectSettings, current.projectSettings, changes);
+  compareRecords('claude folder', baseline.claudeFolder, current.claudeFolder, changes);
   if (baseline.configWorktree !== current.configWorktree) {
     changes.push({
       area: 'config.worktree',

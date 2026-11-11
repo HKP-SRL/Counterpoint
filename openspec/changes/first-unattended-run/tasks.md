@@ -61,6 +61,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 7.3 Gate-sandbox probe row (`srt` profile: protected read, outside write and console port refused; allowed port reached)
 - [x] 7.4 Live doctor proof on the owner's machine with the three new rows
 - [x] 7.5 Judge probe refusals by protocol fields and outcomes, never claude's wording; drop the version-distrust rule; live doctor proof again
+- [x] 7.6 The integrity baseline pins the whole committed `.claude/` folder (skills, agents, commands, CLAUDE.md), at the base tip and again at each build's base commit
 
 ## 8. Worktrees and builder sessions
 

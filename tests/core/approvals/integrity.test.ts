@@ -308,6 +308,82 @@ describe('checkIntegrity', () => {
   });
 });
 
+describe('the committed .claude folder (owner decision 2026-11-11)', () => {
+  async function commitIn(dir: string, files: Record<string, string>) {
+    for (const [path, content] of Object.entries(files)) writeFileIn(dir, path, content);
+    await gitIn(dir, ['add', '-A']);
+    await gitIn(dir, [
+      '-c',
+      'user.name=T',
+      '-c',
+      'user.email=t@t.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '-m',
+      'c',
+    ]);
+  }
+
+  it('pins every committed file under .claude/ at the base tip, nested, by mode and object id', async () => {
+    const repo = await freshRepo();
+    await commitIn(repo.dir, {
+      'README.md': 'hi\n',
+      '.claude/CLAUDE.md': 'rules\n',
+      '.claude/skills/apply/SKILL.md': '---\nname: apply\n---\n',
+      '.claude/agents/reviewer.md': 'agent\n',
+    });
+    // An uncommitted file in the working tree is not what builders load: not pinned.
+    writeFileIn(repo.dir, '.claude/commands/local.md', 'draft\n');
+    const { claudeFolder } = await snap(repo);
+    expect(Object.keys(claudeFolder)).toEqual([
+      '.claude/CLAUDE.md',
+      '.claude/agents/reviewer.md',
+      '.claude/skills/apply/SKILL.md',
+    ]);
+    for (const value of Object.values(claudeFolder))
+      expect(value).toMatch(/^git:100644:[0-9a-f]{40}$/);
+  });
+
+  it('reports a skill whose front matter gains a hook, and a new agent, as changes', async () => {
+    const repo = await freshRepo();
+    await commitIn(repo.dir, { '.claude/skills/apply/SKILL.md': '---\nname: apply\n---\n' });
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
+    expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
+    await commitIn(repo.dir, {
+      '.claude/skills/apply/SKILL.md':
+        '---\nname: apply\nhooks:\n  PreToolUse:\n    - hooks: [{type: command, command: curl x}]\n---\n',
+      '.claude/agents/new.md': 'agent\n',
+    });
+    const state = await checkIntegrity(repo.home, repo.host);
+    expect(state.state).toBe('changed');
+    if (state.state !== 'changed') return;
+    expect(state.changes.map((c) => [c.area, c.name, c.before === null, c.after === null])).toEqual(
+      [
+        ['claude folder', '.claude/agents/new.md', true, false],
+        ['claude folder', '.claude/skills/apply/SKILL.md', false, false],
+      ],
+    );
+  });
+
+  it('reads a baseline from before the folder field as an empty folder', async () => {
+    const repo = await freshRepo();
+    await commitIn(repo.dir, { '.claude/CLAUDE.md': 'rules\n' });
+    const { claudeFolder: _folder, ...older } = await snap(repo);
+    const dir = join(repo.home, 'hosts', repo.host.id);
+    writeFileIn(dir, 'integrity.json', JSON.stringify(older));
+    chmodSync(dir, 0o700);
+    chmodSync(join(dir, 'integrity.json'), 0o600);
+    expect(readBaseline(repo.home, repo.host.id)?.claudeFolder).toEqual({});
+    const state = await checkIntegrity(repo.home, repo.host);
+    expect(state).toMatchObject({
+      state: 'changed',
+      changes: [{ area: 'claude folder', name: '.claude/CLAUDE.md' }],
+    });
+  });
+});
+
 describe('resolveIncludePath', () => {
   it('resolves as git does: ~/ to home, relative to the including file, ~user unresolved', () => {
     expect(resolveIncludePath('~/x.inc', '/r/.git/config', '/Users/o')).toBe('/Users/o/x.inc');
