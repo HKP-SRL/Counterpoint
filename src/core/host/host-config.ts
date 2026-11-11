@@ -18,7 +18,7 @@
 //       ports: [54321]          # loopback ports the gate may reach (nothing else)
 //       services: [supabase]    # services to start (and reset) before this gate
 //       testCount: 'Tests\s+(\d+) passed'   # zero-test guard: first group is the count
-//   services:
+//   services:                   # run OUTSIDE the sandbox, from the worktree: never worktree code
 //     supabase:
 //       start: [supabase, start]
 //       reset: [supabase, db, reset]

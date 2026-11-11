@@ -108,7 +108,21 @@ describe('gate sandbox profile', () => {
       'no_proxy',
       'NODE_USE_ENV_PROXY=1',
     ]);
-    expect(argv.slice(11)).toEqual(['pnpm', 'test', '--', "it's"]);
+    // The signal-safe wrapper: srt itself exits 0 when its command dies from a signal.
+    expect(argv.slice(11, 15)).toEqual([
+      '/bin/sh',
+      '-c',
+      'code=0; "$@" || code=$?; exit "$code"',
+      'cp-gate',
+    ]);
+    expect(argv.slice(15)).toEqual(['pnpm', 'test', '--', "it's"]);
+  });
+
+  it('sets variables inside the sandbox, after srt, and refuses bad names', () => {
+    const argv = gateArgv('/s.json', ['true'], { TMPDIR: '/gate/tmp' });
+    expect(argv.slice(11, 12)).toEqual(['TMPDIR=/gate/tmp']);
+    expect(argv.at(-1)).toBe('true');
+    expect(() => gateArgv('/s.json', ['true'], { 'A=B': 'x' })).toThrow(/Invalid variable/);
   });
 });
 

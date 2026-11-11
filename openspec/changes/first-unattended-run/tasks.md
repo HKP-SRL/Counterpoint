@@ -71,11 +71,11 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 9. Gates
 
-- [ ] 9.1 Gate runner under `srt`: worktree and temp writes only, protected reads denied, listed ports only, `NODE_USE_ENV_PROXY=1`
-- [ ] 9.2 Process groups, `CP_GATE_RUN` tag sweep, timeouts, exit-code verdicts with distinct reasons, logs and tails
-- [ ] 9.3 Host services before gates (start, reset, env), outside the sandbox, from the approved config only
-- [ ] 9.4 Shared test lock (the owner's existing lock file), zero-test guard, bounded retries with feedback, parking
-- [ ] 9.5 Protected-path check on the branch diff (tests, gate config, baselines, planning files, host-listed paths)
+- [x] 9.1 Gate runner under `srt`: worktree and temp writes only, protected reads denied, listed ports only, `NODE_USE_ENV_PROXY=1`
+- [x] 9.2 Process groups, `CP_GATE_RUN` tag sweep, timeouts, exit-code verdicts with distinct reasons, logs and tails
+- [x] 9.3 Host services before gates (start, reset, env), outside the sandbox, from the approved config only
+- [x] 9.4 Shared test lock (the owner's existing lock file), zero-test guard, bounded retries with feedback, parking
+- [x] 9.5 Protected-path check on the branch diff (tests, gate config, baselines, planning files, host-listed paths)
 
 ## 10. Runs
 

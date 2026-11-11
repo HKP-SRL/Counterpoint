@@ -14,6 +14,13 @@
 // The gate therefore runs through `env -u NO_PROXY -u no_proxy NODE_USE_ENV_PROXY=1`: Node's
 // fetch then goes through the proxy, which lets `127.0.0.1:<listed port>` through and refuses any
 // other port. Paths in the profile are absolute and realpath-resolved.
+//
+// Two more live facts (srt 0.0.82, 2026-11-11, task 9.1):
+// - srt passes the command's exit code through, but when the command dies from a signal srt exits
+//   0, which would read as a pass. The command therefore runs inside `/bin/sh -c 'code=0; "$@" ||
+//   code=$?; exit "$code"'`: the shell survives its child's signal and exits 128+n.
+// - srt sets `TMPDIR` to its own temp folder. A gate's own temp dir is set inside the sandbox, after
+//   srt, through the same `env` call.
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
@@ -87,12 +94,26 @@ export function srtCliPath(): string {
   );
 }
 
+/** Exits 128+n when the command dies from signal n (srt itself would exit 0). */
+const SIGNAL_SAFE_WRAPPER = ['/bin/sh', '-c', 'code=0; "$@" || code=$?; exit "$code"', 'cp-gate'];
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
  * The argv (program first) that runs `command` under srt with the profile at `settingsPath`.
- * `command` is an argument array; srt shell-quotes it, so nothing in it is parsed by a shell.
+ * `command` is an argument array; nothing in it is parsed by a shell (the wrapper passes it on as
+ * `"$@"`). `env` is set inside the sandbox, after srt (for `TMPDIR`, which srt overrides).
  */
-export function gateArgv(settingsPath: string, command: readonly string[]): string[] {
+export function gateArgv(
+  settingsPath: string,
+  command: readonly string[],
+  env: Readonly<Record<string, string>> = {},
+): string[] {
   if (command.length === 0) throw new Error('Empty gate command.');
+  const assignments = Object.entries(env).map(([name, value]) => {
+    if (!ENV_NAME_RE.test(name) || value.includes('\0'))
+      throw new Error(`Invalid variable ${name}.`);
+    return `${name}=${value}`;
+  });
   return [
     process.execPath,
     srtCliPath(),
@@ -105,6 +126,8 @@ export function gateArgv(settingsPath: string, command: readonly string[]): stri
     '-u',
     'no_proxy',
     'NODE_USE_ENV_PROXY=1',
+    ...assignments,
+    ...SIGNAL_SAFE_WRAPPER,
     ...command,
   ];
 }
