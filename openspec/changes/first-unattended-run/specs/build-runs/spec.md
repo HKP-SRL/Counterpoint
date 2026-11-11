@@ -5,15 +5,19 @@ Unattended builds of approved changes: how a run starts and stops, where each ch
 
 ## ADDED Requirements
 
-### Requirement: Start and stop a run from the CLI
-The owner SHALL start a run from the CLI choosing which changes on the runway to build, a stop time, a model and a context budget, and SHALL be able to stop it. Starting and stopping SHALL require the owner credential that agents cannot read.
+### Requirement: Start and stop a run from the console
+The owner SHALL start a run from the console choosing which changes on the runway to build, a stop time, a model and a context budget, SHALL see the run's progress there, and SHALL be able to stop it there. The CLI SHALL offer the same start and stop. Starting and stopping SHALL require the owner credential that agents cannot use: the console session or the control token.
 
 #### Scenario: Budget shown as tokens
 - **WHEN** the owner sets the budget to 40% on a model with a 1M-token window
 - **THEN** the run settings show "40% of 1M = 400k tokens"
 
+#### Scenario: Start from the console
+- **WHEN** the owner picks two runway changes, a stop time, a model and a budget in the console and presses Start
+- **THEN** the run starts and the console shows each change's progress
+
 #### Scenario: Agent tries to start a run
-- **WHEN** an agent session sends a start request without the owner credential
+- **WHEN** an agent session sends a start request without the console session or the control token
 - **THEN** the request is refused
 
 ### Requirement: Only runway changes are built

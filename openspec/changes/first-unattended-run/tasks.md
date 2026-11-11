@@ -78,20 +78,22 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 10. Runs
 
-- [ ] 10.1 `counterpoint run`, `run stop`, `run status` over the control socket; refuse without a passing doctor or a verifying approval
+- [ ] 10.1 Run endpoints in the daemon: start, stop, status; refuse without a passing doctor or a verifying approval
 - [ ] 10.2 Orchestrator loop: runway order, re-verify before each change, stop time, stop at a clean point
 - [ ] 10.3 Crash recovery at daemon start: kill recorded process groups and tagged processes, commit interrupted work, resume from the last handoff
 - [ ] 10.4 Needs You: parked changes with their last gate lines and attempts; run-stopping errors
+- [ ] 10.5 Console Run panel on the Mission page: pick changes, stop time, model, budget as tokens; Start and Stop (guarded POSTs); live progress over SSE
+- [ ] 10.6 CLI `counterpoint run`, `run stop`, `run status` over the control socket
 
 ## 11. Pull requests and report
 
 - [ ] 11.1 Push helper (owner credentials for that call only) and `gh pr create` with the generated body
 - [ ] 11.2 Preview link: host deploy from the PR checks, else a sandboxed loopback preview
 - [ ] 11.3 Planning-write queue (serialized) and the planning-file flag that keeps a PR from being offered for merge
-- [ ] 11.4 Run report at every run end: file, store, `counterpoint run report`
+- [ ] 11.4 Run report at every run end: file, store, shown in the console, `counterpoint run report`
 
 ## 12. First run on Cena
 
 - [ ] 12.1 Draft Cena's `.counterpoint/config.yaml` (gates, Supabase service, ports) on a branch
 - [ ] 12.2 Owner: review and commit Cena's `.counterpoint/config.yaml`
-- [ ] 12.3 Owner: start the first overnight run and read its report
+- [ ] 12.3 Owner: start the first overnight run from the console and read its report there

@@ -6,26 +6,40 @@ After the runway clears a change and its PR is open, the owner gets the change r
 ## ADDED Requirements
 
 ### Requirement: Owner revision notes
-The owner SHALL be able to write revision notes on a change whose PR is open or that has parked, in the console with the owner credential or with `counterpoint revise {host} {change}` at a terminal. Notes SHALL collect in a batch until the owner sends them as one revision round.
+The owner SHALL be able to write revision notes in Counterpoint on a change whose PR is open or that has parked: pinned to an element of the change's preview, or as a general note on the change in the console. Notes SHALL collect in a batch until the owner sends them as one revision round.
 
 #### Scenario: Two notes, one round
-- **WHEN** the owner writes two notes on an open change and sends them
+- **WHEN** the owner pins one note on the preview, writes one general note, and sends the batch
 - **THEN** one revision round starts with both notes
 
 #### Scenario: Notes on a parked change
 - **WHEN** the owner sends a note on a parked change explaining what its failing gate needs
 - **THEN** a revision round starts in that change's worktree with the note
 
+### Requirement: Pins on the change's preview
+Counterpoint SHALL serve a local preview of each open change's worktree on a loopback origin isolated from the console, with an in-house pin overlay injected in a Shadow DOM. A pin SHALL record the element's anchor (its `data-cp-id`, else a generated selector), a text snippet, the viewport and the page.
+
+#### Scenario: Pin a built screen
+- **WHEN** the owner clicks a card on the preview and pins "too much padding"
+- **THEN** a note with that element's anchor joins the change's batch
+
+### Requirement: Pins stay anchored across rounds
+A pin SHALL stay anchored across rounds through `data-cp-id`, falling back to text matching, and SHALL show as detached rather than disappear when no anchor is found.
+
+#### Scenario: Element gone after a round
+- **WHEN** a round removes the pinned element
+- **THEN** the pin shows as detached in the console
+
 ### Requirement: Only the owner starts a round
-A revision round SHALL start only from notes the owner sent through the console with the owner credential or through the terminal command. Text written by agents, including comments on the host's PR, council cards and persona findings, SHALL NOT start a round or join a batch on its own. The revise command SHALL refuse without a terminal.
+A revision round SHALL start only when the owner sends the batch from the console with the owner credential. Pins made on the preview origin SHALL be listed in the console's batch before sending, because that origin runs agent-written code. Text written by agents, including comments on the host's PR, council cards and persona findings, SHALL NOT start a round or join a batch on its own.
 
 #### Scenario: Comment on the PR
 - **WHEN** a comment on the change's PR asks for a change
 - **THEN** no revision round starts
 
-#### Scenario: No terminal
-- **WHEN** `counterpoint revise` runs with no terminal attached
-- **THEN** it refuses and no note is stored
+#### Scenario: Pin created by preview code
+- **WHEN** script in the preview creates a pin the owner did not make
+- **THEN** it appears in the console's batch list and nothing builds until the owner sends the batch
 
 ### Requirement: Revision in the change's own worktree
 A round SHALL run in fresh builder sessions in the change's existing worktree and branch, with the notes, the change's artifacts and the PR's diff as context, and SHALL change only what the notes ask. The sandbox, context budget, protected-path check and zero-test guard SHALL apply exactly as in a build, whatever the notes say.

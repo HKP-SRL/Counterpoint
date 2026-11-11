@@ -8,11 +8,10 @@ Reviewing screens before they are built is where changes are cheapest, and a sig
 
 - Screen drafts for a change: standalone local HTML with fixture data, in the host's own design system, served on an origin isolated from the console API; mobile/desktop and empty/loading/error/long-text toggles.
 - Low-fi "wire" exploration, then a hi-fi "full" render with the host's tokens and fixtures.
-- Element-pinned comments (an in-house overlay injected by the draft server, anchored on stable `data-cp-id`s), batched into one revision that changes only the targeted parts; resolvable threads; whole redraws with a steering note.
+- Element-pinned comments (the in-house pin overlay from `pr-revisions`, injected by the draft server, anchored on stable `data-cp-id`s), batched into one revision that changes only the targeted parts; resolvable threads; whole redraws with a steering note.
 - 2-3 variants side by side; pick one or "More like B" with an optional steering note, with a breadcrumb trail to back up. This round model is built once here and reused by council cards.
 - Signing off the full render joins the change's runway approval (the statement's draft slot).
 - A structural visual gate: built screens are compared with the signed render by landmark regions; drift fails the gate with a side-by-side image. Pixel diff is deferred.
-- The pin overlay also works on a change's local preview: pins on a built screen become revision notes for that change (`pr-revisions`).
 - A revision round that deliberately changes a signed-off screen updates the signed render for the owner to sign again, so the visual gate checks the new intent instead of failing on the owner's own note.
 
 ## Capabilities
