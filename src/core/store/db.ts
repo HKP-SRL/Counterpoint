@@ -2,7 +2,7 @@
 // read-only. Schema changes go through numbered migrations keyed by `PRAGMA user_version`.
 //
 // Approvals are never stored here as authority: they are derived from git at read time. This
-// store holds hosts, sign-in material (hashed) and the event outbox.
+// store holds hosts, sign-in material (hashed), the event outbox and the build lane's runs.
 import { join, resolve } from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import type { HostRecord, HostRegistryStore } from '../host/registry.ts';
@@ -42,6 +42,111 @@ const MIGRATIONS: readonly string[] = [
     payload TEXT NOT NULL,
     created_at INTEGER NOT NULL
   ) STRICT;
+  `,
+  // 2: the build lane (first-unattended-run). Runs, the changes in each run, agent sessions,
+  // gate results, learned model windows and the governor's persisted pause. JSON columns hold
+  // small structured values (run settings, flags, task ticks, usage); logs and handoffs are files.
+  `
+  CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    state TEXT NOT NULL CHECK (state IN ('running', 'stopping', 'ended')),
+    settings TEXT NOT NULL,
+    stop_at INTEGER,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    end_reason TEXT CHECK (end_reason IN ('finished', 'stopped', 'stop-time', 'error', 'refused')),
+    end_detail TEXT,
+    report_path TEXT,
+    CHECK ((state = 'ended') = (ended_at IS NOT NULL AND end_reason IS NOT NULL))
+  ) STRICT;
+  -- One run at a time per machine.
+  CREATE UNIQUE INDEX runs_one_active ON runs((1)) WHERE state <> 'ended';
+
+  CREATE TABLE run_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    change TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    state TEXT NOT NULL
+      CHECK (state IN ('queued', 'building', 'green', 'parked', 'skipped', 'stopped')),
+    reason TEXT,
+    approval_commit TEXT,
+    base_commit TEXT,
+    branch TEXT,
+    worktree TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    pr_url TEXT,
+    preview_url TEXT,
+    flags TEXT NOT NULL DEFAULT '[]',
+    task_ticks TEXT NOT NULL DEFAULT '[]',
+    handoff_path TEXT,
+    started_at INTEGER,
+    ended_at INTEGER,
+    UNIQUE (run_id, change),
+    UNIQUE (run_id, position)
+  ) STRICT;
+
+  CREATE TABLE agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    run_change_id INTEGER REFERENCES run_changes(id),
+    kind TEXT NOT NULL CHECK (kind IN ('builder', 'calibration')),
+    number INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    claude_version TEXT,
+    pid INTEGER,
+    process_tag TEXT NOT NULL,
+    raw_log_path TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    end_reason TEXT,
+    peak_context_tokens INTEGER,
+    usage TEXT,
+    CHECK (kind = 'calibration' OR run_change_id IS NOT NULL)
+  ) STRICT;
+  CREATE INDEX agent_sessions_open ON agent_sessions(ended_at) WHERE ended_at IS NULL;
+
+  CREATE TABLE gate_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_change_id INTEGER NOT NULL REFERENCES run_changes(id),
+    attempt INTEGER NOT NULL,
+    gate TEXT NOT NULL,
+    verdict TEXT CHECK (verdict IN ('pass', 'fail')),
+    reason TEXT,
+    exit_code INTEGER,
+    signal TEXT,
+    pid INTEGER,
+    process_tag TEXT NOT NULL,
+    log_path TEXT NOT NULL,
+    tail TEXT,
+    survivors TEXT NOT NULL DEFAULT '[]',
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    duration_ms INTEGER,
+    UNIQUE (run_change_id, attempt, gate),
+    CHECK ((verdict IS NULL) = (ended_at IS NULL)),
+    CHECK (verdict IS NOT 'fail' OR reason IS NOT NULL)
+  ) STRICT;
+
+  CREATE TABLE model_windows (
+    model TEXT NOT NULL,
+    claude_version TEXT NOT NULL,
+    window_tokens INTEGER NOT NULL CHECK (window_tokens > 0),
+    learned_at INTEGER NOT NULL,
+    PRIMARY KEY (model, claude_version)
+  ) STRICT;
+
+  -- A single row: the machine-wide pause and the last utilization seen per limit window.
+  CREATE TABLE governor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    paused_until INTEGER,
+    pause_reason TEXT,
+    utilization TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL
+  ) STRICT;
+  INSERT INTO governor (id, paused_until, pause_reason, utilization, updated_at)
+    VALUES (1, NULL, NULL, '{}', 0);
   `,
 ];
 

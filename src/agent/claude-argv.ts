@@ -12,7 +12,10 @@
 // - `--output-format stream-json --verbose`: the machine-readable event stream.
 // - `--no-session-persistence`, `--max-turns`, `--max-budget-usd`: bounded, throwaway sessions.
 // The prompt goes directly after `-p` because `--allowedTools` and `--add-dir` are variadic and
-// would swallow a trailing positional argument.
+// would swallow a trailing positional argument. With `streamInput` (builder sessions) there is no
+// positional prompt: `--input-format stream-json` makes claude read user messages from stdin,
+// one JSON line each, so the orchestrator can send the first prompt and, later, a wrap-up message
+// mid-session (spike 5.1 of first-unattended-run).
 import { isAbsolute } from 'node:path';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
 
@@ -27,7 +30,10 @@ export interface ClaudeArgvInput {
   maxBudgetUsd: number;
   /** Explicit tool allow-list, e.g. `['Bash', 'Read']`. */
   allowedTools: readonly string[];
-  prompt: string;
+  /** The prompt. Required unless `streamInput` is set (then the prompt goes over stdin). */
+  prompt?: string;
+  /** Read user messages from stdin (`--input-format stream-json`) instead of a prompt argument. */
+  streamInput?: boolean;
   /** Extra directories (absolute). Nothing passes any yet. */
   addDirs?: readonly string[];
 }
@@ -35,8 +41,11 @@ export interface ClaudeArgvInput {
 export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
   const { settings, model, maxTurns, maxBudgetUsd, allowedTools, prompt } = input;
   const addDirs = input.addDirs ?? [];
+  const streamInput = input.streamInput === true;
 
-  if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.startsWith('-')) {
+  if (streamInput) {
+    if (prompt !== undefined) throw new Error('A streaming session takes its prompt over stdin.');
+  } else if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.startsWith('-')) {
     throw new Error('The prompt must be non-empty text that does not start with a dash.');
   }
   if (!/^[A-Za-z0-9._:-]+$/.test(model) || model.startsWith('-')) {
@@ -58,7 +67,7 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
 
   const argv = [
     '-p',
-    prompt,
+    ...(streamInput ? ['--input-format', 'stream-json'] : [prompt as string]),
     '--output-format',
     'stream-json',
     '--verbose',

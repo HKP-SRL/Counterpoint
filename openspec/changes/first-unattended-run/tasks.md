@@ -41,11 +41,11 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 5. Foundations
 
-- [ ] 5.1 Spike: streaming input on claude 2.1.322 (`--input-format stream-json`): send a user message mid-session and read usage live; record the result in design.md
-- [ ] 5.2 Store migration: `runs`, `run_changes`, `agent_sessions`, `gate_results`, `model_windows`, `governor`
-- [ ] 5.3 Host config schema: gates (command, timeout, test lock, ports, test-count pattern), services, attempts, preview command, protected paths; read at the approved base
-- [ ] 5.4 Streaming mode for the CLI runner: live events, live context fill (de-duplicated by message id), send-message, end-session, process tag
-- [ ] 5.5 Model windows: learn from every `result`, calibration session when unknown, budget shown as tokens
+- [x] 5.1 Spike: streaming input on claude 2.1.322 (`--input-format stream-json`): send a user message mid-session and read usage live; record the result in design.md
+- [x] 5.2 Store migration: `runs`, `run_changes`, `agent_sessions`, `gate_results`, `model_windows`, `governor`
+- [x] 5.3 Host config schema: gates (command, timeout, test lock, ports, test-count pattern), services, attempts, preview command, protected paths; read at the approved base
+- [x] 5.4 Streaming mode for the CLI runner: live events, live context fill (de-duplicated by message id), send-message, end-session, process tag
+- [x] 5.5 Model windows: learn from every `result`, calibration session when unknown, budget shown as tokens
 
 ## 6. Governor
 
