@@ -12,6 +12,8 @@ Reviewing screens before they are built is where changes are cheapest, and a sig
 - 2-3 variants side by side; pick one or "More like B" with an optional steering note, with a breadcrumb trail to back up. This round model is built once here and reused by council cards.
 - Signing off the full render joins the change's runway approval (the statement's draft slot).
 - A structural visual gate: built screens are compared with the signed render by landmark regions; drift fails the gate with a side-by-side image. Pixel diff is deferred.
+- The pin overlay also works on a change's local preview: pins on a built screen become revision notes for that change (`pr-revisions`).
+- A revision round that deliberately changes a signed-off screen updates the signed render for the owner to sign again, so the visual gate checks the new intent instead of failing on the owner's own note.
 
 ## Capabilities
 
@@ -27,4 +29,5 @@ Reviewing screens before they are built is where changes are cheapest, and a sig
 - Draft server on a separate loopback port; pin overlay script; Playwright screenshots on the server side.
 - Signed-off drafts are committed into the change's directory, so they are covered by the approval like every other file there.
 - Research spikes first: rendering Cena screens in fixture mode, and keeping `data-cp-id` stable across revisions.
-- Can be planned alongside `morning-review-signed-merge`; it needs only the gate runner from `first-unattended-run` and the approvals from the trusted shell.
+- Can be planned alongside `morning-review-signed-merge`; it needs the gate runner from `first-unattended-run`, the approvals from the trusted shell, and revision rounds from `pr-revisions`.
+- Open for design: how re-signing a revised render fits the merge approval, since the change's runway approval has already been used by the time a PR is open.

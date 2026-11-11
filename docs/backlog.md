@@ -1,6 +1,6 @@
 # Backlog
 
-Work deliberately deferred past the first milestone (the six changes from `trusted-shell-signed-runway` to `council-meetings-backlog`). When one of these is picked up, it becomes an OpenSpec change. Decisions and out-of-scope items are in `docs/decisions.md`.
+Work deliberately deferred past the first milestone (the seven changes from `trusted-shell-signed-runway` to `council-meetings-backlog`). When one of these is picked up, it becomes an OpenSpec change. Decisions and out-of-scope items are in `docs/decisions.md`.
 
 ## Deferred features
 
@@ -11,13 +11,15 @@ Work deliberately deferred past the first milestone (the six changes from `trust
   - Some seats drive the running app in character (headless browser, screenshots). Others review artifacts.
   - Findings are advisory cards with evidence, labelled as synthetic.
   - Use headless, isolated Playwright MCP, never Claude in Chrome.
+- **PR review seat.** A tech and security seat reads every PR's diff and leaves advisory review notes (auth rules, data access, architecture drift). The owner does not read code, so gates plus previews are not enough on their own. Candidate to bring into v1. The owner can turn a review note into a revision note.
 
 ### Gates
 - **Pixel-diff tier for the visual gate.** A tolerant, masked pixel diff (pixelmatch), enabled once a spike shows an acceptable false-positive rate. Until then, the structural landmark comparison decides.
 
 ### Build lane
 - **Run trailer.** Agent commits carry a `Counterpoint-Run:` trailer linking to the run log.
-- **Notifications.** A macOS notification when something lands in Needs You.
+- **Quick changes.** A small instruction ("rename this button", "bump this config") becomes a minimal change, signed and built in minutes, without a full proposal, design and tasks. It reuses the revision-round machinery from `pr-revisions` for work not tied to an open PR, including follow-ups after a merge.
+- **Notifications.** A macOS notification when something lands in Needs You. More useful in daytime runs, when PRs and finished revision rounds arrive one at a time.
 - **Open in editor.** Open a change's worktree in the owner's editor from the console.
 
 ### Design drafts
@@ -34,8 +36,9 @@ Work deliberately deferred past the first milestone (the six changes from `trust
   - A rehearsal run on a change outside the protected paths is a good first use.
 - **"No framework" adapter.** A plain markdown or YAML list. The adapter boundary is already in core; only the OpenSpec adapter ships.
 - **Public npm release.** Publish as `@hkp/counterpoint`, so `npx @hkp/counterpoint` works. Re-check the Claude Code terms before publishing. Run `publint` and `@arethetypeswrong/cli` first.
+- **Sign several approvals at once.** `counterpoint approve` signs one change per passphrase. That is fine twice a night and tiring ten times a day. One passphrase for a batch, with every statement still shown before signing.
 - **Touch ID or FIDO2 signing on click.** This would replace the prepared terminal command.
-- **Preview-deploy comments.** Ingest comments left on the host's preview deploys.
+- **Preview-deploy comments.** Ingest comments left on the host's preview deploys. They are not an owner channel, so each one becomes a revision note only after the owner confirms it.
 
 ## Open gaps
 

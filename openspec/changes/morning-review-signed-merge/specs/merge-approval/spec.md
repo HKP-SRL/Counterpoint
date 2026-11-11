@@ -6,11 +6,15 @@ Nothing reaches the host's base branch without the owner's own signature: a merg
 ## ADDED Requirements
 
 ### Requirement: Summary before signing
-Before a merge can be signed, the console and the merge command SHALL show the change's summary: its PR, gate results, preview link, protected-path flags and every assumption the builder proceeded on.
+Before a merge can be signed, the console and the merge command SHALL show the change's summary: its PR, gate results, preview link, protected-path flags, every assumption the builder proceeded on, and every revision round with its notes.
 
 #### Scenario: Assumptions listed
 - **WHEN** the builder proceeded on two assumed decisions
 - **THEN** both are listed in the summary before the owner signs
+
+#### Scenario: Revision rounds listed
+- **WHEN** a change went through two revision rounds
+- **THEN** the summary lists both rounds, their notes and any flagged notes before the owner signs
 
 ### Requirement: Signed merge of the exact PR head
 The owner SHALL approve a merge by signing, at a terminal with the trusted approval key, a `--no-ff` merge commit whose second parent is the exact PR head commit shown in the summary. Signing SHALL use the same clean-environment path and integrity check as runway approvals.

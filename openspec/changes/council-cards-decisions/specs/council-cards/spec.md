@@ -41,7 +41,7 @@ The owner SHALL be able to choose Later, and the card SHALL stay in the inbox.
 - **THEN** the card stays in Needs You
 
 ### Requirement: Unanswered reversible card proceeds as assumed
-When the builder reaches work depending on an unanswered reversible card, it SHALL proceed on the recommended option and log it as "assumed" in an assumptions ledger shown in the PR and merge summary. If the owner later answers differently, a rework note SHALL go to the open PR, or a backlog item if already merged.
+When the builder reaches work depending on an unanswered reversible card, it SHALL proceed on the recommended option and log it as "assumed" in an assumptions ledger shown in the PR and merge summary. If the owner later answers differently, the answer SHALL join the open change's batch of revision notes (`pr-revisions`), or become a backlog item if already merged.
 
 #### Scenario: Owner overturns after merge
 - **WHEN** the owner picks a different option after the dependent change merged

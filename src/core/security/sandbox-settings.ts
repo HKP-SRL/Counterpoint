@@ -7,10 +7,11 @@
 //   deny rules cover the Read tool, Grep, symlinks and (merged by Claude Code) Bash.
 //   `sandbox.filesystem.denyRead` is kept as a second layer for Bash.
 // - The host's git common dir gets `Edit(//G/**)` plus `denyWrite` for config, hooks and info.
-// - `allowWrite` is empty: today's only agent (the doctor probe) writes nothing in the git dir,
-//   so no grant can expose shared refs, objects or the base branch ref. The builder
-//   (first-unattended-run) adds a narrow grant as an explicit input; the deny rules above still
-//   win over it.
+// - `allowWrite` is empty, and the `Edit` deny on the whole git dir is also an OS write-deny. That
+//   matters for builders: in a linked worktree Claude Code's sandbox would otherwise let a shell
+//   write the main repository's whole shared `.git` (except hooks and config), including the base
+//   branch ref. A narrower grant cannot be carved out (a deny beats a narrower allow; spike 3.6 of
+//   first-unattended-run), so builders write no git state; the orchestrator commits for them.
 // - Permission rules use the `//abs` prefix form; `sandbox.filesystem.*` uses plain absolute
 //   paths. Every path is absolute and realpath-resolved (`/tmp` is `/private/tmp` on macOS).
 //

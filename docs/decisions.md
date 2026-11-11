@@ -6,6 +6,8 @@ This file records the project-level decisions behind Counterpoint, why they were
 
 The owner can approve work and walk away, and come back to green, reviewable per-change PRs with preview links, plus only the questions that genuinely need them. Runway (approved, ready-to-build work ahead of the builder) is the headline metric. The system succeeds as it needs the owner less.
 
+The owner's main goal (2026-11-11): **the AI builds the right thing.** The owner leads (plans, decides, reviews) and writes no code beyond configs. Builds run during the day as well as overnight. Two halves serve the goal, and they matter equally: the runway gets the right work started, and revision rounds (`pr-revisions`) get each change right before it merges.
+
 ## Context
 
 - **First host: Cena** (`/Volumes/Dock/Projects/HKP/Cena`). It is a tiered restaurant OS, QR menu first, built on Next.js 16, React 19, Supabase and shadcn, with pnpm and vitest. Its default branch is `master`. It plans with OpenSpec. Counterpoint's first real run targets Cena's QR-menu work. Cena is moving to Astryx, so its drafts and Counterpoint's console will share one design system. That migration is Cena work.
@@ -27,7 +29,7 @@ The owner can approve work and walk away, and come back to green, reviewable per
 | Preview: the host's deploy preview when available, a local fallback otherwise | Works with Vercel-style hosts and with any stack | Pending |
 | Merge only after the owner's signed approval | "The owner approves, agents satisfy" | Pending |
 | Signing via a prepared command the owner runs in a terminal | Simplest path that keeps the key out of agents' reach. Touch ID or FIDO2 could come later | Good. The owner signed Cena approvals from the printed command |
-| Conflicts: the builder rebases, re-gates, and parks on failure | Keeps day runs moving while the owner works on the base branch | Pending |
+| Conflicts: the builder rebases, re-gates, and parks on failure | Keeps day runs moving while other changes merge into the base branch. The owner rarely commits there by hand | Pending |
 | Drafts are standalone local mocks; the signed-off draft drives a visual gate | Easy to comment on individual elements, and binding on the builder | Pending |
 | Drafts are rendered in the host's own design system | The visual gate compares like with like | Pending |
 | Explore in low-fi "wire", sign off a hi-fi "full" render | Only a hi-fi render with the host's tokens and fixtures can drive a visual gate | Pending |
@@ -56,9 +58,13 @@ The owner can approve work and walk away, and come back to green, reviewable per
 | Doctor also fails on `sandbox.network.allowLocalBinding`, `sandbox.enableWeakerNestedSandbox` and `sandbox.enableWeakerNetworkIsolation` | The docs name them as weakening the sandbox; on macOS `allowLocalBinding` reaches every localhost service, the console included | Good |
 | Live-check stop rules narrowed: only a protected-target failure stops work; other live surprises become recorded findings | Three sandbox re-plans in one change ("going in circles") | Adopted |
 | The trusted shell closed with its code review open. CR-01, WR-02, WR-04, WR-05 and WR-06 (plus verifying WR-01) are the first work of `first-unattended-run` | Trust fixes belong before the first overnight run, not after it | Done 2026-11-11 (WR-01 corrected in the record). Live doctor on the owner's machine: boxed in, with the one accepted gh-keychain risk |
-| Build in six vertical slices, each usable on Cena: trusted shell, first unattended run, morning review, drafts and visual gate, council cards, council meetings | The core value lives in the build lane. The council carries the most scope-creep risk, so it comes last | Adopted |
+| Build in seven vertical slices, each usable on Cena: trusted shell, first unattended run, PR revisions, morning review, drafts and visual gate, council cards, council meetings | The core value lives in the build lane. The first run's PRs will need revisions straight away. The council carries the most scope-creep risk, so it comes last | Adopted (PR revisions added 2026-11-11) |
+| The owner leads and does not hand-code; builds run during the day as well as overnight (decided 2026-11-11) | The owner's job is to plan, decide and review. Any fix the owner would have to make by hand is a missing feature, not a fallback | Adopted |
+| Revision rounds on open PRs are as important as the runway (`pr-revisions`) | A change will rarely be right in one shot. Without a way to send a PR back with notes, the owner would re-plan the change or fix it by hand | Adopted |
+| Only the owner's notes start a revision round (console with the owner credential, or the CLI at a terminal), never PR comments | Agents can reach gh's credential (accepted risk `gh-keychain`), so a PR comment proves nothing about its author. The signed merge stays the final check | Pending |
+| The governor serves work the owner is waiting on first, then builds, then the council's capped share | During the day the scarce thing is the owner's attention, not build time | Pending |
 | The variants and "More like B" round model is built once for drafts and reused by council cards | One interaction, one implementation | Pending |
-| A single quota governor sits in front of every agent spawn. Usage-limit pauses cover all lanes from the first run; builder priority and the council's capped share arrive with council cards | The council must never starve a build | Pending |
+| A single quota governor sits in front of every agent spawn. Usage-limit pauses cover all lanes from the first run; revision rounds jump the build queue from `pr-revisions`; full ordering (owner-waiting work, builds, the council's capped share) arrives with council cards | The council must never starve a build, and the owner must not wait behind the queue | Pending |
 
 ## Known accepted risks
 

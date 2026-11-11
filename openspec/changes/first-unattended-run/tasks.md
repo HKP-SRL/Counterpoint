@@ -26,12 +26,12 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 3. Research spikes
 
-- [ ] 3.1 Context-window denominator on a 1M-window model, from live usage and the reported window
-- [ ] 3.2 `rate_limit_event` shape and reset-time unit; API retry and error result subtypes
-- [ ] 3.3 Process-group kill on macOS for gates that start dev servers
-- [ ] 3.4 Which Cena gate commands need sandbox escape hatches (Supabase, Docker) and how narrow they can be
-- [ ] 3.5 Host `.claude` commands, agents and skills under user-only setting sources
-- [ ] 3.6 Builder write grant into the common git dir (objects, own branch ref, own worktree entry) and its doctor row
+- [x] 3.1 Context-window denominator on a 1M-window model, from live usage and the reported window
+- [x] 3.2 `rate_limit_event` shape and reset-time unit; API retry and error result subtypes
+- [x] 3.3 Process-group kill on macOS for gates that start dev servers
+- [x] 3.4 Which Cena gate commands need sandbox escape hatches (Supabase, Docker) and how narrow they can be
+- [x] 3.5 Host `.claude` commands, agents and skills under user-only setting sources
+- [x] 3.6 Builder write grant into the common git dir (objects, own branch ref, own worktree entry) and its doctor row
 
 ## 4. Build lane
 

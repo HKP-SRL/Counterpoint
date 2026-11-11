@@ -7,16 +7,17 @@ After the first unattended run works from the CLI, the owner needs to come back 
 ## What Changes
 
 - Console mission control: each change shows its build status and gate row, which lights up as gates pass; the failing gate's last lines are one click away; the owner can open a running session's live log and stop that session.
+- Daytime mode: runs also happen with the owner at the desk. PRs appear for review as each one lands, not in a morning debrief, and revision rounds in flight show beside builds.
 - Parallel builds without collisions: one shared test lock, and each worktree gets its own ports and database.
 - When the base branch moves and conflicts with a build, the builder rebases, resolves, re-runs every gate, and parks the change if it can't; the owner's pushed work is never dropped.
-- Merge approval: the owner sees a summary of every assumption the builder proceeded on, then signs a `--no-ff` merge commit of the exact PR head at a terminal. Counterpoint pushes it, the PR shows as merged, and the change's worktree and branch are cleaned up. Nothing merges without a verified owner-signed merge commit, recomputed from git every time.
-- A few honest counters beside the runway, each paired with a counter-metric.
+- Merge approval: the owner sees a summary of every assumption the builder proceeded on and every revision round (`pr-revisions`), then signs a `--no-ff` merge commit of the exact PR head at a terminal. Counterpoint pushes it, the PR shows as merged, and the change's worktree and branch are cleaned up. Nothing merges without a verified owner-signed merge commit, recomputed from git every time.
+- A few honest counters beside the runway, each paired with a counter-metric. One measures whether the builder built the right thing: changes merged with no revision round, paired with rework filed after merge.
 
 ## Capabilities
 
 ### New Capabilities
 - `merge-approval`: signed merge commits of the exact PR head, verification, push and cleanup.
-- `mission-control`: per-change statuses, gate rows, live session logs and honest counters in the console.
+- `mission-control`: per-change statuses, gate rows, live session logs, daytime mode and honest counters in the console.
 - `parallel-builds`: collision-free parallel builds and rebase on conflict.
 
 ### Modified Capabilities

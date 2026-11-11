@@ -9,8 +9,8 @@ The council's signature interaction is the question card: the seats find the pla
 - Council seats (for example product, design, tech, QA, and customer voices like Cena's Cook) defined in a per-host Counterpoint config with defaults; adding a seat is a config edit. Per activity the owner chooses router-picked relevant seats or all seats.
 - Question cards on a change: the question, raising seats, 2-4 options with trade-offs, the recommended option, a minority report and a reversibility class.
 - Pick (written back as a decision into the change's design.md and committed), "More like B →" with a breadcrumb trail (reusing the round model from `design-drafts-visual-gate`), "None fit, reframe", and Later.
-- Unanswered reversible cards: the builder proceeds on the recommended option, logged as "assumed" in the PR and merge summary; a later different answer becomes a rework note on the open PR, or a backlog item if already merged. Unanswered irreversible cards (DB schema, auth, data model, public routes, privacy, pricing) park only the dependent change.
-- Council work never blocks approving, drafting or building; the builder keeps priority at the quota governor and council spend stays within a capped share.
+- Unanswered reversible cards: the builder proceeds on the recommended option, logged as "assumed" in the PR and merge summary; a later different answer becomes a revision note on the open PR (`pr-revisions`), or a backlog item if already merged. Unanswered irreversible cards (DB schema, auth, data model, public routes, privacy, pricing) park only the dependent change.
+- Council work never blocks approving, drafting or building. At the quota governor, work the owner is waiting on goes first (a revision round, or a draft or card round just asked for), then builds; council spend stays within a capped share.
 
 ## Capabilities
 
@@ -18,7 +18,7 @@ The council's signature interaction is the question card: the seats find the pla
 - `council-seats`: per-host seat definitions and seat selection per activity.
 - `council-cards`: question cards, the owner's answers, and how unanswered cards affect the build.
 - `decision-write-back`: decisions and backlog items written into the host's planning through the adapter.
-- `quota-governor`: builder priority and the council's capped share of agent spend.
+- `quota-governor`: owner-waiting work first, then builds, then the council's capped share of agent spend.
 
 ### Modified Capabilities
 - `needs-you`: council cards appear in the inbox.

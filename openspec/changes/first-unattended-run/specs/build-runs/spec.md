@@ -31,18 +31,18 @@ Counterpoint SHALL refuse to start a run, and the governor SHALL refuse every ag
 - **THEN** starting a run is refused with the reason and the doctor command
 
 ### Requirement: One worktree and branch per change
-Each change SHALL build in its own git worktree and branch created from the approved base commit, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout.
+Each change SHALL build in its own git worktree and branch created from the approved base commit, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout. Builder sessions SHALL write no git state: Counterpoint commits each session's work in the worktree itself, outside the agent sandbox.
 
 #### Scenario: Owner works during a day run
 - **WHEN** the owner edits files in their checkout while a change builds
 - **THEN** the build is unaffected and the owner's checkout is untouched
 
 ### Requirement: Fresh sessions with context-budget handoff
-Each build SHALL run in fresh `claude -p` sessions. When a session's context passes the run's budget, measured against the model's real window (never a hard-coded size), Counterpoint SHALL have it finish the current task, write a handoff, commit and stop, and SHALL start the next fresh session from that handoff.
+Each build SHALL run in fresh `claude -p` sessions. When a session's context passes the run's budget, measured against the model's real window (never a hard-coded size), Counterpoint SHALL have it finish the current task, write a handoff and stop, SHALL commit the session's work with the handoff, and SHALL start the next fresh session from that handoff.
 
 #### Scenario: Budget reached
 - **WHEN** a session's context passes 40% of the model's window mid-task
-- **THEN** it finishes that task, commits a handoff and stops, and a new session continues from the handoff
+- **THEN** it finishes that task, writes a handoff and stops, Counterpoint commits the work with the handoff, and a new session continues from it
 
 ### Requirement: Usage limits pause every lane
 On a usage limit every agent lane SHALL pause until the reported reset time plus 2 minutes and then resume on its own. Transient API errors SHALL back off and retry. Auth, credit and spend-limit errors SHALL stop the run and land in Needs You.

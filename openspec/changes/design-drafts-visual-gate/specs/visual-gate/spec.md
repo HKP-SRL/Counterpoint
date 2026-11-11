@@ -25,3 +25,10 @@ A change with no signed-off render SHALL skip the visual gate, and its gate row 
 #### Scenario: Backend-only change
 - **WHEN** a change has no drafts
 - **THEN** the visual gate shows as not applicable
+
+### Requirement: Revisions that change a signed screen
+When a revision note deliberately changes a screen with a signed-off render, the round SHALL produce an updated render for the owner to sign. Until the owner signs it, the visual gate SHALL keep comparing against the previous signed render.
+
+#### Scenario: Owner moves a button
+- **WHEN** a revision note moves a landmark button on a signed screen
+- **THEN** an updated render waits for the owner's signature, and the gate passes against it once signed

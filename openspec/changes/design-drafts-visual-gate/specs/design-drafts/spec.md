@@ -67,3 +67,10 @@ The owner SHALL sign off the full render as part of the change's runway approval
 #### Scenario: Approve with a draft
 - **WHEN** the owner approves a change that has a chosen full render
 - **THEN** the approval summary includes the render and the statement binds it
+
+### Requirement: Pins on the built preview
+The pin overlay SHALL also be injected into a change's local preview. Pins the owner places there SHALL become revision notes for that change, carrying the element anchor, and join the change's batch of notes.
+
+#### Scenario: Pin a built screen
+- **WHEN** the owner pins "too much padding" on a card in a change's local preview
+- **THEN** a revision note with that element's anchor joins the change's batch
