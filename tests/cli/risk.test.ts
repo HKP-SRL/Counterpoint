@@ -199,16 +199,27 @@ describe('the accepted-risk record source scan', () => {
   }));
   const DEFINITIONS = 'src/core/security/accepted-risks.ts';
   const COMMAND = 'src/cli/risk.ts';
+  const CONSOLE_WITHDRAW = 'src/server/routes/run.ts';
 
   it('scans the source tree', () => {
     expect(files.length).toBeGreaterThan(20);
     expect(files.map((file) => file.rel)).toEqual(expect.arrayContaining([DEFINITIONS, COMMAND]));
   });
 
-  it('names the writer and the revoker only in the definitions and the terminal command', () => {
+  it('names the writer only in the definitions and the terminal command', () => {
     const offenders = files
       .filter((file) => file.rel !== DEFINITIONS && file.rel !== COMMAND)
-      .filter((file) => /\b(writeAcceptedRisk|revokeAcceptedRisk)\b/.test(file.text))
+      .filter((file) => /\bwriteAcceptedRisk\b/.test(file.text))
+      .map((file) => file.rel);
+    expect(offenders).toEqual([]);
+  });
+
+  it('names the revoker only there and in the console route that withdraws a risk (10.8)', () => {
+    // Withdrawing only makes the verdict stricter, so the console may do it; recording stays a
+    // terminal act.
+    const offenders = files
+      .filter((file) => ![DEFINITIONS, COMMAND, CONSOLE_WITHDRAW].includes(file.rel))
+      .filter((file) => /\brevokeAcceptedRisk\b/.test(file.text))
       .map((file) => file.rel);
     expect(offenders).toEqual([]);
     const command = files.find((file) => file.rel === COMMAND)?.text ?? '';

@@ -23,11 +23,15 @@ export interface RunChangeRow {
   position: number;
   state: RunChangeState;
   reason: string | null;
+  approvalCommit: string | null;
   baseCommit: string | null;
   branch: string | null;
   worktree: string | null;
   attempts: number;
+  prUrl: string | null;
+  previewUrl: string | null;
   flags: RunChangeFlag[];
+  handoffPath: string | null;
   startedAt: number | null;
   endedAt: number | null;
 }
@@ -91,6 +95,78 @@ function json<T>(value: SQLOutputValue | undefined, fallback: T): T {
 
 // --- runs ------------------------------------------------------------------------------------
 
+export type RunState = 'running' | 'stopping' | 'ended';
+export type RunEndReason = 'finished' | 'stopped' | 'stop-time' | 'error' | 'refused';
+
+export interface RunRow {
+  id: string;
+  hostId: string;
+  state: RunState;
+  settings: unknown;
+  stopAt: number | null;
+  startedAt: number;
+  endedAt: number | null;
+  endReason: RunEndReason | null;
+  endDetail: string | null;
+  reportPath: string | null;
+}
+
+function toRun(row: Record<string, SQLOutputValue>): RunRow {
+  return {
+    id: str(row.id) ?? '',
+    hostId: str(row.host_id) ?? '',
+    state: str(row.state) as RunState,
+    settings: json<unknown>(row.settings, {}),
+    stopAt: num(row.stop_at),
+    startedAt: num(row.started_at) ?? 0,
+    endedAt: num(row.ended_at),
+    endReason: str(row.end_reason) as RunEndReason | null,
+    endDetail: str(row.end_detail),
+    reportPath: str(row.report_path),
+  };
+}
+
+export function getRun(db: Store, id: string): RunRow | undefined {
+  const row = db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
+  return row === undefined ? undefined : toRun(row);
+}
+
+/** The run that has not ended (one at a time per machine), or undefined. */
+export function activeRun(db: Store): RunRow | undefined {
+  const row = db
+    .prepare("SELECT * FROM runs WHERE state <> 'ended' ORDER BY started_at DESC")
+    .get();
+  return row === undefined ? undefined : toRun(row);
+}
+
+/** The host's most recent run, ended or not. */
+export function latestRun(db: Store, hostId: string): RunRow | undefined {
+  const row = db
+    .prepare('SELECT * FROM runs WHERE host_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1')
+    .get(hostId);
+  return row === undefined ? undefined : toRun(row);
+}
+
+export function setRunStopping(db: Store, id: string): void {
+  db.prepare("UPDATE runs SET state = 'stopping' WHERE id = ? AND state = 'running'").run(id);
+}
+
+export function endRun(
+  db: Store,
+  id: string,
+  end: { reason: RunEndReason; detail?: string | null },
+  now: number = Date.now(),
+): void {
+  db.prepare(
+    `UPDATE runs SET state = 'ended', ended_at = ?, end_reason = ?, end_detail = ?
+     WHERE id = ? AND state <> 'ended'`,
+  ).run(now, end.reason, end.detail?.slice(0, 2000) ?? null, id);
+}
+
+export function setRunReportPath(db: Store, id: string, path: string): void {
+  db.prepare('UPDATE runs SET report_path = ? WHERE id = ?').run(path, id);
+}
+
 export interface NewRun {
   id: string;
   hostId: string;
@@ -115,11 +191,15 @@ function toRunChange(row: Record<string, SQLOutputValue>): RunChangeRow {
     position: num(row.position) ?? 0,
     state: str(row.state) as RunChangeState,
     reason: str(row.reason),
+    approvalCommit: str(row.approval_commit),
     baseCommit: str(row.base_commit),
     branch: str(row.branch),
     worktree: str(row.worktree),
     attempts: num(row.attempts) ?? 0,
+    prUrl: str(row.pr_url),
+    previewUrl: str(row.preview_url),
     flags: json<RunChangeFlag[]>(row.flags, []),
+    handoffPath: str(row.handoff_path),
     startedAt: num(row.started_at),
     endedAt: num(row.ended_at),
   };
@@ -138,6 +218,83 @@ export function insertRunChange(
 export function getRunChange(db: Store, id: number): RunChangeRow | undefined {
   const row = db.prepare('SELECT * FROM run_changes WHERE id = ?').get(id);
   return row === undefined ? undefined : toRunChange(row);
+}
+
+export function listRunChanges(db: Store, runId: string): RunChangeRow[] {
+  return db
+    .prepare('SELECT * FROM run_changes WHERE run_id = ? ORDER BY position')
+    .all(runId)
+    .map(toRunChange);
+}
+
+export interface RunChangeUpdate {
+  state?: RunChangeState;
+  reason?: string | null;
+  approvalCommit?: string | null;
+  baseCommit?: string | null;
+  branch?: string | null;
+  worktree?: string | null;
+  prUrl?: string | null;
+  previewUrl?: string | null;
+  taskTicks?: string[];
+  handoffPath?: string | null;
+  startedAt?: number | null;
+  endedAt?: number | null;
+}
+
+const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
+  state: 'state',
+  reason: 'reason',
+  approvalCommit: 'approval_commit',
+  baseCommit: 'base_commit',
+  branch: 'branch',
+  worktree: 'worktree',
+  prUrl: 'pr_url',
+  previewUrl: 'preview_url',
+  taskTicks: 'task_ticks',
+  handoffPath: 'handoff_path',
+  startedAt: 'started_at',
+  endedAt: 'ended_at',
+};
+
+export function updateRunChange(db: Store, id: number, update: RunChangeUpdate): void {
+  const sets: string[] = [];
+  const values: Array<string | number | null> = [];
+  for (const [key, column] of Object.entries(UPDATE_COLUMNS) as Array<
+    [keyof RunChangeUpdate, string]
+  >) {
+    if (!(key in update)) continue;
+    const value = update[key];
+    sets.push(`${column} = ?`);
+    values.push(
+      Array.isArray(value)
+        ? JSON.stringify(value)
+        : ((value as string | number | null | undefined) ?? null),
+    );
+  }
+  if (sets.length === 0) return;
+  db.prepare(`UPDATE run_changes SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+}
+
+/** The change's recorded task ticks (cumulative, by text). */
+export function runChangeTicks(db: Store, id: number): string[] {
+  const row = db.prepare('SELECT task_ticks, handoff_path FROM run_changes WHERE id = ?').get(id);
+  return json<string[]>(row?.task_ticks, []);
+}
+
+export function runChangeHandoffPath(db: Store, id: number): string | null {
+  const row = db.prepare('SELECT handoff_path FROM run_changes WHERE id = ?').get(id);
+  return str(row?.handoff_path);
+}
+
+/** How many builder sessions the change has had (the next session's number is this + 1). */
+export function builderSessionCount(db: Store, runChangeId: number): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM agent_sessions WHERE run_change_id = ? AND kind = 'builder'",
+    )
+    .get(runChangeId);
+  return num(row?.n) ?? 0;
 }
 
 /** Counts one more failed gate round on the change; returns the new count. */

@@ -15,6 +15,7 @@ import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
 import { mountApprovalRoutes } from './routes/approvals.ts';
 import { mountChangeRoutes } from './routes/changes.ts';
 import { mountNeedsYouRoutes } from './routes/needs-you.ts';
+import { mountRunRoutes, type RunRoutesOptions } from './routes/run.ts';
 import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
 
@@ -41,6 +42,8 @@ export interface AppOptions {
    * omitted. Without a home there are no approval routes and no approval overlay.
    */
   approvals?: ApprovalViews;
+  /** The build lane's owner actions (runs, doctor, risks, stop); mounted when given with a home. */
+  run?: Omit<RunRoutesOptions, 'home' | 'store' | 'runtimes' | 'approvals'>;
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -131,7 +134,16 @@ export function createApp(options: AppOptions): Hono {
     mountTrustRoutes(app, { home: options.home, store: options.store });
     if (approvals !== undefined) {
       mountApprovalRoutes(app, { runtimes, home: options.home, approvals });
-      mountNeedsYouRoutes(app, { runtimes, home: options.home, approvals });
+      mountNeedsYouRoutes(app, { runtimes, home: options.home, approvals, store: options.store });
+      if (options.run !== undefined) {
+        mountRunRoutes(app, {
+          ...options.run,
+          home: options.home,
+          store: options.store,
+          runtimes,
+          approvals,
+        });
+      }
     }
   }
 

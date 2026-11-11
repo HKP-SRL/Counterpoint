@@ -171,7 +171,12 @@ export interface RunDoctorInput {
   env?: NodeJS.ProcessEnv;
   /** Where the settings sources live (defaults to defaultSettingsSourceLocations(homeDir)). */
   settingsLocations?: SettingsSourceLocations;
+  /** Called as each phase starts (the console shows it while doctor runs). */
+  onProgress?: (phase: DoctorPhase) => void;
 }
+
+/** The phases a doctor run reports, in order. */
+export type DoctorPhase = 'tools' | 'signing-key' | 'integrity' | 'probe' | 'report';
 
 export interface DoctorRun {
   report: DoctorReport;
@@ -190,6 +195,31 @@ export function ghConfigDir(env: NodeJS.ProcessEnv, homeDir: string): string {
   const xdg = env.XDG_CONFIG_HOME;
   if (xdg !== undefined && isAbsolute(xdg)) return join(xdg, 'gh');
   return join(homeDir, '.config', 'gh');
+}
+
+/**
+ * The owner's protected paths for a host, exactly as doctor probes them and as every build-lane
+ * session and gate is launched with. Without a trusted key there is no key folder: a path that does
+ * not exist makes the probe skip that target, and its row reads Not checked.
+ */
+export function protectedPathsFor(input: {
+  home: string;
+  host: Pick<DoctorHost, 'gitCommonDir'>;
+  trust?: TrustResult;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+}): ProtectedPaths {
+  const trust = input.trust ?? readTrust(input.home);
+  const homeDir = input.homeDir ?? homedir();
+  return {
+    homeDir,
+    counterpointHome: input.home,
+    signingKeyDir: trust.ok
+      ? dirname(trust.privateKeyPath)
+      : join(homePaths(input.home).trustDir, 'no-trusted-key'),
+    ghConfigDir: ghConfigDir(input.env ?? process.env, homeDir),
+    hostGitDir: input.host.gitCommonDir,
+  };
 }
 
 async function integrityRow(home: string, host: DoctorHost, hostName: string): Promise<Check> {
@@ -326,24 +356,24 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
   const checkedAt = now().toISOString();
   const logDir = join(homePaths(home).logsDir, 'doctor', checkedAt.replace(/[:.]/g, '-'));
 
+  const progress = (phase: DoctorPhase) => {
+    try {
+      input.onProgress?.(phase);
+    } catch {
+      // progress is for display only
+    }
+  };
   const trust = readTrust(home);
+  progress('tools');
   const tools = await (input.tools ?? (() => checkTools()))();
+  progress('signing-key');
   const signingKey = await (
     input.keyChecks ?? ((t: TrustResult) => checkSigningKey({ trust: t, env, homeDir }))
   )(trust);
+  progress('integrity');
   const integrity = await integrityRow(home, host, hostName);
 
-  // Without a trusted key there is no key folder to probe: a path that does not exist makes the
-  // probe skip that target, and its row reads Not checked.
-  const protectedPaths: ProtectedPaths = {
-    homeDir,
-    counterpointHome: home,
-    signingKeyDir: trust.ok
-      ? dirname(trust.privateKeyPath)
-      : join(homePaths(home).trustDir, 'no-trusted-key'),
-    ghConfigDir: ghConfigDir(env, homeDir),
-    hostGitDir: host.gitCommonDir,
-  };
+  const protectedPaths = protectedPathsFor({ home, host, trust, env, homeDir });
 
   // Computed whether or not the probe runs: it is a property of the configuration.
   const sandboxIsolation = await sandboxIsolationCheck(
@@ -357,6 +387,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
   let claudeVersion: string | null = null;
   // null until the probe ran: the mode check then reads Not checked.
   let agentSession: ProbeSummary['agentSession'] | null = null;
+  progress('probe');
   try {
     const summary = await (input.probe ?? liveSandboxProbe)({
       protectedPaths,
@@ -451,6 +482,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     agentMode,
     acceptedRisks: recordedRisks,
   });
+  progress('report');
   const reportPath = writeDoctorReport(home, report);
   return {
     report,

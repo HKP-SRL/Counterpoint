@@ -43,6 +43,7 @@ import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
 import { doctorCommand } from './doctor.ts';
 import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
+import { runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
 import {
   initKeyCommand,
   type TrustCommandOptions,
@@ -52,6 +53,8 @@ import {
 
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 10_000;
+/** How long `stop` waits for a run to reach its clean point (a session finishing its task). */
+const RUN_STOP_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const KILL_GRACE_MS = 5_000;
 const POLL_MS = 100;
 const SQLITE_BUSY = 5;
@@ -451,7 +454,16 @@ async function stop(): Promise<void> {
   const status = await isDaemonRunning(home);
 
   if (status !== null) {
-    await controlRequest(home, 'POST', '/control/stop');
+    const answer = await controlRequest(home, 'POST', '/control/stop');
+    // A run first stops at its next clean point (its session finishes the task it is on), which
+    // can take a while; the daemon exits after it. Wait for it rather than signalling it.
+    const withRun = (answer.body as { run?: unknown } | null)?.run === true;
+    if (withRun) {
+      console.log(
+        'A run is going: it stops at its next clean point first, then Counterpoint stops.',
+      );
+      await waitUntil(async () => !existsSync(paths.socket), RUN_STOP_TIMEOUT_MS);
+    }
     const gone = await waitUntil(
       async () => !existsSync(paths.socket) && !lockHeld(paths),
       STOP_TIMEOUT_MS,
@@ -507,6 +519,24 @@ async function trustHost(hostId: string): Promise<void> {
 async function doctor(hostId: string | undefined): Promise<void> {
   const { home } = homeOrExit();
   exitWith(await doctorCommand(home, hostId));
+}
+
+async function runStart(
+  hostId: string | undefined,
+  flags: { model?: string; budget?: string; until?: string; changes?: string },
+): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await runStartCommand(home, hostId, flags));
+}
+
+async function runStop(hostId: string | undefined): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await runStopCommand(home, hostId));
+}
+
+async function runStatus(hostId: string | undefined): Promise<void> {
+  const { home } = homeOrExit();
+  exitWith(await runStatusCommand(home, hostId));
 }
 
 async function acceptRisk(risk: string): Promise<void> {
@@ -579,6 +609,31 @@ export function buildProgram(): Command {
     .description('check tools, the approval key and the agent sandbox (live probe) for a project')
     .argument('[host]', 'the registered project id (default: the project you are in)')
     .action((hostId: string | undefined) => doctor(hostId));
+
+  const run = program
+    .command('run')
+    .description('start a build run of approved changes (the console offers the same)')
+    .argument('[host]', 'the registered project id (default: the project you are in)')
+    .option('--model <model>', 'the model builders use, for example opus')
+    .option('--budget <percent>', 'context budget as a percentage of the model window', '40')
+    .option('--until <HH:MM>', 'stop time: no new session starts after it')
+    .option('--changes <a,b>', 'the runway changes to build (default: all of them)')
+    .action(
+      (
+        hostId: string | undefined,
+        flags: { model?: string; budget?: string; until?: string; changes?: string },
+      ) => runStart(hostId, flags),
+    );
+  run
+    .command('stop')
+    .description('stop the run at its next clean point')
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runStop(hostId));
+  run
+    .command('status')
+    .description("show the project's current or last run")
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runStatus(hostId));
 
   program
     .command('accept-risk')

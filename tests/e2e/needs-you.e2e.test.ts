@@ -14,7 +14,7 @@
 //
 // Nothing here touches ~/.ssh, ssh-agent, the Keychain, the global git config, the real
 // Counterpoint home or a real host repository.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
@@ -26,6 +26,7 @@ import { readPublicKey, writeTrust } from '../../src/core/approvals/trust-store.
 import { hostIdFromName } from '../../src/core/ids.ts';
 import {
   type AcceptedRisk,
+  readAcceptedRisks,
   revokeAcceptedRisk,
   writeAcceptedRisk,
 } from '../../src/core/security/accepted-risks.ts';
@@ -512,11 +513,75 @@ describe('Needs You: an approved change is edited, reviewed, and signed again', 
     }
   });
 
+  // first-unattended-run 10.5, 10.8: the console's Run card and risk withdrawal. The daemon refuses
+  // a run while doctor does not pass (here the stored report names another claude than the one
+  // installed, or no claude is installed at all), and the card shows the refusal in its words.
+  it('lists the runway change in the Run card and shows the refusal while doctor does not pass', async () => {
+    await openMission();
+    const runCard = main().getByLabel('Run', { exact: true });
+    await runCard.getByRole('checkbox', { name: /Ready thing/ }).waitFor({ timeout: LIVE });
+    expect(await runCard.getByRole('checkbox', { name: /Ready thing/ }).isChecked()).toBe(true);
+    await runCard.getByRole('button', { name: 'Start the run' }).click();
+    await runCard.getByText("The run didn't start", { exact: true }).waitFor({ timeout: LIVE });
+    expect(await runCard.getByText(/doctor/i).count()).toBeGreaterThan(0);
+    // Nothing started.
+    const status = await controlRequest(home, 'GET', `/control/run?hostId=${hostId}`);
+    expect((status.body as { run: unknown }).run).toBeNull();
+  });
+
+  it('withdraws the accepted risk from the Trust page, after a confirm', async () => {
+    const dir = join(home, 'hosts', hostId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const entry = writeAcceptedRisk(home, { reason: 'E2E: withdraw me from the console' });
+    writeFileSync(
+      join(dir, 'doctor.json'),
+      `${JSON.stringify(allPassReport(hostId, new Date(), { acceptedRisks: [entry] }))}\n`,
+      { mode: 0o600 },
+    );
+    try {
+      await page.goto(`${origin}/h/${hostId}/trust`);
+      await main().getByRole('button', { name: 'Withdraw this risk' }).click({ timeout: LIVE });
+      const dialog = page.getByRole('alertdialog');
+      await dialog.getByText('Withdraw the accepted risk?').waitFor({ timeout: LIVE });
+      await dialog.getByRole('button', { name: 'Withdraw' }).click();
+      await main()
+        .getByText('Agent sandbox is not confining sessions')
+        .first()
+        .waitFor({ timeout: LIVE });
+      const record = readAcceptedRisks(home);
+      expect(record.ok && record.risks).toEqual([]);
+      // There is a Run doctor button, and nothing in the console records a risk.
+      expect(await main().getByRole('button', { name: 'Run doctor' }).count()).toBe(1);
+      expect(
+        await main()
+          .getByRole('button', { name: /accept/i })
+          .count(),
+      ).toBe(0);
+    } finally {
+      revokeAcceptedRisk(home, 'gh-keychain');
+    }
+  });
+
   it('raises no Content Security Policy violation or page error', () => {
     const problems = consoleLines.filter((line) =>
       /Content Security Policy|Refused to (execute|load|apply)|pageerror/i.test(line),
     );
     expect(problems).toEqual([]);
+  });
+
+  it('stops Counterpoint from the console, after a confirm (daemon-lifecycle 10.9)', async () => {
+    await openMission();
+    await page.getByRole('button', { name: 'Counterpoint' }).click();
+    await page.getByRole('menuitem', { name: 'Stop Counterpoint…' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await dialog.getByText('Stop Counterpoint?').waitFor({ timeout: LIVE });
+    await dialog.getByRole('button', { name: 'Stop Counterpoint' }).click();
+    await main().getByText('Counterpoint is stopping', { exact: true }).waitFor({ timeout: LIVE });
+    const socket = join(home, 'run', 'daemon.sock');
+    for (let i = 0; i < 100 && existsSync(socket); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(existsSync(socket)).toBe(false);
   });
 });
 

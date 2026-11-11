@@ -1,7 +1,7 @@
 // The Needs You API (needs-you: One inbox; Change view reads like a PR review). Read-only, behind
 // the session guard like every /api route.
 //
-//   GET /api/hosts/:hostId/needs-you                     { items } newest first
+//   GET /api/hosts/:hostId/needs-you                     { items, runItems } newest first
 //   GET /api/hosts/:hostId/needs-you/:itemId             { item, lead, changes, command } or
 //                                                        404 { state: 'gone', resolved }
 //   GET /api/hosts/:hostId/needs-you/:itemId/diff?path=  { path, diff, truncated } or
@@ -21,6 +21,8 @@ import type { Hono } from 'hono';
 import { homePaths } from '../../core/host/home.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
 import { changedInputDiff, driftView } from '../../core/runway/needs-you.ts';
+import { runNeedsYou } from '../../core/runway/run-items.ts';
+import type { Store } from '../../core/store/db.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { HostRuntime, HostRuntimes } from '../hosts.ts';
 
@@ -29,6 +31,8 @@ export interface NeedsYouRoutesOptions {
   /** The Counterpoint home; diff scratch files live in its private tmp directory. */
   home: string;
   approvals: ApprovalViews;
+  /** The store, for the items the last build run left (parked changes, run-stopping errors). */
+  store?: Store;
 }
 
 const MAX_DIFF_PATH = 1024;
@@ -84,6 +88,8 @@ export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): 
       baseBranch: runtime.host.baseBranch,
       tip: snapshot.tip,
       items: snapshot.items,
+      // What the last build run left for the owner: parked changes and run-stopping errors.
+      runItems: options.store === undefined ? [] : runNeedsYou(options.store, runtime.host.id),
     });
   });
 

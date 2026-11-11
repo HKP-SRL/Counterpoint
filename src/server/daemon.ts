@@ -19,16 +19,22 @@ import { connect } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
+import { ClaudeCliRunner } from '../agent/runner.ts';
+import { doctorGate } from '../build/doctor-gate.ts';
+import { Governor } from '../build/governor.ts';
+import { Orchestrator } from '../build/orchestrator.ts';
+import { recoverRuns } from '../build/recovery.ts';
 import { detectFramework } from '../compose.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
-import { EventBus } from '../core/store/events.ts';
+import { EventBus, publishEvent } from '../core/store/events.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
 import { createControlApp, hashToken } from './control.ts';
+import { createDoctorService } from './doctor-service.ts';
 import { createHostRuntimes } from './hosts.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
 
@@ -234,6 +240,88 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // One set of approval views (states and runway recomputed from git, cached per tip in memory
   // only, so every daemon start begins with an empty cache).
   const approvals = createApprovalViews({ home: options.home });
+
+  // The build lane. Every agent spawn goes through the one governor; the doctor gate compares the
+  // last report's claude version with the claude installed now, which the orchestrator and the
+  // doctor service re-read before each spawn (a claude update never stops a run).
+  let installedVersion: string | null = null;
+  const setInstalledVersion = (version: string | null) => {
+    installedVersion = version;
+  };
+  const runnerFactory = () => new ClaudeCliRunner();
+  const claudeVersion = async (): Promise<string | null> => {
+    try {
+      const version = (await runnerFactory().version()) ?? null;
+      installedVersion = version;
+      return version;
+    } catch {
+      return null;
+    }
+  };
+  await claudeVersion();
+  const gate = doctorGate({ home: options.home, claudeVersion: () => installedVersion });
+  const publish =
+    (family: 'run' | 'doctor') => (hostId: string, payload: Record<string, unknown>) =>
+      void publishEvent(store, bus, { hostId, family, payload });
+  const governor = new Governor({ db: store, doctorGate: gate });
+  const doctor = createDoctorService({
+    home: options.home,
+    store,
+    governor,
+    runnerFactory,
+    setInstalledVersion,
+    publish: publish('doctor'),
+    log,
+  });
+  const orchestrator = new Orchestrator({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    approvals,
+    governor,
+    doctorGate: gate,
+    runnerFactory,
+    setInstalledVersion,
+    runDoctor: async (hostId, signal) => {
+      // One probe at a time: wait for a console doctor run of another host to finish first.
+      for (;;) {
+        const started = doctor.start(hostId, 'run');
+        if (started.ok) return started.done;
+        if (signal.aborted) return { passed: false, detail: 'The run stopped.' };
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+    },
+    consolePort: bound,
+    publish: publish('run'),
+    log,
+  });
+  // Crash recovery before any new work: end what a killed daemon left running, commit
+  // interrupted work; the run itself resumes once the daemon is up.
+  const recovered = await recoverRuns({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    log,
+  }).catch((error: Error) => {
+    log('recovery-failed', { message: error.message });
+    return null;
+  });
+
+  let stopping = false;
+  let control: Server | undefined;
+  let watcher: Watcher | undefined;
+  let stop: (reason: string) => Promise<void> = async () => {};
+  /** The owner's stop (console or CLI): a run first stops at its next clean point. */
+  const stopAfterRun = async (reason: string) => {
+    if (stopping) return;
+    if (orchestrator.running() !== null) {
+      log('stopping-run-first', { reason });
+      orchestrator.stop();
+      await orchestrator.idle();
+    }
+    await stop(reason);
+  };
+
   app = createApp({
     store,
     port: bound,
@@ -242,13 +330,20 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     runtimes,
     home: options.home,
     approvals,
+    run: {
+      orchestrator,
+      doctor,
+      claudeVersion,
+      stopDaemon: () => void stopAfterRun('console'),
+      onRiskWithdrawn: () => {
+        for (const host of runtimes.list()) {
+          publishEvent(store, bus, { hostId: host.host.id, family: 'doctor' });
+        }
+      },
+    },
   });
 
-  let stopping = false;
-  let control: Server | undefined;
-  let watcher: Watcher | undefined;
-
-  const stop = async (reason: string) => {
+  stop = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log('stopping', { reason });
@@ -267,7 +362,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     bus,
     tokenHash,
     port: bound,
-    onStop: () => void stop('control'),
+    onStop: () => void stopAfterRun('control'),
+    orchestrator,
     detectFramework,
     nudge: (hostId) => void watcher?.nudge(hostId),
     runwayCount: async (hostId) => {
@@ -294,6 +390,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // Base-tip polling (host-planning: Live refresh from the base branch): a commit to a host's base
   // branch reaches open consoles within ~2 s.
   watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
+
+  if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 
   process.once('SIGTERM', () => void stop('SIGTERM'));
   process.once('SIGINT', () => void stop('SIGINT'));

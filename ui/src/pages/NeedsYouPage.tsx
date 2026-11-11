@@ -7,13 +7,20 @@
 // an item disappears only when the change is re-signed or its files return to the signed state.
 // `needs-you` and `approval` events refetch the list (live.ts). The row component takes a `kind`
 // so later changes add parked items, PRs and council cards; the Mission card reuses it.
+//
+// Above them, what the last build run left for the owner (needs-you: Parked changes in Needs You;
+// Run-stopping errors in Needs You): a parked change with its failing gate's last lines and every
+// attempt, and a run that stopped on an error with what to do. A `run` event refetches them.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Card } from '@astryxdesign/core/Card';
+import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
+import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
@@ -43,11 +50,68 @@ export type NeedsYouItem = {
   unreadable: boolean;
 };
 
+export type RunAttempt = {
+  attempt: number;
+  gate: string;
+  verdict: 'pass' | 'fail' | null;
+  reason: string | null;
+  exitCode: number | null;
+  tail: string | null;
+  logPath: string;
+};
+
+export type RunItem = {
+  id: string;
+  kind: 'parked' | 'run-stopped';
+  kindLabel: string;
+  changeId: string | null;
+  reason: string;
+  at: number;
+  attempts: RunAttempt[];
+  action: string;
+};
+
 export type NeedsYouSnapshot = {
   hostId: string;
   baseBranch: string;
   items: NeedsYouItem[];
+  runItems: RunItem[];
 };
+
+/** Everything that needs the owner: approval items and what the last run left. */
+export function needsYouCount(snapshot: NeedsYouSnapshot): number {
+  return snapshot.items.length + snapshot.runItems.length;
+}
+
+function parseRunItem(value: unknown): RunItem | null {
+  if (!isRecord(value)) return null;
+  if (value.kind !== 'parked' && value.kind !== 'run-stopped') return null;
+  if (typeof value.id !== 'string' || typeof value.reason !== 'string') return null;
+  const attempts = Array.isArray(value.attempts)
+    ? value.attempts.filter(isRecord).map(
+        (a): RunAttempt => ({
+          attempt: count(a.attempt),
+          gate: str(a.gate),
+          verdict: a.verdict === 'pass' || a.verdict === 'fail' ? a.verdict : null,
+          reason: typeof a.reason === 'string' ? a.reason : null,
+          exitCode: typeof a.exitCode === 'number' ? a.exitCode : null,
+          tail: typeof a.tail === 'string' ? a.tail : null,
+          logPath: str(a.logPath),
+        }),
+      )
+    : [];
+  return {
+    id: value.id,
+    kind: value.kind,
+    kindLabel: str(value.kindLabel) || (value.kind === 'parked' ? 'Parked' : 'Run stopped'),
+    changeId:
+      typeof value.changeId === 'string' && isChangeId(value.changeId) ? value.changeId : null,
+    reason: value.reason,
+    at: count(value.at),
+    attempts,
+    action: str(value.action),
+  };
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -83,6 +147,9 @@ async function fetchNeedsYou(hostId: string, signal?: AbortSignal): Promise<Need
     baseBranch: str(raw.baseBranch),
     items: Array.isArray(raw.items)
       ? raw.items.map(parseNeedsYouItem).filter((item): item is NeedsYouItem => item !== null)
+      : [],
+    runItems: Array.isArray(raw.runItems)
+      ? raw.runItems.map(parseRunItem).filter((item): item is RunItem => item !== null)
       : [],
   };
 }
@@ -150,6 +217,72 @@ export function NeedsYouRow({
   );
 }
 
+/**
+ * What the last run left: a parked change shows its reason, the failing gate's last lines (plain
+ * text, never HTML) and every attempt; a stopped run says why and what to do.
+ */
+export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }) {
+  const failing = [...item.attempts].reverse().find((a) => a.verdict === 'fail');
+  const parked = item.kind === 'parked';
+  return (
+    <Card
+      padding={4}
+      elevation="none"
+      aria-label={`${item.kindLabel}: ${item.changeId ?? 'the run'}`}
+    >
+      <VStack gap={3}>
+        <VStack gap={1} hAlign="start">
+          <Badge
+            variant={parked ? 'warning' : 'error'}
+            label={item.kindLabel}
+            icon={<Icon icon={parked ? 'warning' : 'error'} size="xsm" />}
+          />
+          <Text weight="semibold">
+            {item.changeId === null ? (
+              'The run stopped'
+            ) : (
+              <Link href={`/h/${hostId}/changes/${item.changeId}`}>{item.changeId}</Link>
+            )}
+          </Text>
+          <Text>{item.reason}</Text>
+        </VStack>
+        {failing?.tail != null && failing.tail !== '' ? (
+          <VStack gap={1}>
+            <Text type="supporting" color="secondary">
+              {`Last lines of gate ${failing.gate} (attempt ${failing.attempt}):`}
+            </Text>
+            <CodeBlock code={failing.tail} isWrapped={false} />
+          </VStack>
+        ) : null}
+        {item.attempts.length > 0 ? (
+          <List aria-label="Attempts">
+            {item.attempts.map((a) => (
+              <ListItem
+                key={`${a.attempt}-${a.gate}`}
+                label={
+                  <Text type="supporting" hasTabularNumbers>
+                    {`Attempt ${a.attempt} · gate ${a.gate} · ${a.verdict === 'pass' ? 'passed' : (a.reason ?? 'failed')}${a.exitCode !== null && a.verdict === 'fail' ? ` (exit ${a.exitCode})` : ''}`}
+                  </Text>
+                }
+                description={
+                  a.logPath === '' ? undefined : (
+                    <Text type="code" color="secondary" wordBreak="break-all">
+                      {a.logPath}
+                    </Text>
+                  )
+                }
+              />
+            ))}
+          </List>
+        ) : null}
+        <Text type="supporting" color="secondary">
+          {item.action}
+        </Text>
+      </VStack>
+    </Card>
+  );
+}
+
 /** Skeleton rows at the final row height (badge, title and Supporting line). */
 export function NeedsYouLoading({ rows = 3 }: { rows?: number }) {
   return (
@@ -205,15 +338,22 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   let body = null;
   if (snapshot === undefined) {
     body = query.isError ? null : <NeedsYouLoading />;
-  } else if (snapshot.items.length === 0) {
+  } else if (needsYouCount(snapshot) === 0) {
     body = <NeedsYouEmpty />;
   } else {
     body = (
-      <List hasDividers={snapshot.items.length > 1} aria-label="Needs You items">
-        {snapshot.items.map((item) => (
-          <NeedsYouRow key={item.id} hostId={hostId} hostName={hostName} item={item} />
+      <VStack gap={4}>
+        {snapshot.runItems.map((item) => (
+          <RunItemBlock key={item.id} hostId={hostId} item={item} />
         ))}
-      </List>
+        {snapshot.items.length > 0 ? (
+          <List hasDividers={snapshot.items.length > 1} aria-label="Needs You items">
+            {snapshot.items.map((item) => (
+              <NeedsYouRow key={item.id} hostId={hostId} hostName={hostName} item={item} />
+            ))}
+          </List>
+        ) : null}
+      </VStack>
     );
   }
 

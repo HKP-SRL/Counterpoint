@@ -2,6 +2,7 @@
 // needs-you: Approved version changed).
 //
 // 1. A warning Banner when approvals changed since signing, linking to Needs You.
+// 1b. The Run card (components/RunCard.tsx): start, follow and stop a build run.
 // 2. The runway card (full width, first): how many changes are signed, verified at the base tip
 //    and not yet built, i.e. approved work ahead of the builder. The figure is recomputed from
 //    git by the server on every read; `runway` and `approval` events refetch it and the new number
@@ -33,6 +34,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery } from '@tanstack/react-query';
 import { type ReactNode, useEffect, useRef } from 'react';
 import { hostsQuery } from '../api';
+import { RunCard } from '../components/RunCard';
 import { changesText, type RunwaySnapshot, runwayQuery, tasksCountText } from '../runway';
 import { NeedsYouEmpty, NeedsYouLoading, NeedsYouRow, needsYouQuery } from './NeedsYouPage';
 import { ageText, doctorQuery, ResultBadge, trustVerdict } from './TrustPage';
@@ -144,8 +146,20 @@ function NeedsYouCard({ hostId, hostName }: { hostId: string; hostName: string }
   let body: ReactNode = null;
   if (snapshot === undefined) {
     body = query.isError ? null : <NeedsYouLoading rows={2} />;
-  } else if (snapshot.items.length === 0) {
+  } else if (snapshot.items.length === 0 && snapshot.runItems.length === 0) {
     body = <NeedsYouEmpty headingLevel={3} />;
+  } else if (snapshot.items.length === 0) {
+    // Only what the last run left (parked changes, a stopped run): the inbox shows them in full.
+    body = (
+      <VStack gap={2}>
+        <Text>
+          {snapshot.runItems.length === 1
+            ? 'The last run left 1 item for you.'
+            : `The last run left ${snapshot.runItems.length} items for you.`}
+        </Text>
+        <Link href={allHref}>Open Needs You</Link>
+      </VStack>
+    );
   } else {
     // The server serves the items newest first; the card shows the first five.
     const shown = snapshot.items.slice(0, NEEDS_YOU_CARD_ROWS);
@@ -351,6 +365,7 @@ export function MissionPage({ hostId }: { hostId: string }) {
           <VStack gap={6}>
             {errorBanner}
             {changedBanner}
+            <RunCard hostId={hostId} />
             <Card padding={5} elevation="none" aria-label="Runway">
               <VStack gap={3}>
                 <Text type="label" weight="semibold">

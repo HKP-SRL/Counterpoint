@@ -51,7 +51,7 @@ The first two groups come from the trusted-shell review and must be done before 
 
 - [x] 6.1 One governor in front of every agent spawn (probe, calibration, builder), across hosts
 - [x] 6.2 Pause on `rejected` or a usage-limit error until reset + 2 minutes, persisted across restarts; pace new sessions on `allowed_warning`
-- [ ] 6.3 Backoff for transient API errors; stop the run on authentication, credit and spend-limit errors, with a Needs You item
+- [x] 6.3 Backoff for transient API errors; stop the run on authentication, credit and spend-limit errors, with a Needs You item
 - [x] 6.4 Refuse every spawn while the last doctor verdict does not pass
 
 ## 7. Doctor rows for the build lane
@@ -81,15 +81,15 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 10. Runs
 
-- [ ] 10.1 Run endpoints in the daemon: start, stop, status; refuse without a passing doctor or a verifying approval
-- [ ] 10.2 Orchestrator loop: runway order, re-verify before each change, stop time, stop at a clean point
-- [ ] 10.3 Crash recovery at daemon start: kill recorded process groups and tagged processes, commit interrupted work, resume from the last handoff
-- [ ] 10.4 Needs You: parked changes with their last gate lines and attempts; run-stopping errors
-- [ ] 10.5 Console Run panel on the Mission page: pick changes, stop time, model, budget as tokens; Start and Stop (guarded POSTs); live progress over SSE
-- [ ] 10.6 CLI `counterpoint run`, `run stop`, `run status` over the control socket
-- [ ] 10.7 Console Run doctor on the Trust page: guarded POST, one probe at a time, progress over SSE, report replaced when done
-- [ ] 10.8 Console: withdraw an accepted risk on the Trust page (accepting stays terminal-only)
-- [ ] 10.9 Console: Stop Counterpoint (a run stops at its next clean point first)
+- [x] 10.1 Run endpoints in the daemon: start, stop, status; refuse without a passing doctor or a verifying approval
+- [x] 10.2 Orchestrator loop: runway order, re-verify before each change, stop time, stop at a clean point
+- [x] 10.3 Crash recovery at daemon start: kill recorded process groups and tagged processes, commit interrupted work, resume from the last handoff
+- [x] 10.4 Needs You: parked changes with their last gate lines and attempts; run-stopping errors
+- [x] 10.5 Console Run panel on the Mission page: pick changes, stop time, model, budget as tokens; Start and Stop (guarded POSTs); live progress over SSE
+- [x] 10.6 CLI `counterpoint run`, `run stop`, `run status` over the control socket
+- [x] 10.7 Console Run doctor on the Trust page: guarded POST, one probe at a time, progress over SSE, report replaced when done
+- [x] 10.8 Console: withdraw an accepted risk on the Trust page (accepting stays terminal-only)
+- [x] 10.9 Console: Stop Counterpoint (a run stops at its next clean point first)
 
 ## 11. Pull requests and report
 

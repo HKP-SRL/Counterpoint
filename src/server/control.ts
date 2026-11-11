@@ -5,6 +5,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { Hono } from 'hono';
 import { z } from 'zod';
+import type { Orchestrator } from '../build/orchestrator.ts';
 import {
   BaseBranchNotFoundError,
   type FrameworkDetector,
@@ -35,6 +36,8 @@ export interface ControlAppOptions {
   runwayCount?: (hostId: string) => Promise<number | null>;
   /** The host's Needs You item count recomputed from git, or null when unknown. */
   needsYouCount?: (hostId: string) => Promise<number | null>;
+  /** The build orchestrator: `counterpoint run`, `run stop`, `run status`. */
+  orchestrator?: Orchestrator;
 }
 
 /** How long `/control/status` waits for a runway figure before leaving it out. */
@@ -169,10 +172,61 @@ export function createControlApp(options: ControlAppOptions): Hono {
     return c.json({ seq: event.seq }, 202);
   });
 
-  app.post('/control/stop', (c) => {
-    // Answer first; stop once the response has gone out.
-    setImmediate(options.onStop);
+  // Runs (build-runs: Start and stop a run from the console; the CLI offers the same).
+  const RunBody = z.strictObject({
+    hostId: z.string().regex(HOST_ID_RE),
+    changes: z.array(z.string()).max(100).nullable().optional(),
+    until: z.string().max(64).nullable().optional(),
+    model: z.string().max(100),
+    budgetPercent: z.number(),
+  });
+  app.post('/control/run', async (c) => {
+    if (options.orchestrator === undefined) return c.json({ error: 'not found' }, 404);
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: 'The request body must be JSON.' }, 400);
+    }
+    const parsed = RunBody.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'Invalid run request.' }, 400);
+    const { hostId, changes, until, model, budgetPercent } = parsed.data;
+    const stopAt = until === null || until === undefined ? null : Date.parse(until);
+    if (stopAt !== null && !Number.isFinite(stopAt))
+      return c.json({ error: 'Invalid stop time.' }, 422);
+    const result = await options.orchestrator.start(hostId, {
+      changes: changes ?? null,
+      stopAt,
+      model,
+      budgetPercent,
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ runId: result.runId }, 202);
+  });
+  app.post('/control/run/stop', async (c) => {
+    if (options.orchestrator === undefined) return c.json({ error: 'not found' }, 404);
+    let hostId: string | undefined;
+    try {
+      const raw = (await c.req.json()) as { hostId?: unknown };
+      if (typeof raw.hostId === 'string' && HOST_ID_RE.test(raw.hostId)) hostId = raw.hostId;
+    } catch {
+      // no body: any run
+    }
+    if (!options.orchestrator.stop(hostId)) return c.json({ error: 'No run is going.' }, 409);
     return c.json({ stopping: true }, 202);
+  });
+  app.get('/control/run', (c) => {
+    if (options.orchestrator === undefined) return c.json({ error: 'not found' }, 404);
+    const hostId = c.req.query('hostId') ?? '';
+    if (!HOST_ID_RE.test(hostId)) return c.json({ error: 'invalid host id' }, 400);
+    return c.json({ run: options.orchestrator.view(hostId) });
+  });
+
+  app.post('/control/stop', (c) => {
+    // Answer first; stop once the response has gone out (after any run reaches its clean point).
+    const run = options.orchestrator?.running() ?? null;
+    setImmediate(options.onStop);
+    return c.json({ stopping: true, run: run !== null }, 202);
   });
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));

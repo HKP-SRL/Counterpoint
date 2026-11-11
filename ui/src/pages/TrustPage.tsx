@@ -17,6 +17,8 @@
 // revoke command; the gh row keeps `Reachable` and adds an `Accepted risk` Badge. Anything else
 // falls back to the existing verdicts, so the console never shows a better verdict than the server
 // computed.
+
+import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -29,13 +31,16 @@ import type { IconName } from '@astryxdesign/core/Icon';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
+import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
-import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
-import { type ReactNode, useEffect } from 'react';
+import { keepPreviousData, queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type ReactNode, useEffect, useState } from 'react';
 import { apiGet, hostsQuery, queryKeys } from '../api';
+import { type DoctorStatus, doctorStatusQuery, errorText, runDoctor, withdrawRisk } from '../run';
 
 // ---------------------------------------------------------------------------------------------
 // API shape (GET /api/hosts/{id}/doctor), validated before use.
@@ -357,6 +362,104 @@ export function trustVerdict(answer: DoctorAnswer, report: Report, hostName: str
   };
 }
 
+/** What a running doctor is doing, in plain words. */
+const PHASE_TEXT: Record<DoctorStatus['phase'], string> = {
+  waiting: 'waiting for the usage pause to end',
+  tools: 'checking claude, git and gh',
+  'signing-key': 'checking the approval key',
+  integrity: 'checking the git config baseline',
+  probe: 'probing the sandbox with short claude sessions (about two minutes)',
+  report: 'writing the report',
+};
+
+/**
+ * Run doctor from the console (doctor: Doctor and risk withdrawal from the console): a guarded
+ * POST, at most one probe at a time on the machine; its phase shows while it runs and the new report
+ * replaces the old one when it is done (a `doctor` event refetches both).
+ */
+function RunDoctor({ hostId }: { hostId: string }) {
+  const toast = useToast();
+  const client = useQueryClient();
+  const status = useQuery(doctorStatusQuery);
+  const [asking, setAsking] = useState(false);
+  const running = status.data ?? null;
+  const here = running !== null && running.hostId === hostId;
+
+  const start = async () => {
+    setAsking(true);
+    try {
+      const answer = await runDoctor(hostId);
+      if (!answer.ok) toast({ body: errorText(answer.body, "Doctor didn't start.") });
+      await client.invalidateQueries({ queryKey: queryKeys.doctorStatus });
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  return (
+    <HStack gap={3} vAlign="center" wrap="wrap">
+      <Button
+        label="Run doctor"
+        variant="secondary"
+        isLoading={asking}
+        isDisabled={running !== null}
+        onClick={() => void start()}
+      />
+      {running === null ? null : (
+        <HStack gap={2} vAlign="center" aria-live="polite">
+          <Spinner size="sm" />
+          <Text type="supporting" color="secondary">
+            {here
+              ? `Doctor is ${PHASE_TEXT[running.phase]}.`
+              : `Doctor is running for ${running.hostId}; one probe runs at a time.`}
+          </Text>
+        </HStack>
+      )}
+    </HStack>
+  );
+}
+
+/**
+ * Withdrawing the accepted risk only makes the verdict stricter, so the console may do it, after
+ * a confirm. Recording a risk stays a terminal act (`counterpoint accept-risk`).
+ */
+function WithdrawRisk() {
+  const toast = useToast();
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const withdraw = async () => {
+    setBusy(true);
+    try {
+      const answer = await withdrawRisk('gh-keychain');
+      toast({
+        body: answer.ok
+          ? 'Accepted risk withdrawn. Doctor now fails while gh credentials are reachable.'
+          : errorText(answer.body, "The risk couldn't be withdrawn."),
+      });
+      await client.invalidateQueries({ queryKey: ['host'] });
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button label="Withdraw this risk" variant="secondary" onClick={() => setOpen(true)} />
+      <AlertDialog
+        isOpen={open}
+        onOpenChange={setOpen}
+        title="Withdraw the accepted risk?"
+        description="From now on doctor fails while gh credentials in your Keychain are reachable, and runs refuse to start. Accepting it again is done in a terminal with counterpoint accept-risk gh-keychain."
+        actionLabel="Withdraw"
+        actionVariant="destructive"
+        isActionLoading={busy}
+        onAction={() => void withdraw()}
+      />
+    </>
+  );
+}
+
 function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: string }) {
   const report = answer.report;
   if (report === null) return null;
@@ -384,10 +487,11 @@ function VerdictBanner({ answer, hostName }: { answer: DoctorAnswer; hostName: s
             gh's config files or Counterpoint's state, and could not write {hostName}'s .git/config,
             hooks or info, or files outside its working folder. It could read your macOS Keychain,
             so gh credentials kept there are reachable by agents. You accepted this risk on{' '}
-            <Timestamp value={verdict.risk.recordedAt} />: "{verdict.risk.reason}". To withdraw it,
-            run "counterpoint revoke-risk gh-keychain".
+            <Timestamp value={verdict.risk.recordedAt} />: "{verdict.risk.reason}". You can withdraw
+            it here or with "counterpoint revoke-risk gh-keychain".
           </>
         }
+        endContent={<WithdrawRisk />}
       />
     );
   }
@@ -616,9 +720,12 @@ export function TrustPage({ hostId }: { hostId: string }) {
     <Layout
       header={
         <LayoutHeader>
-          <Heading level={2} accessibilityLevel={1}>
-            Trust
-          </Heading>
+          <HStack gap={4} vAlign="center" hAlign="between" wrap="wrap">
+            <Heading level={2} accessibilityLevel={1}>
+              Trust
+            </Heading>
+            <RunDoctor hostId={hostId} />
+          </HStack>
         </LayoutHeader>
       }
       content={

@@ -11,6 +11,8 @@ import type { Store } from './db.ts';
  * The live-update families (local-console: Live updates over one event stream), plus `host`
  * (a host registered or updated).
  * `planning`: the host's planning truth moved (a new base tip, or a settled re-read).
+ * `run`: a build run started, moved on (phase, change state) or ended; `doctor` also carries a
+ * console doctor run's phases.
  */
 export const EVENT_FAMILIES = [
   'host',
@@ -19,6 +21,7 @@ export const EVENT_FAMILIES = [
   'runway',
   'needs-you',
   'doctor',
+  'run',
 ] as const;
 
 export type EventFamily = (typeof EVENT_FAMILIES)[number];
