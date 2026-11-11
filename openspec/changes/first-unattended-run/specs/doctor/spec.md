@@ -34,3 +34,14 @@ Before the first run, doctor SHALL prove three more things live: a sandboxed she
 #### Scenario: Gate reaches the console
 - **WHEN** a probe command under the gate sandbox connects to the console port
 - **THEN** the gate-sandbox row reads Reachable and doctor does not pass
+
+### Requirement: Doctor and risk withdrawal from the console
+The owner SHALL be able to run doctor for a host from the console and see its progress and grouped result there, and SHALL be able to withdraw an accepted risk there. Both SHALL be guarded console requests (session and Origin). Accepting a risk, pinning a key and accepting an integrity baseline SHALL stay terminal-only.
+
+#### Scenario: Run doctor from the console
+- **WHEN** the owner presses Run doctor on the Trust page
+- **THEN** the probe runs, the page shows its progress, and the new report replaces the old one when it finishes
+
+#### Scenario: Withdraw a risk from the console
+- **WHEN** the owner withdraws the gh-keychain risk on the Trust page
+- **THEN** the risk is removed and the next doctor verdict no longer applies it

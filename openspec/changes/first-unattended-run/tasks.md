@@ -84,6 +84,9 @@ The first two groups come from the trusted-shell review and must be done before 
 - [ ] 10.4 Needs You: parked changes with their last gate lines and attempts; run-stopping errors
 - [ ] 10.5 Console Run panel on the Mission page: pick changes, stop time, model, budget as tokens; Start and Stop (guarded POSTs); live progress over SSE
 - [ ] 10.6 CLI `counterpoint run`, `run stop`, `run status` over the control socket
+- [ ] 10.7 Console Run doctor on the Trust page: guarded POST, one probe at a time, progress over SSE, report replaced when done
+- [ ] 10.8 Console: withdraw an accepted risk on the Trust page (accepting stays terminal-only)
+- [ ] 10.9 Console: Stop Counterpoint (a run stops at its next clean point first)
 
 ## 11. Pull requests and report
 
