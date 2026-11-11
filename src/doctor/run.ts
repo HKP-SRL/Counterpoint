@@ -24,7 +24,7 @@
 // `acceptedRisks`. The verdict and the output come from the same records: the gh row keeps its
 // measured `REACHABLE`, and the risk applies only when the verdict layer finds the row reached
 // through the Keychain lookup alone (appliedAcceptedRisks). An unreadable record counts as none.
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
@@ -34,6 +34,7 @@ import { ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
 import { printable } from '../cli/trust.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
+import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { homePaths, hostDir } from '../core/host/home.ts';
 import { PROBE_OUTSIDE_DIR_RE } from '../core/ids.ts';
 import { type AcceptedRisk, readAcceptedRisks } from '../core/security/accepted-risks.ts';
@@ -252,10 +253,7 @@ export function writeDoctorReport(home: string, report: DoctorReport): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const file = join(dir, 'doctor.json');
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(DoctorReport.parse(report), null, 2)}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  writeFileAtomic0600(file, `${JSON.stringify(DoctorReport.parse(report), null, 2)}\n`);
   return file;
 }
 

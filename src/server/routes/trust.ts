@@ -44,12 +44,13 @@ export type ReadReportResult =
   | { kind: 'unreadable' }
   | { kind: 'report'; report: DoctorReport };
 
-/** Reads and validates `hosts/{hostId}/doctor.json`. Never follows a symlink. */
+/** Reads and validates `hosts/{hostId}/doctor.json`. Never follows a symlink or blocks on a FIFO. */
 export function readDoctorReport(home: string, hostId: string): ReadReportResult {
   const file = join(hostDir(home, hostId), DOCTOR_REPORT_FILE);
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO planted at this path must not hang the daemon on open (IN-02).
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };

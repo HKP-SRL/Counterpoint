@@ -11,12 +11,13 @@
 // A commit id names immutable content, so a snapshot that read cleanly is memoized per adapter by
 // commit (a small LRU, cloned on the way out). A snapshot with anything unreadable is never kept:
 // the host runtime re-reads such a tip once after a debounce and must see a fresh read.
-import type {
-  ChangeFacts,
-  ChangeSnapshot,
-  FrameworkAdapter,
-  GitFileReader,
-  UnreadableFile,
+import {
+  AmbiguousChangeError,
+  type ChangeFacts,
+  type ChangeSnapshot,
+  type FrameworkAdapter,
+  type GitFileReader,
+  type UnreadableFile,
 } from '../../core/framework/port.ts';
 import { approvalInputs } from './inputs.ts';
 import {
@@ -157,10 +158,22 @@ async function readSnapshot(reader: GitFileReader, commit: string): Promise<Chan
     };
   }
 
+  // A name carried by more than one folder is ambiguous: every folder of that name is unreadable.
+  const byId = new Map<string, string[]>();
+  for (const dir of dirs) byId.set(dir.id, [...(byId.get(dir.id) ?? []), dir.path]);
+
   const changes: ChangeFacts[] = [];
   for (const dir of dirs) {
+    const same = byId.get(dir.id) ?? [];
     try {
-      changes.push(await readChange(reader, commit, dir));
+      const facts = await readChange(reader, commit, dir);
+      if (same.length > 1) {
+        facts.unreadable = {
+          file: dir.path,
+          reason: new AmbiguousChangeError(dir.id, same).message,
+        };
+      }
+      changes.push(facts);
     } catch (error) {
       // A listing failure inside one change affects only that change.
       changes.push({

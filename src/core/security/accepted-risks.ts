@@ -32,13 +32,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
-  rmSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { writeFileAtomic0600 } from '../fs/atomic.ts';
 import { homePaths } from '../host/home.ts';
 
 export const ACCEPTED_RISKS_SCHEMA = 'counterpoint/accepted-risks/v1';
@@ -154,13 +152,10 @@ function writeRecordFile(home: string, risks: AcceptedRisk[]): void {
   const { dir, file } = recordPaths(home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  const tmp = `${file}.${process.pid}.tmp`;
-  rmSync(tmp, { force: true });
-  const content = `${JSON.stringify(AcceptedRisksFile.parse({ schema: ACCEPTED_RISKS_SCHEMA, risks }), null, 2)}\n`;
-  // `wx` never follows or reuses a file planted at the temporary name.
-  writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  writeFileAtomic0600(
+    file,
+    `${JSON.stringify(AcceptedRisksFile.parse({ schema: ACCEPTED_RISKS_SCHEMA, risks }), null, 2)}\n`,
+  );
 }
 
 /**

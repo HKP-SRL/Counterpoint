@@ -18,12 +18,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { writeFileAtomic0600 } from '../fs/atomic.ts';
 import { homePaths } from '../host/home.ts';
 import { fingerprintOfKeyBlob, fingerprintOfKeyText } from './ssh.ts';
 
@@ -166,13 +165,6 @@ function trustFiles(home: string) {
   return { dir, allowedSigners: join(dir, 'allowed_signers'), keyJson: join(dir, 'key.json') };
 }
 
-function writeAtomic0600(path: string, content: string): void {
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, content, { mode: 0o600, flag: 'w' });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
-}
-
 /**
  * Trusts the ed25519 public key at `publicKeyPath`: writes allowed_signers and pins its
  * fingerprint. The private key must sit next to it (same path without `.pub`).
@@ -259,11 +251,11 @@ export async function writeTrust(
   const files = trustFiles(home);
   mkdirSync(files.dir, { recursive: true, mode: 0o700 });
   chmodSync(files.dir, 0o700);
-  writeAtomic0600(
+  writeFileAtomic0600(
     files.allowedSigners,
     `${OWNER_PRINCIPAL} namespaces="git" ssh-ed25519 ${blob}\n`,
   );
-  writeAtomic0600(
+  writeFileAtomic0600(
     files.keyJson,
     `${JSON.stringify({ publicKeyPath, privateKeyPath, fingerprint }, null, 2)}\n`,
   );

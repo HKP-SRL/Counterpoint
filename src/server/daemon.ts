@@ -12,7 +12,6 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
 import type { Server } from 'node:http';
@@ -21,6 +20,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { detectFramework } from '../compose.ts';
+import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
@@ -38,12 +38,19 @@ export interface DaemonOptions {
   home: string;
   /** Port for the console; 0 binds an ephemeral port (tests). */
   port: number;
+  /**
+   * The random id of this start, also on the daemon's command line (`--instance`), so `stop` can
+   * confirm a pid is this daemon before signalling it (daemon-lifecycle: Stop never signals an
+   * unrelated process).
+   */
+  instance?: string;
 }
 
 export interface DaemonInfo {
   pid: number;
   port: number;
   startedAt: string;
+  instance?: string;
 }
 
 export interface StartResult {
@@ -153,6 +160,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.exit(0);
   }
 
+  // A run record left by a crashed daemon names a pid that may now belong to another program.
+  // Holding the lock means no other daemon is alive, so the record is stale: clear it at once.
+  rmSync(paths.daemonJson, { force: true });
   rmSync(paths.startResult, { force: true });
   const tokenHash = loadTokenHash(paths);
 
@@ -207,7 +217,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }).catch((error: NodeJS.ErrnoException): never => {
     if (error.code === 'EADDRINUSE') {
       const result: StartResult = { error: 'port-in-use', port: options.port };
-      writeFileSync(paths.startResult, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+      writeFileAtomic0600(paths.startResult, `${JSON.stringify(result)}\n`);
       log('port-in-use', { port: options.port });
     } else {
       log('http-listen-failed', { code: error.code ?? null, message: error.message });
@@ -273,8 +283,13 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   await listenOnSocket(control, paths.socket);
   chmodSync(paths.socket, 0o600);
 
-  const info: DaemonInfo = { pid: process.pid, port: bound, startedAt: new Date().toISOString() };
-  writeFileSync(paths.daemonJson, `${JSON.stringify(info)}\n`, { mode: 0o600 });
+  const info: DaemonInfo = {
+    pid: process.pid,
+    port: bound,
+    startedAt: new Date().toISOString(),
+    ...(options.instance === undefined ? {} : { instance: options.instance }),
+  };
+  writeFileAtomic0600(paths.daemonJson, `${JSON.stringify(info)}\n`);
 
   // Base-tip polling (host-planning: Live refresh from the base branch): a commit to a host's base
   // branch reaches open consoles within ~2 s.

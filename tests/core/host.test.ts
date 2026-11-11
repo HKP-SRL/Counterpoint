@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { execa } from 'execa';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import {
   readConfig,
   requireHome,
   resolveHome,
+  tightenHome,
 } from '../../src/core/host/home.ts';
 import {
   detectBaseBranch,
@@ -687,5 +688,30 @@ describe('registerHost', () => {
     expect((await registerHost(store3, { cwd: repo, detectFramework: detectOpenSpec })).id).toBe(
       `${derived}-3`,
     );
+  });
+});
+
+describe('tightenHome (IN-04)', () => {
+  it('sets a home this user owns back to 0700 and says so', () => {
+    const home = makeScratchDir('tight');
+    chmodSync(home, 0o755);
+    expect(tightenHome(home)).toBe(
+      `The Counterpoint home "${home}" was open to other users; it is now private (0700).`,
+    );
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+    expect(tightenHome(home)).toBeNull();
+  });
+
+  it('only warns about a home another user owns', () => {
+    const home = makeScratchDir('tight');
+    chmodSync(home, 0o750);
+    expect(tightenHome(home, -2)).toMatch(
+      /^Warning: the Counterpoint home .* belongs to another user/,
+    );
+    expect(statSync(home).mode & 0o777).toBe(0o750);
+  });
+
+  it('does nothing for a missing home', () => {
+    expect(tightenHome(join(makeScratchDir('tight'), 'gone'))).toBeNull();
   });
 });

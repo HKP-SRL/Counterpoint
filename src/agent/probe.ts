@@ -48,6 +48,7 @@ import {
   type AgentSandbox,
   type AgentSettings,
   buildAgentSandboxSettings,
+  fileEditGrants,
   type ProtectedPaths,
   pathRule,
   type ReadTarget,
@@ -744,6 +745,15 @@ export interface ProbeLaunchInput {
 /** Pure: the exact settings, tools and argv both probe sessions are launched with. */
 export function buildProbeLaunch(input: ProbeLaunchInput): ProbeLaunch {
   const { plan, treatment, model, maxTurns, maxBudgetUsd } = input;
+  // The treatment may edit files only inside its own working folder (agent-sandbox: File edits
+  // confined to the session folder). A profile granting edits anywhere else is a Counterpoint bug:
+  // refuse to probe, so doctor fails instead of measuring it (IN-05).
+  const grants = fileEditGrants(treatment);
+  if (grants.everywhere || grants.roots.some((root) => root !== plan.probeDir)) {
+    throw new Error(
+      'The treatment profile grants file edits outside its working folder; refusing to probe.',
+    );
+  }
   const controlSettings = buildControlSettings(treatment.settings, plan);
   const treatmentTools = [...treatment.allowedTools];
   const controlToolList = controlTools(plan);

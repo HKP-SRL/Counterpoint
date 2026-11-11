@@ -269,7 +269,8 @@ const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set(FILE_EDIT_TOOLS.map((t) => 
 const SCOPED_RULE_RE = /^[A-Za-z]+\(\/\/([^()]*?)(?:\/\*\*)?\)$/;
 
 /**
- * Where a launch profile lets file-edit tools write. Reads every `permissions.allow` and
+ * Where a launch profile lets file-edit tools write. The probe launch refuses a treatment profile
+ * whose grants reach beyond its working folder (src/agent/probe.ts buildProbeLaunch). Reads every `permissions.allow` and
  * `allowedTools` entry whose tool is Edit, Write, MultiEdit or NotebookEdit (case-insensitive):
  * a bare name is a grant everywhere; `Tool(//abs/**)` or `Tool(//abs)` adds `/abs` to `roots`;
  * any other argument form (relative, `~`, a glob, `..`, the filesystem root) sets `everywhere`,

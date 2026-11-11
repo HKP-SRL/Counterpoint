@@ -7,6 +7,7 @@
 // the caller passes in (core never names an adapter), the gates slot from the host config at the
 // same tip. Nothing here writes anything; the same tip always gives byte-identical statement bytes.
 import {
+  AmbiguousChangeError,
   ChangeNotFoundError,
   type FrameworkAdapter,
   findChange,
@@ -110,6 +111,14 @@ export async function prepareApproval(options: {
     inputs = await adapter.approvalInputs(reader, tip, changeId);
   } catch (error) {
     if (error instanceof ChangeNotFoundError) return { ok: false, reason: 'not-found' };
+    if (error instanceof AmbiguousChangeError) {
+      return {
+        ok: false,
+        reason: 'unreadable',
+        file: error.dirs[0] ?? changeId,
+        detail: error.message,
+      };
+    }
     if (error instanceof UnsafeTreeEntryError) {
       return { ok: false, reason: 'unreadable', file: error.path, detail: error.message };
     }

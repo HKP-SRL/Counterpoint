@@ -126,6 +126,25 @@ export class ChangeNotFoundError extends Error {
   }
 }
 
+/**
+ * More than one planning entry carries the name `changeId` (for example an active change and an
+ * archived one, or two archived ones). Which one an approval covers would be a guess, so it fails
+ * closed: the adapter refuses to compute inputs and shows each entry as unreadable.
+ */
+export class AmbiguousChangeError extends Error {
+  readonly changeId: string;
+  readonly dirs: readonly string[];
+
+  constructor(changeId: string, dirs: readonly string[]) {
+    super(
+      `More than one folder is named for change ${JSON.stringify(changeId.slice(0, 64))}: ${dirs.join(', ')}. Rename or remove all but one.`,
+    );
+    this.name = 'AmbiguousChangeError';
+    this.changeId = changeId;
+    this.dirs = [...dirs];
+  }
+}
+
 /** The change named `changeId`: the active one, else an archived one of that name. */
 export function findChange<T extends Pick<ChangeFacts, 'id' | 'archived'>>(
   changes: readonly T[],

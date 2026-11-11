@@ -8,7 +8,8 @@
 // trusted key, statement parsed strictly, every digest recomputed at that tip), a key changes
 // whenever the tip or the trusted key changes, and the cache starts empty with the daemon (so a
 // forged or stale entry can never outlive a restart). A result is cached only if the base tip did
-// not move while it was computed.
+// not move while it was computed, and never when it holds a transient `error` verdict (runway:
+// Transient errors do not pin the runway; WR-07): the next read verifies again.
 import { mkdirSync } from 'node:fs';
 import { APPROVALS_DIR } from '../core/approvals/statement.ts';
 import { readTrust, type Trust } from '../core/approvals/trust-store.ts';
@@ -48,6 +49,11 @@ export interface NeedsYouSnapshot {
   tip: string | null;
   items: NeedsYouItem[];
   changed: ChangedApproval[];
+}
+
+/** False when any approval in the runway failed for a transient reason (`error`). */
+function hasNoTransientError(runway: Runway): boolean {
+  return runway.invalid.every((entry) => entry.reason !== 'error');
 }
 
 function emptyRunway(tip: string | null): Runway {
@@ -168,7 +174,8 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
       const opts = runwayOptions(runtime, key);
       if (opts === null) return emptyRunway(tip);
       const cacheKey = `${runtime.host.id}:${tip}:runway:${key?.fingerprint ?? 'none'}`;
-      return cached(cacheKey, runtime, tip, () => computeRunway(opts));
+      // A runway holding a transient `error` verdict is served but not remembered (WR-07).
+      return cached(cacheKey, runtime, tip, () => computeRunway(opts), hasNoTransientError);
     },
 
     async needsYou(runtime) {
@@ -177,23 +184,32 @@ export function createApprovalViews(options: { home: string }): ApprovalViews {
       const { adapter } = runtime;
       const key = trust();
       const cacheKey = `${runtime.host.id}:${tip}:needs-you:${key?.fingerprint ?? 'none'}`;
-      return cached(cacheKey, runtime, tip, async (): Promise<NeedsYouSnapshot> => {
-        const runway = await views.runway(runtime);
-        // A tip that moved in between is caught by `cached`, which then drops this entry.
-        if (runway.tip === null) return { tip: null, items: [], changed: [] };
-        const view = await runtime.view().catch(() => null);
-        const changes = view?.tip === runway.tip ? view.snapshot?.changes : undefined;
-        const items = await deriveNeedsYou({
-          root: runtime.host.root,
-          baseBranch: runtime.host.baseBranch,
-          tip: runway.tip,
-          changed: runway.changed,
-          reader: runtime.reader,
-          adapter,
-          ...(changes === undefined ? {} : { changes }),
-        });
-        return { tip: runway.tip, items, changed: runway.changed };
-      });
+      // Built from the runway: not remembered when that runway held a transient `error` (WR-07).
+      let transient = false;
+      return cached(
+        cacheKey,
+        runtime,
+        tip,
+        async (): Promise<NeedsYouSnapshot> => {
+          const runway = await views.runway(runtime);
+          transient = !hasNoTransientError(runway);
+          // A tip that moved in between is caught by `cached`, which then drops this entry.
+          if (runway.tip === null) return { tip: null, items: [], changed: [] };
+          const view = await runtime.view().catch(() => null);
+          const changes = view?.tip === runway.tip ? view.snapshot?.changes : undefined;
+          const items = await deriveNeedsYou({
+            root: runtime.host.root,
+            baseBranch: runtime.host.baseBranch,
+            tip: runway.tip,
+            changed: runway.changed,
+            reader: runtime.reader,
+            adapter,
+            ...(changes === undefined ? {} : { changes }),
+          });
+          return { tip: runway.tip, items, changed: runway.changed };
+        },
+        () => !transient,
+      );
     },
   };
   return views;

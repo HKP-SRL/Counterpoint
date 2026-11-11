@@ -25,12 +25,11 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
+import { writeFileAtomic0600 } from '../fs/atomic.ts';
 import { runGit } from '../git/run.ts';
 import { hostDir } from '../host/home.ts';
 import { PROBE_GIT_ARTIFACT_RE } from '../ids.ts';
@@ -418,12 +417,7 @@ export function writeBaseline(home: string, hostId: string, snapshot: IntegrityS
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const file = join(dir, 'integrity.json');
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(SnapshotSchema.parse(snapshot), null, 2)}\n`, {
-    mode: 0o600,
-  });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  writeFileAtomic0600(file, `${JSON.stringify(SnapshotSchema.parse(snapshot), null, 2)}\n`);
 }
 
 export type IntegrityState =

@@ -6,9 +6,12 @@
 // accepted-risk commands (`accept-risk gh-keychain`, which needs a terminal, and `revoke-risk`)
 // are the owner's act at a terminal; no console route or agent reaches them.
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
   closeSync,
+  constants,
   existsSync,
   mkdirSync,
   openSync,
@@ -32,10 +35,12 @@ import {
   requireHome,
   resolveHome,
   SocketPathTooLongError,
+  tightenHome,
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
 import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
+import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
 import { doctorCommand } from './doctor.ts';
 import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
 import {
@@ -92,7 +97,10 @@ function packageVersion(): string {
 function homeOrExit(): { home: string; paths: HomePaths } {
   try {
     const home = requireHome();
-    return { home, paths: homePaths(home) };
+    const paths = homePaths(home);
+    const notice = tightenHome(home);
+    if (notice !== null) console.error(notice);
+    return { home, paths };
   } catch (error) {
     if (
       error instanceof HomeMissingError ||
@@ -168,7 +176,14 @@ function spawnDaemon(paths: HomePaths, port: number): { exited: () => boolean } 
   try {
     const child = spawn(
       process.execPath,
-      [fileURLToPath(import.meta.url), '__daemon', '--port', String(port)],
+      [
+        fileURLToPath(import.meta.url),
+        '__daemon',
+        '--port',
+        String(port),
+        '--instance',
+        randomBytes(16).toString('hex'),
+      ],
       { detached: true, stdio: ['ignore', logFd, logFd], env, cwd: paths.home },
     );
     child.once('exit', () => {
@@ -251,14 +266,26 @@ async function mintSignInLink(home: string): Promise<string> {
   return url;
 }
 
+/** Where xdg-open is looked for on Linux: absolute paths only, never a PATH lookup (IN-03). */
+const XDG_OPEN_PATHS = ['/usr/bin/xdg-open', '/usr/local/bin/xdg-open', '/bin/xdg-open'] as const;
+
+/** The absolute path of the system's browser opener, or undefined when there is none. */
+function browserOpener(): string | undefined {
+  if (process.platform === 'darwin') return '/usr/bin/open';
+  if (process.platform !== 'linux') return undefined;
+  return XDG_OPEN_PATHS.find((path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Opens a validated sign-in link in the default browser (argument array, never a shell). */
 async function openInBrowser(url: string): Promise<void> {
-  const opener =
-    process.platform === 'darwin'
-      ? '/usr/bin/open'
-      : process.platform === 'linux'
-        ? 'xdg-open'
-        : undefined;
+  const opener = browserOpener();
   if (opener === undefined || !LOGIN_URL_RE.test(url)) return;
   const result = await execa(opener, [url], { stdio: 'ignore', reject: false, timeout: 10_000 });
   if (result.exitCode !== 0) {
@@ -329,6 +356,8 @@ function init(): void {
     if (!existing.isDirectory()) {
       throw new CliExit(2, `"${home}" exists and is not a folder. Nothing was created.`);
     }
+    const notice = tightenHome(home);
+    if (notice !== null) console.error(notice);
     console.log(`Counterpoint home is ready at "${home}".`);
     return;
   }
@@ -345,13 +374,18 @@ function init(): void {
   console.log(`Created the Counterpoint home at "${home}".`);
 }
 
-function pidFromDaemonJson(paths: HomePaths): { pid?: number; port?: number } {
-  const info = readJson(paths.daemonJson) as { pid?: unknown; port?: unknown } | undefined;
+function pidFromDaemonJson(paths: HomePaths): { pid?: number; port?: number; instance?: string } {
+  const info = readJson(paths.daemonJson) as
+    | { pid?: unknown; port?: unknown; instance?: unknown }
+    | undefined;
   return {
     ...(typeof info?.pid === 'number' && Number.isInteger(info.pid) && info.pid > 1
       ? { pid: info.pid }
       : {}),
     ...(typeof info?.port === 'number' ? { port: info.port } : {}),
+    ...(typeof info?.instance === 'string' && INSTANCE_RE.test(info.instance)
+      ? { instance: info.instance }
+      : {}),
   };
 }
 
@@ -367,13 +401,23 @@ async function waitUntil(
   return predicate();
 }
 
-/** Socket dead but lock held: signal the pid recorded in daemon.json, SIGKILL after a grace. */
+/**
+ * Socket dead but lock held: signal the pid recorded in daemon.json, SIGKILL after a grace, once
+ * that pid is confirmed to be the recorded daemon.
+ */
 async function stopByPid(paths: HomePaths): Promise<number | undefined> {
-  const { pid, port } = pidFromDaemonJson(paths);
+  const { pid, port, instance } = pidFromDaemonJson(paths);
   if (pid === undefined) {
     throw new CliExit(
       1,
       `Counterpoint's daemon holds its lock but doesn't answer, and ${paths.daemonJson} has no pid.`,
+    );
+  }
+  // Signal only a process confirmed to be the daemon this record describes (WR-08).
+  if (instance === undefined || !(await isRecordedDaemon(pid, instance))) {
+    throw new CliExit(
+      1,
+      `Counterpoint's daemon holds its lock but doesn't answer, and process ${pid} from ${paths.daemonJson} could not be confirmed as that daemon, so it was not signalled. Find the daemon with "ps -ax | grep __daemon" and stop it yourself.`,
     );
   }
   try {
@@ -479,11 +523,15 @@ async function approve(hostId: string, changeId: string): Promise<void> {
   );
 }
 
-async function daemon(options: { port?: number }): Promise<void> {
+async function daemon(options: { port?: number; instance?: string }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
   const { runDaemon } = await import('../server/daemon.ts');
-  await runDaemon({ home, port });
+  const instance =
+    options.instance !== undefined && INSTANCE_RE.test(options.instance)
+      ? options.instance
+      : undefined;
+  await runDaemon({ home, port, ...(instance === undefined ? {} : { instance }) });
 }
 
 export function buildProgram(): Command {
@@ -567,7 +615,8 @@ export function buildProgram(): Command {
   program
     .command('__daemon', { hidden: true })
     .option('--port <n>', 'port for the console', parsePort)
-    .action((options: { port?: number }) => daemon(options));
+    .option('--instance <id>', 'the random id of this start')
+    .action((options: { port?: number; instance?: string }) => daemon(options));
 
   return program;
 }

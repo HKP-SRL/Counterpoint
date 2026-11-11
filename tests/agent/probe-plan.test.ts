@@ -135,7 +135,8 @@ function overGranted(): AgentSettings {
   return {
     permissions: {
       deny: [...real.permissions.deny],
-      allow: [`Read(/${gitDir}/**)`, `Edit(/${gitDir}/**)`],
+      // No file-edit grant outside the workdir: buildProbeLaunch refuses one outright (tested below).
+      allow: [`Read(/${gitDir}/**)`],
       additionalDirectories: [gitDir],
       // A restriction, not a grant: the over-granted input keeps the real profile's block.
       blockWritesOutsideWorkingDirectories: real.permissions.blockWritesOutsideWorkingDirectories,
@@ -683,6 +684,31 @@ describe('buildProbeLaunch', () => {
       expect(list).not.toContain('Bash(*)');
     }
   });
+
+  it.each<[string, string[], string[]]>([
+    ['an Edit rule on the git dir', [`Edit(/${gitDir}/**)`], []],
+    ['an unscoped Write rule', ['Write'], []],
+    ['a bare NotebookEdit tool', [], ['NotebookEdit']],
+  ])(
+    'refuses a treatment profile that grants file edits outside its folder: %s',
+    (_, extra, tools) => {
+      const p = plan();
+      const real = p.treatmentProfile;
+      const profile: Profile = {
+        settings: {
+          ...real.settings,
+          permissions: {
+            ...real.settings.permissions,
+            allow: [...(real.settings.permissions.allow ?? []), ...extra],
+          },
+        },
+        allowedTools: [...real.allowedTools, ...tools],
+      };
+      expect(() => launch(profile, p)).toThrow(
+        'The treatment profile grants file edits outside its working folder; refusing to probe.',
+      );
+    },
+  );
 
   it('passes no --add-dir to either session', () => {
     const l = launch(overGrantedProfile());

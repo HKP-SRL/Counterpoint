@@ -11,18 +11,18 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 1.5 WR-05: add the missing execution-capable keys, snapshot every worktree config, digest include targets
 - [x] 1.6 WR-06: the uncommitted-edits hint runs no repository filter (filter check first, or direct byte comparison)
 - [x] 1.7 WR-01: verify live whether `autoAllowBashIfSandboxed: false` has any effect with bare `Bash` allow-listed; drop bare `Bash` or correct the record in code and `docs/decisions.md`
-- [ ] 1.8 Live doctor proof on the owner's machine after 1.1 to 1.7
+- [x] 1.8 Live doctor proof on the owner's machine after 1.1 to 1.7
 
 ## 2. Review backlog
 
-- [ ] 2.1 WR-03: confirm the OpenSpec adapter fails closed on ambiguous change names (active and archived, or two archive folders)
-- [ ] 2.2 WR-07: never cache runway or Needs You results that contain transient `error` verdicts
-- [ ] 2.3 WR-08: clear the run record at daemon start; confirm the process before any pid-based stop
-- [ ] 2.4 IN-01: remove-then-exclusive-create for every atomic writer
-- [ ] 2.5 IN-02: open the stored doctor report with `O_NONBLOCK`
+- [x] 2.1 WR-03: confirm the OpenSpec adapter fails closed on ambiguous change names (active and archived, or two archive folders)
+- [x] 2.2 WR-07: never cache runway or Needs You results that contain transient `error` verdicts
+- [x] 2.3 WR-08: clear the run record at daemon start; confirm the process before any pid-based stop
+- [x] 2.4 IN-01: remove-then-exclusive-create for every atomic writer
+- [x] 2.5 IN-02: open the stored doctor report with `O_NONBLOCK`
 - [ ] 2.6 IN-03: decide on the sign-in code in the opener's argv; resolve `xdg-open` by absolute path
-- [ ] 2.7 IN-04: tighten or warn about an existing home that is not 0700
-- [ ] 2.8 IN-05: use the file-edit grant parser in doctor or move it to test helpers
+- [x] 2.7 IN-04: tighten or warn about an existing home that is not 0700
+- [x] 2.8 IN-05: use the file-edit grant parser in doctor or move it to test helpers
 
 ## 3. Research spikes
 
