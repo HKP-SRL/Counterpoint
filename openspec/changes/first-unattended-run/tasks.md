@@ -60,6 +60,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 7.2 Worktree git-access probe row (treatment in a temporary linked worktree of the host must not create a ref; control in a mirror worktree must)
 - [x] 7.3 Gate-sandbox probe row (`srt` profile: protected read, outside write and console port refused; allowed port reached)
 - [x] 7.4 Live doctor proof on the owner's machine with the three new rows
+- [ ] 7.5 Judge probe refusals by protocol fields and outcomes, never claude's wording; drop the version-distrust rule; live doctor proof again
 
 ## 8. Worktrees and builder sessions
 
