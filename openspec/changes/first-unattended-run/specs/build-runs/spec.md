@@ -63,6 +63,28 @@ Each build SHALL run in fresh `claude -p` sessions. When a session's context pas
 - **WHEN** a session's context passes 40% of the model's window mid-task
 - **THEN** it finishes that task, writes a handoff and stops, Counterpoint commits the work with the handoff, and a new session continues from it
 
+### Requirement: A change is built only when its task list is done
+A change SHALL go to its gates only after a session ends by itself with no task left open except owner steps. When a session ends by itself with build tasks open, Counterpoint SHALL start a fresh session from its handoff. It SHALL instead park the change, without gates or delivery and with the reason in Needs You, when the session names the tasks left as blocked, when it made no progress, or when the attempt's sessions are used up.
+
+#### Scenario: Builder stops early with work left
+- **WHEN** a session ends by itself with build tasks open after committing work or ticking tasks
+- **THEN** Counterpoint starts a fresh session from its handoff, and the gates run only once no build task is open
+
+#### Scenario: Tasks left need what a build session cannot have
+- **WHEN** the builder has done every task it can and names the rest as needing a package install and a running local stack
+- **THEN** the change parks with no gates and no pull request, Needs You shows how many build tasks are open and what the builder needs, and the branch keeps the work
+
+#### Scenario: A session makes no progress
+- **WHEN** a session ends by itself with build tasks open, having committed nothing and ticked nothing
+- **THEN** the change parks with the reason instead of spending another session
+
+### Requirement: Builders work through everything they can do
+The builder SHALL keep working until no task it can do is left, and SHALL never stop early to leave work for a later session: the context budget is Counterpoint's to call. A task that cannot be done in a build session (a package to install, network access, a service or server the sandbox cannot start) SHALL be skipped and named with exactly what it needs, and the work SHALL go on with every task that does not wait on it.
+
+#### Scenario: One task group needs the local stack
+- **WHEN** a task needs a running local database and later groups do not wait on it
+- **THEN** the builder names that task as blocked with what it needs and builds the later groups in the same session
+
 ### Requirement: Usage limits pause every lane
 On a usage limit every agent lane SHALL pause until the reported reset time plus 2 minutes and then resume on its own. Transient API errors SHALL back off and retry. Auth, credit and spend-limit errors SHALL stop the run and land in Needs You.
 

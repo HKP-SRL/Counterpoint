@@ -30,6 +30,24 @@ describe('OpenSpec adapter, build-lane methods', () => {
     expect(adapter.tickedTasks(before, after)).toEqual(['1.1 A', 'dup']);
   });
 
+  it('lists the open tasks a build has left, leaving out owner steps', () => {
+    const list = [
+      '- [x] 1.1 Owner: install the package',
+      '- [x] 1.2 A',
+      '- [ ] 1.3 B',
+      '  - [ ] nested C',
+      '- [ ] 1.4 Owner: check it on a real phone',
+      '- [ ] Owner: unnumbered owner step',
+      '- [ ] 1.5 Ask the Owner: still a build task',
+    ].join('\n');
+    expect(adapter.openTasks(list)).toEqual([
+      '1.3 B',
+      'nested C',
+      '1.5 Ask the Owner: still a build task',
+    ]);
+    expect(adapter.openTasks('# Tasks\n\n- [x] 1.1 A\n')).toEqual([]);
+  });
+
   it('tells tick-only edits from real ones', () => {
     expect(adapter.sameApartFromTicks('- [ ] a\n', '- [x] a\n')).toBe(true);
     expect(adapter.sameApartFromTicks('- [ ] a\n', '- [x] a, changed\n')).toBe(false);

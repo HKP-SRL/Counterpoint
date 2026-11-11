@@ -8,8 +8,11 @@
 //    its gates need must be runnable, or the run stops before any session (the machine's problem);
 // 2. its worktree is prepared (`cp/<change>` from the base commit, outside the repository, locked,
 //    with the config's `worktree.clone` folders);
-// 3. builder sessions run until one finishes its work; each is committed by Counterpoint (builders
-//    write no git state) and hands off to the next at the context budget;
+// 3. builder sessions run until no build task is left open; each is committed by Counterpoint
+//    (builders write no git state) and hands off to the next at the context budget. A session that
+//    ends by itself with tasks still open is followed by a fresh one; the change parks instead when
+//    the session says what is left cannot be done in a build session, when it made no progress, or
+//    when the attempt's sessions are used up (a partial change is never delivered as built);
 // 4. the gates run; a failure goes back to the next session until the host's `attempts`, then the
 //    change parks and the run moves on;
 // 5. green: the protected-path check, then delivery (push, PR, preview: group 11).
@@ -40,7 +43,12 @@ import type { ChangeFacts } from '../core/framework/port.ts';
 import { findChange } from '../core/framework/port.ts';
 import { runGit } from '../core/git/run.ts';
 import { hostDir } from '../core/host/home.ts';
-import { type HostConfig, HostConfigError, readHostConfig } from '../core/host/host-config.ts';
+import {
+  type GateConfig,
+  type HostConfig,
+  HostConfigError,
+  readHostConfig,
+} from '../core/host/host-config.ts';
 import { isChangeId } from '../core/ids.ts';
 import type { ApprovalState, Runway } from '../core/runway/runway.ts';
 import { buildAgentSandboxSettings } from '../core/security/sandbox-settings.ts';
@@ -92,7 +100,7 @@ import {
   type MissingServiceProgram,
   missingServicePrograms,
 } from './services.ts';
-import { commitSession } from './session-commit.ts';
+import { commitSession, type SessionCommit } from './session-commit.ts';
 import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
 import { prepareWorktree, releaseWorktree, WorktreeRefusal, worktreePathFor } from './worktrees.ts';
 
@@ -288,6 +296,26 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+/** "1 build task" / "19 build tasks". */
+function buildTasks(open: readonly string[]): string {
+  return open.length === 1 ? '1 build task' : `${open.length} build tasks`;
+}
+
+/** "1 build task is" / "19 build tasks are". */
+function tasksLeft(open: readonly string[]): string {
+  return `${buildTasks(open)} ${open.length === 1 ? 'is' : 'are'}`;
+}
+
+const MAX_NOTE_IN_REASON = 1500;
+
+/** A builder's note, trimmed and capped for a parked reason (Needs You, the run report). */
+function clipNote(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= MAX_NOTE_IN_REASON
+    ? trimmed
+    : `${trimmed.slice(0, MAX_NOTE_IN_REASON - 1).trimEnd()}… (the full note is in the run folder)`;
 }
 
 export function newRunId(now: number): string {
@@ -854,6 +882,7 @@ export class Orchestrator {
           changeDir,
           attempt,
           feedback,
+          gates: config.gates,
         });
         if (built === 'stopped' || built === 'left-runway' || built === 'parked') return;
 
@@ -990,6 +1019,7 @@ export class Orchestrator {
       changeDir: string;
       attempt: number;
       feedback: GateFailure | null;
+      gates: readonly GateConfig[];
     },
   ): Promise<'built' | 'stopped' | 'left-runway' | 'parked'> {
     const { db } = this.#o;
@@ -997,6 +1027,8 @@ export class Orchestrator {
     if (adapter === null) throw new RunEnd('error', 'The project has no planning framework.');
     let transient = 0;
     let gateFeedback = c.feedback;
+    // Build tasks left open after the latest session (null: the change has no task list).
+    let open: string[] | null = null;
     for (let inAttempt = 0; inAttempt < settings.sessionsPerAttempt; inAttempt += 1) {
       if (active.stop.signal.aborted) return 'stopped';
       const left = await this.#stillApproved(
@@ -1027,6 +1059,7 @@ export class Orchestrator {
         handoff,
         gateFailure: gateFeedback,
         doneTasks: runChangeTicks(db, c.row.id),
+        gates: c.gates,
       });
       const paths = protectedPathsFor({ home: this.#o.home, host: runtime.host });
       const profile = buildAgentSandboxSettings({ ...paths, workdir: c.worktree });
@@ -1104,7 +1137,8 @@ export class Orchestrator {
       });
 
       // Every session's work is committed, whatever ended it.
-      await this.#commit(c, runtime, number, result, active.id);
+      const ticksBefore = runChangeTicks(db, c.row.id).length;
+      const done = await this.#commit(c, runtime, number, result, active.id);
       gateFeedback = null;
 
       switch (result.outcome.kind) {
@@ -1143,23 +1177,64 @@ export class Orchestrator {
           transient = 0;
       }
       if (active.stop.signal.aborted || result.reason === 'stop-handoff') return 'stopped';
-      if (result.reason === 'finished') return 'built';
+      open = done === null ? null : done.open;
       // budget-handoff, forced, timeout, failed: the next session continues from the handoff.
+      if (result.reason !== 'finished') continue;
+      // The session ended by itself. The change is built only when no build task is left open.
+      if (done === null || open === null || open.length === 0) return 'built';
+      if (done.blocked !== null) {
+        return this.#parkOpen(
+          active,
+          c,
+          `${tasksLeft(open)} still open, and the builder says ${open.length === 1 ? 'it' : 'they'} cannot be done in a build session:\n${clipNote(done.blocked.text)}\n`,
+        );
+      }
+      const progressed = done.commit !== null || done.ticked.length > ticksBefore;
+      if (!progressed) {
+        return this.#parkOpen(
+          active,
+          c,
+          `The builder stopped with ${buildTasks(open)} still open and made no progress in session ${number} (next: ${open[0]}). Its handoff says why.`,
+        );
+      }
+      // It stopped early with work left: a fresh session continues from its handoff.
+    }
+    if (open !== null && open.length > 0) {
+      return this.#parkOpen(
+        active,
+        c,
+        `${tasksLeft(open)} still open after ${settings.sessionsPerAttempt} sessions, this attempt's limit (next: ${open[0]}). Raise "Sessions per attempt" in Settings or split the change, then build it in a new run.`,
+      );
     }
     return 'built';
   }
 
-  /** Commits the session's work; keeps its handoff (or writes one) and its task ticks. */
+  /** A change with build tasks left that no further session can finish now: it parks, unbuilt. */
+  #parkOpen(active: ActiveRun, c: { row: RunChangeRow; branch: string }, why: string): 'parked' {
+    parkRunChange(
+      this.#o.db,
+      c.row.id,
+      `Not built: ${why}${why.endsWith('\n') ? '' : ' '}The branch ${c.branch} keeps the work so far.`,
+      this.#now(),
+    );
+    this.#publish(active.hostId, { runId: active.id, change: c.row.change, state: 'parked' });
+    return 'parked';
+  }
+
+  /**
+   * Commits the session's work; keeps its handoff (or writes one) and its task ticks. Returns what
+   * the commit found (null without a planning adapter).
+   */
   async #commit(
     c: { row: RunChangeRow; facts: ChangeFacts; worktree: string; changeDir: string },
     runtime: RunHost,
     number: number,
     result: BuilderSessionResult,
     runId: string,
-  ): Promise<void> {
+  ): Promise<SessionCommit | null> {
     const { db } = this.#o;
     const adapter = runtime.adapter;
-    if (adapter === null) return;
+    if (adapter === null) return null;
     const interrupted =
       result.reason === 'forced' || result.reason === 'timeout' || result.end.killed;
     const commit = await (this.#o.commitSession ?? commitSession)({
@@ -1180,7 +1255,8 @@ export class Orchestrator {
       );
     }
     let handoffPath = commit.handoff?.path ?? null;
-    if (handoffPath === null && result.reason !== 'finished') {
+    const workLeft = commit.open !== null && commit.open.length > 0;
+    if (handoffPath === null && (result.reason !== 'finished' || workLeft)) {
       const changed =
         commit.commit === null
           ? []
@@ -1204,7 +1280,9 @@ export class Orchestrator {
           reason:
             result.reason === 'budget-handoff'
               ? 'it reached the context budget'
-              : `it ended (${result.reason})`,
+              : result.reason === 'finished'
+                ? 'it stopped with tasks still open'
+                : `it ended (${result.reason})`,
           changedFiles: changed,
           ticked: runChangeTicks(db, c.row.id),
         }),
@@ -1212,6 +1290,7 @@ export class Orchestrator {
       );
     }
     if (handoffPath !== null) updateRunChange(db, c.row.id, { handoffPath });
+    return commit;
   }
 
   /** Sessions that cannot run at all (API errors after every retry): the change parks now. */

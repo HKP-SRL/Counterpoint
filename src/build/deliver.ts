@@ -530,10 +530,12 @@ export async function openPullRequest(input: {
       { cwd: input.cwd },
     );
     if (edited.exitCode !== 0) throw ghFailure('Updating the open PR', edited);
-    if (input.draft) {
-      // Best effort: an existing ready PR goes back to draft when the branch now edits planning.
-      await input.gh(['pr', 'ready', existing, '--repo', repo, '--undo'], { cwd: input.cwd });
-    }
+    // Best effort both ways: an existing ready PR goes back to draft when the branch now edits
+    // planning; a draft (one held back while the change was unfinished, say) is marked ready once
+    // the change is delivered whole with nothing blocking the merge.
+    await input.gh(['pr', 'ready', existing, '--repo', repo, ...(input.draft ? ['--undo'] : [])], {
+      cwd: input.cwd,
+    });
     return existing;
   }
   const created = await input.gh(

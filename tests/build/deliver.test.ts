@@ -364,7 +364,27 @@ describe('openPullRequest', () => {
       'edit',
       'https://github.com/alex/Cena/pull/7',
     ]);
-    expect(calls).toHaveLength(2);
+    // A draft held back while the change was unfinished is marked ready now that it is whole.
+    expect(calls[2]?.args).toEqual([
+      'pr',
+      'ready',
+      'https://github.com/alex/Cena/pull/7',
+      '--repo',
+      'alex/Cena',
+    ]);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('puts the open PR back to draft when the branch now edits planning files', async () => {
+    const { gh, calls } = fakeGh([
+      { stdout: '[{"url":"https://github.com/alex/Cena/pull/7"}]' },
+      {},
+      { exitCode: 1, stderr: 'already a draft' },
+    ]);
+    await expect(openPullRequest(input(gh, true))).resolves.toBe(
+      'https://github.com/alex/Cena/pull/7',
+    );
+    expect(calls[2]?.args.at(-1)).toBe('--undo');
   });
 
   it("fails with gh's last line, and without a URL", async () => {

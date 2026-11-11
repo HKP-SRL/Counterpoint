@@ -77,6 +77,20 @@ export function normalizeTasks(text: string): string {
   return `${lines.slice(start, end).join('\n')}\n`;
 }
 
+/**
+ * Open tasks that are not owner steps, by their text, in file order: the work a build has left.
+ * The task number stays on (it is how a builder and the owner name a task).
+ */
+export function openBuildTasks(text: string): string[] {
+  const open: string[] = [];
+  for (const task of taskLines(text)) {
+    if (task.done) continue;
+    if (OWNER_RE.test(task.description.replace(TASK_NUMBER_RE, ''))) continue;
+    open.push(task.description);
+  }
+  return open;
+}
+
 /** Each task line's description and whether it is done, in file order. */
 function taskLines(text: string): { description: string; done: boolean }[] {
   const tasks: { description: string; done: boolean }[] = [];

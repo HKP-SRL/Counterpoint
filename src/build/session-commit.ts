@@ -3,7 +3,7 @@
 //
 // Builders write no git state (spike 3.6), so after every session Counterpoint, outside any
 // sandbox, with the hardened git runner:
-// 1. moves the builder's handoff and assumptions files out of the worktree into the run folder
+// 1. moves the builder's handoff, assumptions and blocked-task notes out of the worktree into the run folder
 //    (opened without following symlinks and size-capped: the builder could plant a link to a file
 //    only Counterpoint can read, and these texts end up in prompts and the PR body);
 // 2. keeps planning files out of the branch. The change's task list, when it differs only in
@@ -11,7 +11,9 @@
 //    the ticks are returned for the store. Any other planning edit, and any edit under `.claude/`,
 //    is put back as it was at HEAD and returned as a flag;
 // 3. commits everything else as one commit `cp: <change> session <n>`, authored as the owner (see
-//    FALLBACK_IDENTITY) with a `Counterpoint-Run: <run> session <n>` trailer.
+//    FALLBACK_IDENTITY) with a `Counterpoint-Run: <run> session <n>` trailer;
+// 4. reports the build tasks still open in the task list it kept, so the orchestrator can tell a
+//    finished change from a session that stopped with work left.
 import {
   appendFileSync,
   closeSync,
@@ -26,7 +28,7 @@ import {
 import { dirname, join } from 'node:path';
 import type { ChangeFacts, FrameworkAdapter } from '../core/framework/port.ts';
 import { type GitIdentity, ownerIdentity, runGit } from '../core/git/run.ts';
-import { ASSUMPTIONS_FILE, HANDOFF_FILE } from './prompt.ts';
+import { ASSUMPTIONS_FILE, BLOCKED_FILE, HANDOFF_FILE } from './prompt.ts';
 
 const MAX_NOTE_BYTES = 256 * 1024;
 /**
@@ -144,6 +146,13 @@ export interface SessionCommit {
   handoff: { text: string; path: string } | null;
   /** Assumptions the session recorded (appended to `assumptions.md` in changeDir). */
   assumptions: string | null;
+  /** The tasks the session said it cannot do here (null when it wrote no such note). */
+  blocked: { text: string; path: string } | null;
+  /**
+   * Open tasks that are not owner steps, by text, in the task list as the session left it; null
+   * when the change has no task list (or it cannot be read), so nothing can be counted.
+   */
+  open: string[] | null;
 }
 
 export async function commitSession(input: SessionCommitInput): Promise<SessionCommit> {
@@ -153,13 +162,21 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
   // 1. Notes out of the worktree.
   const handoffText = readNote(join(worktree, HANDOFF_FILE));
   const assumptions = readNote(join(worktree, ASSUMPTIONS_FILE));
+  const blockedText = readNote(join(worktree, BLOCKED_FILE));
   removeQuietly(join(worktree, HANDOFF_FILE));
   removeQuietly(join(worktree, ASSUMPTIONS_FILE));
+  removeQuietly(join(worktree, BLOCKED_FILE));
   let handoff: SessionCommit['handoff'] = null;
   if (handoffText !== null) {
     const path = join(input.changeDir, `session-${input.session}-handoff.md`);
     appendFileSync(path, handoffText, { mode: 0o600 });
     handoff = { text: handoffText, path };
+  }
+  let blocked: SessionCommit['blocked'] = null;
+  if (blockedText !== null && blockedText.trim() !== '') {
+    const path = join(input.changeDir, `session-${input.session}-blocked.md`);
+    appendFileSync(path, blockedText, { mode: 0o600 });
+    blocked = { text: blockedText, path };
   }
   if (assumptions !== null && assumptions.trim() !== '') {
     appendFileSync(
@@ -212,5 +229,11 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
     );
     commit = (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   }
-  return { commit, ticked, restored, handoff, assumptions };
+  // 4. What is left: the task list as the next session will see it (kept ticks, or HEAD's).
+  let open: string[] | null = null;
+  if (tasksPath !== null) {
+    const list = readNote(join(worktree, tasksPath)) ?? (await headText(worktree, tasksPath));
+    if (list !== null) open = adapter.openTasks(list);
+  }
+  return { commit, ticked, restored, handoff, assumptions, blocked, open };
 }

@@ -70,6 +70,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 8.3 Orchestrator commit after each session: collect handoff and assumptions out of the worktree, restore planning files, record task ticks
 - [x] 8.4 Budget handoff: wrap-up message at the budget, forced end at budget plus margin with a generated handoff
 - [x] 8.5 Dependencies in new worktrees: the host config's `worktree.clone` folders (e.g. `node_modules`) are copied from the owner's checkout as copy-on-write clones; git-ignored only, no link may lead outside the clone
+- [x] 8.6 A change is built only when its task list is done (seen live on Cena: a session stopped on purpose before a task group it could not do, and the change went through the gates and out as a ready-to-merge PR with 19 of its 32 build tasks open). The session commit reports the build tasks left open; a session that ends by itself with work left gets a fresh successor; the builder skips what its sandbox cannot do, names it in `.cp-blocked.md` and goes on; the change parks, with no gates and no PR, when only blocked work is left, when a session makes no progress, or when the attempt's sessions are used up. The prompt names the host's gates and the services they get, so a check those gates make (Cena's full suite against the local stack) never blocks a task
 
 ## 9. Gates
 
@@ -101,6 +102,7 @@ The first two groups come from the trusted-shell review and must be done before 
 - [x] 11.3 Planning-write queue (serialized) and the planning-file flag that keeps a PR from being offered for merge
 - [x] 11.4 Run report at every run end: file, store, shown in the console, `counterpoint run report`
 - [x] 11.5 Session commits authored with the owner's git identity and a `Counterpoint-Run: <run> session <n>` trailer: Vercel blocked every build PR's preview for commits by `Counterpoint <counterpoint@localhost>` (owner decision 2026-11-11: Counterpoint acts as the owner). Planning write-backs are authored as the owner too; sessions and gates get `COREPACK_HOME`, so `pnpm` finds the owner's package managers offline
+- [x] 11.6 A change built again reuses its open PR and marks it ready when the change is delivered whole with nothing blocking the merge (a PR held as a draft while the change was unfinished, such as Cena's #14, comes back by itself); it still goes back to draft when the branch edits planning
 
 ## 12. First run on Cena
 

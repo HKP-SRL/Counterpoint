@@ -126,6 +126,11 @@ export interface FrameworkAdapter {
    * text, in the order they appear in `after`. Used to record a builder's progress.
    */
   tickedTasks(before: string, after: string): string[];
+  /**
+   * The open tasks of a task list that are not owner steps, by their text, in file order. A build
+   * is done only when this is empty.
+   */
+  openTasks(tasks: string): string[];
   /** True when two versions of a task list differ only in which boxes are ticked. */
   sameApartFromTicks(before: string, after: string): boolean;
   /**

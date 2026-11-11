@@ -1,7 +1,7 @@
 // The build orchestrator over a real OpenSpec host, real worktrees and the real store, with the
 // builder sessions and gate rounds played by fakes (no claude, no srt).
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRunner } from '../../src/agent/runner.ts';
@@ -18,7 +18,7 @@ import {
   type OrchestratorOptions,
   type RunHost,
 } from '../../src/build/orchestrator.ts';
-import { HANDOFF_FILE } from '../../src/build/prompt.ts';
+import { BLOCKED_FILE, HANDOFF_FILE } from '../../src/build/prompt.ts';
 import { recoverRuns } from '../../src/build/recovery.ts';
 import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
@@ -118,7 +118,16 @@ function runwayOf(base: string, changes: string[]): Runway {
 
 const OK: SessionOutcome = { kind: 'ok' };
 
-/** A builder session that writes a file and a handoff, then ends as told. */
+/** Ticks every task of the worktree's change (the worktree folder is named for the change). */
+function tickAll(cwd: string): void {
+  const path = join(cwd, 'openspec', 'changes', basename(cwd), 'tasks.md');
+  writeFileSync(path, readFileSync(path, 'utf8').replaceAll('- [ ]', '- [x]'));
+}
+
+/**
+ * A builder session that writes a file and a handoff, then ends as told. A session that finishes
+ * has done its change's tasks unless `tick: false`; `idle` writes no code; `blocked` leaves a note.
+ */
 function fakeSessions(
   plan: (
     n: number,
@@ -127,6 +136,9 @@ function fakeSessions(
     reason?: BuilderSessionResult['reason'];
     outcome?: SessionOutcome;
     wait?: boolean;
+    tick?: boolean;
+    idle?: boolean;
+    blocked?: string;
   } = () => ({}),
 ) {
   const prompts: string[] = [];
@@ -135,7 +147,12 @@ function fakeSessions(
     n += 1;
     prompts.push(input.prompt);
     const step = plan(n, input.cwd);
-    writeFileSync(join(input.cwd, 'src', `session-${n}.ts`), `export const n = ${n};\n`);
+    const reason = step.wait === true ? 'stop-handoff' : (step.reason ?? 'finished');
+    if (step.idle !== true) {
+      writeFileSync(join(input.cwd, 'src', `session-${n}.ts`), `export const n = ${n};\n`);
+    }
+    if (step.tick ?? reason === 'finished') tickAll(input.cwd);
+    if (step.blocked !== undefined) writeFileSync(join(input.cwd, BLOCKED_FILE), step.blocked);
     writeFileSync(join(input.cwd, HANDOFF_FILE), `Session ${n} handoff.\n`);
     let wrap: ((value: undefined) => void) | null = null;
     const wrapped = new Promise<void>((resolve) => {
@@ -146,7 +163,7 @@ function fakeSessions(
       done: (async () => {
         if (step.wait === true) await wrapped;
         return {
-          reason: step.wait === true ? 'stop-handoff' : (step.reason ?? 'finished'),
+          reason,
           peakTokens: 1000,
           outcome: step.outcome ?? OK,
           end: {
@@ -323,8 +340,9 @@ describe('a run', () => {
       sessionsPerAttempt: 2,
     });
     const inputs: Array<Parameters<typeof startBuilderSession>[0]> = [];
-    // Every session hands off at the budget, so only the sessions-per-attempt limit ends the attempt.
-    const sessions = fakeSessions(() => ({ reason: 'budget-handoff' }));
+    // Every session hands off at the budget, so only the sessions-per-attempt limit ends the
+    // attempt; the tasks are done by then, so the gates run.
+    const sessions = fakeSessions(() => ({ reason: 'budget-handoff', tick: true }));
     const g = gates(['pass']);
     const { o } = orchestrator(ctx, {
       startBuilderSession: async (input) => {
@@ -355,6 +373,100 @@ describe('a run', () => {
     if (!next.ok) throw new Error(next.error);
     await o.idle();
     expect(inputs.at(-1)).toMatchObject({ model: 'opus', effort: 'medium', maxTurns: 400 });
+  });
+
+  it('starts a fresh session when one stops with tasks still open, and builds once none is left', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions((n) => (n === 1 ? { tick: false } : {}));
+    const g = gates(['pass']);
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(2);
+    expect(sessions.prompts[1]).toContain('Session 1 handoff.');
+    // The gates from the host config at the approved base are named in the prompt.
+    expect(sessions.prompts[0]).toContain('gives you any failure: unit (`pnpm test`).');
+    expect(g.calls).toEqual([1]);
+    expect(delivered).toEqual(['a-thing']);
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({ state: 'green' });
+  });
+
+  it('parks a change whose builder says the tasks left cannot be done here: no gates, no PR', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions(() => ({
+      tick: false,
+      blocked: '- 1.1 needs playwright installed in the checkout; 1.2 waits on it\n',
+    }));
+    const g = gates([]);
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(1);
+    expect(g.calls).toEqual([]);
+    expect(delivered).toEqual([]);
+    const change = listRunChanges(ctx.db, started.runId)[0];
+    expect(change?.state).toBe('parked');
+    expect(change?.reason).toBe(
+      'Not built: 2 build tasks are still open, and the builder says they cannot be done in a build session:\n- 1.1 needs playwright installed in the checkout; 1.2 waits on it\nThe branch cp/a-thing keeps the work so far.',
+    );
+    // The note left the worktree for the run folder; the work so far is committed.
+    expect(existsSync(join(change?.worktree as string, BLOCKED_FILE))).toBe(false);
+    const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
+    expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+    const items = runNeedsYou(ctx.db, 'cena');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: 'parked',
+      changeId: 'a-thing',
+      attempts: [],
+      action: expect.stringMatching(/^Provide what the reason above names/),
+    });
+    expect(getRun(ctx.db, started.runId)).toMatchObject({ endReason: 'finished' });
+  });
+
+  it('parks a change when a session stops with tasks open and makes no progress', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions((n) => (n === 1 ? { tick: false } : { tick: false, idle: true }));
+    const g = gates([]);
+    const { o } = orchestrator(ctx, { startBuilderSession: sessions.start, runGateRound: g.round });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(2);
+    expect(g.calls).toEqual([]);
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({
+      state: 'parked',
+      reason: expect.stringMatching(
+        /^Not built: The builder stopped with 2 build tasks still open and made no progress in session 2 \(next: 1\.1 Do it\)\. Its handoff says why\. The branch cp\/a-thing keeps the work so far\.$/,
+      ),
+    });
+  });
+
+  it("parks a change with tasks still open when the attempt's sessions are used up", async () => {
+    const ctx = await host();
+    writeHostSettings(ctx.db, 'cena', { ...DEFAULT_HOST_SETTINGS, sessionsPerAttempt: 2 });
+    const sessions = fakeSessions(() => ({ reason: 'budget-handoff' }));
+    const g = gates([]);
+    const { o } = orchestrator(ctx, { startBuilderSession: sessions.start, runGateRound: g.round });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(2);
+    expect(g.calls).toEqual([]);
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({
+      state: 'parked',
+      reason: expect.stringMatching(
+        /^Not built: 2 build tasks are still open after 2 sessions, this attempt's limit \(next: 1\.1 Do it\)/,
+      ),
+    });
   });
 
   it('parks a green change whose delivery fails, with the reason, and goes on with the next', async () => {

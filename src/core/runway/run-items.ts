@@ -72,6 +72,8 @@ export function runNeedsYou(db: Store, hostId: string): RunNeedsYouItem[] {
   }
   for (const change of listRunChanges(db, run.id)) {
     if (change.state !== 'parked') continue;
+    const attempts = listGateResults(db, change.id).map(toAttempt);
+    const branch = change.branch ?? `cp/${change.change}`;
     items.push({
       id: `parked-${run.id}-${change.change}`,
       kind: 'parked',
@@ -80,8 +82,13 @@ export function runNeedsYou(db: Store, hostId: string): RunNeedsYouItem[] {
       changeId: change.change,
       reason: change.reason ?? 'Parked.',
       at: change.endedAt ?? run.startedAt,
-      attempts: listGateResults(db, change.id).map(toAttempt),
-      action: `Read the failing gate's output. Revise the plan or the gates and approve again, or build it in a new run. The branch ${change.branch ?? `cp/${change.change}`} keeps the work.`,
+      attempts,
+      // Without a gate run (a builder blocked or stuck, a refused worktree), there is no gate
+      // output to read: the reason itself says what is missing.
+      action:
+        attempts.length > 0
+          ? `Read the failing gate's output. Revise the plan or the gates and approve again, or build it in a new run. The branch ${branch} keeps the work.`
+          : `Provide what the reason above names, or revise the plan and approve again, then build it in a new run. The branch ${branch} keeps the work.`,
     });
   }
   return items.sort((a, b) => b.at - a.at);
