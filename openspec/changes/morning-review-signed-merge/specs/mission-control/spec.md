@@ -26,13 +26,6 @@ The owner SHALL be able to open a running session's live log (tool calls and pro
 - **WHEN** the owner stops a running session
 - **THEN** the session ends, its processes are killed, and the change shows as waiting on owner
 
-### Requirement: Run controls in the console
-The owner SHALL be able to start and stop a run from the console with the same choices as the CLI (changes, stop time, model, context budget with its token figure).
-
-#### Scenario: Start from the console
-- **WHEN** the owner starts a run from the Mission page
-- **THEN** the run starts with the chosen settings, as if started from the CLI
-
 ### Requirement: Daytime mode
 The Mission page SHALL support runs with the owner present: a run with a daytime stop time or none, PRs listed for review as each one lands rather than in a morning debrief, and revision rounds in flight shown beside builds.
 

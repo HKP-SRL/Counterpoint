@@ -1,6 +1,6 @@
 # Backlog
 
-Work deliberately deferred past the first milestone (the seven changes from `trusted-shell-signed-runway` to `council-meetings-backlog`). When one of these is picked up, it becomes an OpenSpec change. Decisions and out-of-scope items are in `docs/decisions.md`.
+Work deliberately deferred past the first milestone (the eight changes from `trusted-shell-signed-runway` to `council-meetings-backlog`). When one of these is picked up, it becomes an OpenSpec change. Decisions and out-of-scope items are in `docs/decisions.md`.
 
 ## Deferred features
 
@@ -36,8 +36,6 @@ Work deliberately deferred past the first milestone (the seven changes from `tru
   - A rehearsal run on a change outside the protected paths is a good first use.
 - **"No framework" adapter.** A plain markdown or YAML list. The adapter boundary is already in core; only the OpenSpec adapter ships.
 - **Public npm release.** Publish as `@hkp/counterpoint`, so `npx @hkp/counterpoint` works. Re-check the Claude Code terms before publishing. Run `publint` and `@arethetypeswrong/cli` first.
-- **Sign several approvals at once.** `counterpoint approve` signs one change per passphrase. That is fine twice a night and tiring ten times a day. One passphrase for a batch, with every statement still shown before signing.
-- **Touch ID or FIDO2 signing on click.** This would replace the prepared terminal command.
 - **Preview-deploy comments.** Ingest comments left on the host's preview deploys. They are not an owner channel, so each one becomes a revision note only after the owner confirms it.
 
 ## Open gaps
@@ -46,4 +44,4 @@ Work deliberately deferred past the first milestone (the seven changes from `tru
 - **Automatic meeting points.** The default set of lifecycle points where the council meets on its own (for example change kickoff, design review, post-build, conflict escalation) is still open. Settle it in `council-meetings-backlog`. The rule: meetings run alongside the work, never in front of it.
 - **Council cost defaults.** Seats × rounds × cards adds up. Decide the default number of seats per question and the per-meeting and per-day caps.
 - **Backlog location on OpenSpec hosts.** Decide where council backlog items are written (see `council-cards-decisions`).
-- **Branch protection on Cena.** Verify the branch-protection recipe for Cena's `master` before the signed-merge work is planned.
+- **Branch protection on Cena.** Verify the branch-protection recipe for Cena's `master` before the signed-merge work is planned, including whether it requires signed commits. A passkey-approved merge carries no git signature of its own.
