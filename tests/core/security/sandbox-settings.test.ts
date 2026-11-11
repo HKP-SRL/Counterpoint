@@ -11,6 +11,7 @@ import {
   PROBE_TARGET_IDS,
   probeTargetMode,
   reportVerdict,
+  SESSION_PROBE_TARGET_IDS,
 } from '../../../src/core/security/doctor-report.ts';
 import {
   AGENT_TOOLS,
@@ -438,7 +439,7 @@ describe('buildClaudeArgv', () => {
       expect(argv).toContain(flag);
     }
     expect(valueAfter(argv, '--output-format')).toBe('stream-json');
-    expect(valueAfter(argv, '--setting-sources')).toBe('user');
+    expect(valueAfter(argv, '--setting-sources')).toBe('user,project');
     expect(AGENT_PERMISSION_MODE).toBe('auto');
     expect(valueAfter(argv, '--permission-mode')).toBe(AGENT_PERMISSION_MODE);
     expect(valueAfter(argv, '--permission-prompts')).toBe('none');
@@ -623,7 +624,8 @@ describe('DoctorReport', () => {
     // it still parses as schema v1, and it can never pass.
     const report = validReport();
     report.probe = report.probe.filter(
-      (row) => row.id !== 'outside-workdir' && row.id !== 'credential-env',
+      (row) =>
+        !['outside-workdir', 'credential-env', 'worktree-git', 'gate-sandbox'].includes(row.id),
     );
     expect(report.probe).toHaveLength(7);
     const parsed = DoctorReport.parse(report);
@@ -635,7 +637,9 @@ describe('DoctorReport', () => {
     // A report written before the credential-env row has none: it still parses as schema v1,
     // and it can never pass.
     const report = validReport();
-    report.probe = report.probe.filter((row) => row.id !== 'credential-env');
+    report.probe = report.probe.filter(
+      (row) => !['credential-env', 'worktree-git', 'gate-sandbox'].includes(row.id),
+    );
     expect(report.probe).toHaveLength(8);
     const parsed = DoctorReport.parse(report);
     expect(parsed.schema).toBe('counterpoint/doctor/v1');
@@ -683,16 +687,28 @@ describe('DoctorReport', () => {
     }
   });
 
-  it('lists nine probe targets, credential-env last, with their modes', () => {
-    expect(PROBE_TARGET_IDS).toHaveLength(9);
-    expect(PROBE_TARGET_IDS.at(-2)).toBe('outside-workdir');
-    expect(PROBE_TARGET_IDS.at(-1)).toBe('credential-env');
+  it('fails a report that holds only the nine session rows, from before the build-lane rows', () => {
+    const report = validReport();
+    report.probe = report.probe.filter(
+      (row) => row.id !== 'worktree-git' && row.id !== 'gate-sandbox',
+    );
+    expect(report.probe).toHaveLength(9);
+    expect(reportVerdict(DoctorReport.parse(report))).toBe('fail');
+  });
+
+  it('lists nine session targets, then the two build-lane rows, with their modes', () => {
+    expect(SESSION_PROBE_TARGET_IDS).toHaveLength(9);
+    expect(SESSION_PROBE_TARGET_IDS.at(-2)).toBe('outside-workdir');
+    expect(SESSION_PROBE_TARGET_IDS.at(-1)).toBe('credential-env');
+    expect(PROBE_TARGET_IDS).toEqual([...SESSION_PROBE_TARGET_IDS, 'worktree-git', 'gate-sandbox']);
     expect(probeTargetMode('credential-env')).toBe('read');
     expect(PROBE_TARGET_IDS.filter((id) => probeTargetMode(id) === 'write')).toEqual([
       'git-config',
       'git-hooks',
       'git-info',
       'outside-workdir',
+      'worktree-git',
+      'gate-sandbox',
     ]);
   });
 

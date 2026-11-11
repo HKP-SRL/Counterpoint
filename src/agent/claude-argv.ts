@@ -1,7 +1,13 @@
 // The argument array for a headless `claude -p` session (agent-sandbox: One launch profile for
 // every agent session). Every flag here is mandatory:
-// - `--setting-sources user`: a project `.claude/settings.json` hook planted by an agent ran
-//   unsandboxed in `-p` mode during research; only the owner's user settings load.
+// - `--setting-sources user,project` (owner decision on spike 3.5 of first-unattended-run): builders
+//   need the host's own CLAUDE.md/AGENTS.md, skills, commands and agents, which only the project
+//   source loads. It also loads the repository's committed `.claude/settings.json`, permissions and
+//   hooks included. A project hook planted by an agent ran unsandboxed in `-p` mode during
+//   research, so: agents cannot write `.claude/` in their working folder (deny rule, also an OS
+//   write-deny); doctor judges the committed file like the user settings (no isolation widening);
+//   and its hooks and other execution-capable keys are part of the host's integrity baseline,
+//   accepted only at a terminal. `local` stays out (an uncommitted file nobody reviewed).
 // - `--strict-mcp-config`: only MCP servers passed explicitly (none so far).
 // - `--permission-mode auto` + `--permission-prompts none` (owner decision, 2026-11-10): the
 //   permission rules decide first; a call no rule covers goes to Claude Code's auto-mode
@@ -18,6 +24,9 @@
 // mid-session (spike 5.1 of first-unattended-run).
 import { isAbsolute } from 'node:path';
 import type { AgentSettings } from '../core/security/sandbox-settings.ts';
+
+/** The setting sources every agent session loads (probe sessions and builders). */
+export const AGENT_SETTING_SOURCES = 'user,project';
 
 /** The one permission mode every agent session launches with (probe sessions and builders). */
 export const AGENT_PERMISSION_MODE = 'auto';
@@ -81,7 +90,7 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
     '--settings',
     JSON.stringify(settings),
     '--setting-sources',
-    'user',
+    AGENT_SETTING_SOURCES,
     '--strict-mcp-config',
     '--permission-mode',
     AGENT_PERMISSION_MODE,

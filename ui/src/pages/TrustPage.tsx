@@ -1,8 +1,8 @@
 // Trust (`/h/{hostId}/trust`, doctor: Trust page; long evidence wraps): the last
 // `counterpoint doctor` report. The verdict Banner comes first (the page's focal point), then the
 // Tools, Signing key and Sandbox probe tables. The Sandbox probe card starts with the two session
-// checks, Agent permission mode and Sandbox isolation settings, then lists the nine probe targets
-// (outside-workdir and credential-env last). Read-only: the console
+// checks, Agent permission mode and Sandbox isolation settings, then lists the eleven probe targets
+// (the build-lane rows worktree-git and gate-sandbox last). Read-only: the console
 // never runs the probe, so this page has no privileged action; re-running is the terminal command
 // it shows.
 //
@@ -79,9 +79,9 @@ export type DoctorAnswer = {
 };
 
 /**
- * The nine probe targets, in the Trust page's order (src/core/security/doctor-report.ts):
- * `outside-workdir` and `credential-env` were added last. A report without one of them
- * shows that row `Not checked`.
+ * The eleven probe targets, in the Trust page's order (src/core/security/doctor-report.ts):
+ * the nine session rows, then the build-lane rows `worktree-git` and `gate-sandbox`. A report
+ * without one of them shows that row `Not checked`.
  */
 const PROBE_TARGETS: readonly { id: string; label: string; mode: 'read' | 'write' }[] = [
   { id: 'signing-key', label: 'Signing key', mode: 'read' },
@@ -93,6 +93,8 @@ const PROBE_TARGETS: readonly { id: string; label: string; mode: 'read' | 'write
   { id: 'git-info', label: '.git/info', mode: 'write' },
   { id: 'outside-workdir', label: 'Files outside the working folder', mode: 'write' },
   { id: 'credential-env', label: 'Credentials in the shell environment', mode: 'read' },
+  { id: 'worktree-git', label: '{host} git state from a worktree', mode: 'write' },
+  { id: 'gate-sandbox', label: 'Gate sandbox', mode: 'write' },
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

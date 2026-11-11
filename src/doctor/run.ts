@@ -24,18 +24,21 @@
 // `acceptedRisks`. The verdict and the output come from the same records: the gh row keeps its
 // measured `REACHABLE`, and the risk applies only when the verdict layer finds the row reached
 // through the Keychain lookup alone (appliedAcceptedRisks). An unreadable record counts as none.
+
+import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { AGENT_PERMISSION_MODE } from '../agent/claude-argv.ts';
 import { runSandboxProbe } from '../agent/probe.ts';
 import { MATCHER_CLAUDE_VERSION, MATCHER_REVISION } from '../agent/probe-evaluator.ts';
+import { runWorktreeGitProbe } from '../agent/probe-worktree.ts';
 import { type AgentRunner, ClaudeCliRunner, sessionModeEvidence } from '../agent/runner.ts';
 import { printable } from '../cli/trust.ts';
 import { checkIntegrity, INTEGRITY_REFUSAL } from '../core/approvals/integrity.ts';
 import { readTrust, type TrustResult } from '../core/approvals/trust-store.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
-import { homePaths, hostDir } from '../core/host/home.ts';
+import { homePaths, hostDir, readConfig } from '../core/host/home.ts';
 import { PROBE_OUTSIDE_DIR_RE } from '../core/ids.ts';
 import { type AcceptedRisk, readAcceptedRisks } from '../core/security/accepted-risks.ts';
 import {
@@ -52,6 +55,7 @@ import {
   reportVerdict,
   type SandboxIsolationCheck,
 } from '../core/security/doctor-report.ts';
+import { readProjectSettings } from '../core/security/project-settings.ts';
 import {
   judgeSandboxIsolation,
   type SettingsSourceRead,
@@ -61,6 +65,7 @@ import {
   type ProtectedPaths,
   resolveAbsolute,
 } from '../core/security/sandbox-settings.ts';
+import { runGateSandboxProbe } from './gate-sandbox-probe.ts';
 import {
   defaultSettingsSourceLocations,
   readSettingsSources,
@@ -85,26 +90,71 @@ export interface ProbeSummary {
 export type DoctorProbe = (input: {
   protectedPaths: ProtectedPaths;
   logDir: string;
+  /** The host's working tree root (the worktree row makes a temporary linked worktree of it). */
+  hostRoot: string;
+  /** The console's port (the gate-sandbox row checks a gate cannot reach it). */
+  consolePort: number;
   /** The runner to launch sessions with; the daemon passes one that goes through the governor. */
   runner?: AgentRunner;
 }) => Promise<ProbeSummary>;
 
 /** The live probe: two headless claude sessions through the production sandbox settings. */
-export const liveSandboxProbe: DoctorProbe = async ({ protectedPaths, logDir, runner: given }) => {
+export const liveSandboxProbe: DoctorProbe = async ({
+  protectedPaths,
+  logDir,
+  hostRoot,
+  consolePort,
+  runner: given,
+}) => {
   const runner = given ?? new ClaudeCliRunner();
   const outcome = await runSandboxProbe({ protectedPaths, runner, logDir });
+  // The build-lane rows (doctor: Build-lane probe rows). A row that cannot run reads Not checked.
+  const notChecked = (id: 'worktree-git' | 'gate-sandbox', error: unknown): ProbeTarget => ({
+    id,
+    label: id,
+    mode: 'write',
+    result: 'not-checked',
+    evidence: `The probe could not run: ${printableError(error)}`,
+    steps: [],
+    leaks: [],
+    trusted: false,
+  });
+  const worktree = await runWorktreeGitProbe({
+    runner,
+    protectedPaths,
+    hostRoot,
+    nonce: randomBytes(16).toString('hex'),
+    logDir,
+  }).catch((error: unknown) => notChecked('worktree-git', error));
+  const gate = await runGateSandboxProbe({ protectedPaths, consolePort }).catch((error: unknown) =>
+    notChecked('gate-sandbox', error),
+  );
   return {
-    targets: outcome.targets,
+    targets: [...outcome.targets, worktree, gate],
     claudeVersion: outcome.claudeVersion,
     staleLeftovers: outcome.staleLeftovers,
     agentSession: sessionModeEvidence(outcome.treatment),
   };
 };
 
+/** One line, no control characters, at most 200 characters. */
+function printableError(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const line = text.split('\n')[0] ?? '';
+  return [...line]
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 0x20 || code === 0x7f ? ' ' : char;
+    })
+    .join('')
+    .slice(0, 200);
+}
+
 export interface DoctorHost {
   id: string;
   root: string;
   gitCommonDir: string;
+  baseBranch: string;
 }
 
 export interface RunDoctorInput {
@@ -234,6 +284,7 @@ async function sandboxIsolationCheck(
   protectedPaths: ProtectedPaths,
   locations: SettingsSourceLocations,
   homeDir: string,
+  host: DoctorHost,
 ): Promise<SandboxIsolationCheck> {
   let launchSettings: unknown;
   try {
@@ -248,7 +299,11 @@ async function sandboxIsolationCheck(
     };
     return judgeSandboxIsolation([launch], homeDir);
   }
-  return judgeSandboxIsolation(await readSettingsSources({ launchSettings, locations }), homeDir);
+  const project = await readProjectSettings(host.root, host.baseBranch);
+  return judgeSandboxIsolation(
+    await readSettingsSources({ launchSettings, locations, project }),
+    homeDir,
+  );
 }
 
 /** Writes `hosts/{id}/doctor.json` (dir 0700, file 0600, atomic rename). */
@@ -295,6 +350,7 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     protectedPaths,
     input.settingsLocations ?? defaultSettingsSourceLocations(homeDir),
     homeDir,
+    host,
   );
 
   let probe: ProbeTarget[];
@@ -305,6 +361,8 @@ export async function runDoctor(input: RunDoctorInput): Promise<DoctorRun> {
     const summary = await (input.probe ?? liveSandboxProbe)({
       protectedPaths,
       logDir,
+      hostRoot: host.root,
+      consolePort: readConfig(home).port,
       ...(input.runner === undefined ? {} : { runner: input.runner }),
     });
     claudeVersion = summary.claudeVersion;
@@ -453,7 +511,13 @@ export function doctorVerdict(
   const verdict = reportVerdict(report, recorded);
   if (verdict === 'pass') return 'Agents are boxed in';
   if (verdict === 'accepted-risk') return ACCEPTED_RISK_VERDICT;
-  const reachable = report.probe.filter((row) => row.result === 'reachable').length;
+  // A row an applied accepted risk covers is not what failed: leave it out of the counts.
+  const covered = new Set<string>(
+    appliedAcceptedRisks(report, recorded).map((risk) => risk.target),
+  );
+  const reachable = report.probe.filter(
+    (row) => row.result === 'reachable' && !covered.has(row.id),
+  ).length;
   if (reachable > 0) {
     return `Agent sandbox is not confining sessions: ${reachable} ${plural(reachable, 'target was', 'targets were')} reachable.`;
   }
@@ -466,6 +530,7 @@ export function doctorVerdict(
     (isolationFailed ? 1 : 0) +
     (modeFailed ? 1 : 0);
   const failedTargets = PROBE_TARGET_IDS.filter((id) => {
+    if (covered.has(id)) return false;
     const rows = report.probe.filter((row) => row.id === id);
     return rows.length === 0 || rows.some((row) => row.result !== 'blocked');
   }).length;

@@ -38,7 +38,8 @@
 import { z } from 'zod';
 import { AcceptedRisk } from './accepted-risks.ts';
 
-export const PROBE_TARGET_IDS = [
+/** The rows the two differential probe sessions judge (probe.ts, probe-evaluator.ts). */
+export const SESSION_PROBE_TARGET_IDS = [
   'signing-key',
   'ssh',
   'gh',
@@ -48,6 +49,17 @@ export const PROBE_TARGET_IDS = [
   'git-info',
   'outside-workdir',
   'credential-env',
+] as const;
+
+/**
+ * Every probe row a passing doctor needs: the session rows, then the build-lane rows (doctor:
+ * Build-lane probe rows): `worktree-git` (probe-worktree.ts) and `gate-sandbox`
+ * (doctor/gate-sandbox-probe.ts). A report from before them has neither, so it does not pass.
+ */
+export const PROBE_TARGET_IDS = [
+  ...SESSION_PROBE_TARGET_IDS,
+  'worktree-git',
+  'gate-sandbox',
 ] as const;
 
 export const ProbeTargetId = z.enum(PROBE_TARGET_IDS);
@@ -64,6 +76,8 @@ export const PROBE_TARGET_LABELS: Readonly<Record<ProbeTargetId, string>> = {
   'git-info': '.git/info',
   'outside-workdir': 'Files outside the working folder',
   'credential-env': 'Credentials in the shell environment',
+  'worktree-git': '{host} git state from a worktree',
+  'gate-sandbox': 'Gate sandbox',
 };
 
 export function probeTargetLabel(id: ProbeTargetId, hostName: string): string {
@@ -75,6 +89,8 @@ const WRITE_TARGETS: ReadonlySet<ProbeTargetId> = new Set([
   'git-hooks',
   'git-info',
   'outside-workdir',
+  'worktree-git',
+  'gate-sandbox',
 ]);
 
 /** Whether a probe target tests reading a protected location or writing one. */
@@ -123,6 +139,8 @@ export const ProbeStepOperation = z.enum([
   'read-before-edit',
   'edit',
   'env-shape',
+  'update-ref',
+  'connect',
 ]);
 export type ProbeStepOperation = z.infer<typeof ProbeStepOperation>;
 
@@ -206,6 +224,7 @@ export const SandboxIsolationSource = z.object({
   kind: z.enum([
     'launch',
     'user',
+    'project',
     'server-managed-cache',
     'managed-file',
     'managed-drop-in',

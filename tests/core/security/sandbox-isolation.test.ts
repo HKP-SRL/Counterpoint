@@ -43,6 +43,7 @@ const SOURCE_OF_KIND: Record<
   { label: string; path: string }
 > = {
   user: { label: 'user settings', path: `${HOME}/.claude/settings.json` },
+  project: { label: 'project settings', path: '.claude/settings.json' },
   'server-managed-cache': {
     label: 'server-managed settings cache',
     path: `${HOME}/.claude/remote-settings.json`,

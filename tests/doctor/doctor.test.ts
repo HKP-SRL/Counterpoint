@@ -282,14 +282,18 @@ describe('counterpoint doctor', () => {
     );
     expect(probeGroup[1]).toMatch(/^ {2}PASS {9}Sandbox isolation settings: /);
     const probeRows = probeGroup.slice(2);
-    expect(probeRows).toHaveLength(9);
+    expect(probeRows).toHaveLength(11);
     for (const row of probeRows) expect(row).toMatch(/^ {2}BLOCKED {5}/);
-    expect(probeRows.at(-2)).toBe(
+    expect(probeRows.at(-4)).toBe(
       '  BLOCKED      Files outside the working folder: evidence for outside-workdir',
     );
-    expect(probeRows.at(-1)).toBe(
+    expect(probeRows.at(-3)).toBe(
       '  BLOCKED      Credentials in the shell environment: evidence for credential-env',
     );
+    expect(probeRows.at(-2)).toMatch(
+      /^ {2}BLOCKED {6}\S+ git state from a worktree: evidence for worktree-git$/,
+    );
+    expect(probeRows.at(-1)).toBe('  BLOCKED      Gate sandbox: evidence for gate-sandbox');
     expect(run.out).toContain('Agents are boxed in');
   });
 
@@ -445,7 +449,7 @@ describe('counterpoint doctor', () => {
       '  NOT CHECKED  Agent permission mode: The probe could not run, so the agent permission mode was not seen.',
     );
     const rows = probeGroup.slice(2);
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(11);
     for (const row of rows) {
       expect(row).toMatch(/^ {2}NOT CHECKED {2}.*The probe could not run: claude was not found/);
     }
@@ -856,12 +860,12 @@ describe('counterpoint doctor', () => {
         '               Fix: Remove sandbox.filesystem.disabled from ~/.claude/settings.json, then run "counterpoint doctor" again.',
       );
       const probeRows = rows.slice(3);
-      expect(probeRows).toHaveLength(9);
+      expect(probeRows).toHaveLength(11);
       for (const row of probeRows) {
         expect(row).toMatch(/^ {2}NOT CHECKED {2}/);
         expect(row).toContain(`: ${NOT_COUNTED}evidence for `);
       }
-      expect(run.out).toContain('10 checks did not pass.');
+      expect(run.out).toContain('12 checks did not pass.');
 
       const report = readReport(host.home);
       expect(report.sandboxIsolation?.result).toBe('fail');
@@ -893,7 +897,7 @@ describe('counterpoint doctor', () => {
       expect(run.code).toBe(1);
       const rows = group(run.out, 'Sandbox probe').slice(3);
       expect(rows).toContain('  REACHABLE    ~/.ssh: evidence for ssh');
-      expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(8);
+      expect(rows.filter((row) => /^ {2}NOT CHECKED {2}/.test(row))).toHaveLength(10);
       expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
       const ssh = readReport(host.home).probe.find((row) => row.id === 'ssh');
       expect(ssh).toMatchObject({ result: 'reachable', evidence: 'evidence for ssh' });
@@ -907,7 +911,7 @@ describe('counterpoint doctor', () => {
       expect(rows[1]).toBe(
         '  PASS         Sandbox isolation settings: No settings source Claude Code loads for agent sessions turns sandbox isolation off or widens it (1 checked: launch settings).',
       );
-      expect(rows.slice(2)).toHaveLength(9);
+      expect(rows.slice(2)).toHaveLength(11);
       for (const row of rows.slice(2)) expect(row).toMatch(/^ {2}BLOCKED {5}/);
       const report = readReport(host.home);
       expect(report.sandboxIsolation?.result).toBe('pass');
@@ -915,10 +919,43 @@ describe('counterpoint doctor', () => {
         [
           ['launch', 'read'],
           ['user', 'absent'],
+          ['project', 'absent'],
           ['server-managed-cache', 'absent'],
         ],
       );
       expect(run.out).toContain('Agents are boxed in');
+    });
+
+    it("fails on a widening in the host's committed .claude/settings.json, naming it", async () => {
+      const host = await scratchHost();
+      writeFileIn(
+        host.root,
+        '.claude/settings.json',
+        JSON.stringify({ sandbox: { filesystem: { allowWrite: ['~'] } } }),
+      );
+      await commitAll(host.root);
+      const run = await runDoctorCommand(host, settingsHome());
+      expect(run.code).toBe(1);
+      const report = readReport(host.home);
+      expect(report.sandboxIsolation?.result).toBe('fail');
+      const project = report.sandboxIsolation?.sources.find((source) => source.kind === 'project');
+      expect(project).toMatchObject({ state: 'read', findings: ['sandbox.filesystem.allowWrite'] });
+      expect(report.sandboxIsolation?.fix).toMatch(
+        /committed \.claude\/settings\.json on the base branch/,
+      );
+    });
+
+    it('fails the integrity check when a committed project hook appears after the baseline', async () => {
+      const host = await scratchHost();
+      writeFileIn(
+        host.root,
+        '.claude/settings.json',
+        JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }),
+      );
+      await commitAll(host.root);
+      const run = await runDoctorCommand(host, settingsHome());
+      expect(run.code).toBe(1);
+      expect(readReport(host.home).integrity.result).toBe('fail');
     });
 
     it('prints an older report without the check as not recorded, and fails it', async () => {
@@ -1185,7 +1222,7 @@ describe('the accepted risk gh-keychain', () => {
       probe: fakeProbe({ gh: 'reachable', ssh: 'reachable' }),
     });
     expect(run.code).toBe(1);
-    expect(run.out).toContain('Agent sandbox is not confining sessions: 2 targets were reachable.');
+    expect(run.out).toContain('Agent sandbox is not confining sessions: 1 target was reachable.');
     expect(run.out).toContain(APPROVALS);
   });
 

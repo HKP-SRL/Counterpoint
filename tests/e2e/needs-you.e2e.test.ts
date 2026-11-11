@@ -125,6 +125,9 @@ const PROBE = [
   ['outside-workdir', 'Files outside the working folder', 'write'],
   // The ninth target, so this all-pass report still passes reportVerdict.
   ['credential-env', 'Credentials in the shell environment', 'read'],
+  // The build-lane rows (first-unattended-run), so an all-pass report still passes.
+  ['worktree-git', 'host git state from a worktree', 'write'],
+  ['gate-sandbox', 'Gate sandbox', 'write'],
 ] as const;
 
 /**

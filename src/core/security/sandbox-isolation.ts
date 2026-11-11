@@ -8,13 +8,15 @@
 // that an agent session loads turns sandbox isolation off. This module is the pure judge; the
 // reader that finds and reads each source is src/doctor/settings-sources.ts.
 //
-// Sources an agent session loads (Counterpoint launches `claude --setting-sources user --settings
-// <launch>`, claude-argv.ts):
+// Sources an agent session loads (Counterpoint launches `claude --setting-sources user,project
+// --settings <launch>`, claude-argv.ts):
 // - launch: `--settings` "applies above your user, project, and local files and below managed
 //   settings" (https://code.claude.com/docs/en/settings, "Change a setting for one session").
 // - user: `~/.claude/settings.json`; `--setting-sources` is "Comma-separated list of setting
 //   sources to load (user, project, local)" (`claude --help`, 2.1.321). agentEnv passes HOME and
 //   not CLAUDE_CONFIG_DIR, so the session reads `{HOME}/.claude`.
+// - project: the host's committed `.claude/settings.json`, read from git at the base tip
+//   (project-settings.ts). Builders run in a worktree of that branch and cannot edit `.claude/`.
 // - server-managed cache: "A startup that runs on the cache at `~/.claude/remote-settings.json`"
 //   (https://code.claude.com/docs/en/server-managed-settings).
 // - managed file and drop-ins: "`managed-settings.json`, an optional `managed-settings.d/`
@@ -48,6 +50,7 @@ import type { SandboxIsolationCheck } from './doctor-report.ts';
 export const SETTINGS_SOURCE_KINDS = [
   'launch',
   'user',
+  'project',
   'server-managed-cache',
   'managed-file',
   'managed-drop-in',
@@ -386,6 +389,9 @@ function findingFix(finding: Finding, homeDir: string): string {
   }
   if (source.kind === 'user') {
     return `Remove ${key} from ${where}, then run "counterpoint doctor" again.`;
+  }
+  if (source.kind === 'project') {
+    return `Remove ${key} from the committed ${where} on the base branch (builders load it), then run "counterpoint doctor" again.`;
   }
   const at = source.path === null ? label : `${label} (${where})`;
   return `Ask your administrator to remove ${key} from ${at}, then run "counterpoint doctor" again.`;

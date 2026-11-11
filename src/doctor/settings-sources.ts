@@ -30,6 +30,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
+import {
+  PROJECT_SETTINGS_PATH,
+  type ProjectSettingsRead,
+} from '../core/security/project-settings.ts';
 import type { SettingsSourceRead } from '../core/security/sandbox-isolation.ts';
 
 const MAX_SETTINGS_BYTES = 1024 * 1024;
@@ -192,6 +196,11 @@ export interface ReadSettingsSourcesInput {
   /** The `--settings` value the agent session is launched with. */
   launchSettings: unknown;
   locations: SettingsSourceLocations;
+  /**
+   * The host's committed `.claude/settings.json` (read from git at the base tip). Builders load
+   * it (`--setting-sources user,project`), so it is judged like the user file. Omitted: not read.
+   */
+  project?: ProjectSettingsRead;
 }
 
 /** Every settings source an agent session loads, in a fixed order, launch settings first. */
@@ -215,6 +224,19 @@ export async function readSettingsSources(
     path: userPath,
     ...readJsonSettingsFile(userPath),
   });
+  if (input.project !== undefined) {
+    const project = input.project;
+    sources.push({
+      kind: 'project',
+      label: 'project settings',
+      path: PROJECT_SETTINGS_PATH,
+      ...(project.state === 'absent'
+        ? { state: 'absent' as const }
+        : project.state === 'read'
+          ? { state: 'read' as const, settings: project.settings }
+          : { state: 'unreadable' as const, problem: project.problem }),
+    });
+  }
   const cachePath = join(locations.userConfigDir, 'remote-settings.json');
   sources.push({
     kind: 'server-managed-cache',

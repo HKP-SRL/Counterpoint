@@ -74,6 +74,9 @@ const PROBE = [
   // Trust page lists all nine, so an all-pass report shows Blocked 9 times.
   ['outside-workdir', 'Files outside the working folder', 'write'],
   ['credential-env', 'Credentials in the shell environment', 'read'],
+  // The build-lane rows (first-unattended-run), so an all-pass report still passes.
+  ['worktree-git', 'host git state from a worktree', 'write'],
+  ['gate-sandbox', 'Gate sandbox', 'write'],
 ] as const;
 
 type ProbeFixtureRow = {
@@ -491,7 +494,7 @@ describe('changes and trust pages', () => {
 
     writeReport(doctorReport(hostId));
     await nudgeUntil('Agents are boxed in');
-    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(9);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(11);
     // 3 tools, 4 signing-key rows and the 2 session checks.
     expect(await main.getByText('Pass', { exact: true }).count()).toBe(9);
     expect(await main.getByText('This check is', { exact: false }).count()).toBe(0);
@@ -533,7 +536,9 @@ describe('changes and trust pages', () => {
     expect(firstLabels[0]).toContain('Agent permission mode');
     expect(firstLabels[1]).toContain('Sandbox isolation settings');
     expect(firstLabels[2]).toContain('Signing key');
-    expect(firstLabels.at(-1)).toContain('Credentials in the shell environment');
+    expect(firstLabels.at(-3)).toContain('Credentials in the shell environment');
+    expect(firstLabels.at(-2)).toContain('git state from a worktree');
+    expect(firstLabels.at(-1)).toContain('Gate sandbox');
 
     writeReport(doctorReport(hostId, { checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }));
     await nudgeUntil(/^This check is 25 hours old$/);
@@ -577,10 +582,15 @@ describe('changes and trust pages', () => {
 
   it("shows an eight-row report's missing credential-env row as Not checked", async () => {
     // A report written before the credentials row existed: both session checks pass, eight rows,
-    // all blocked.
+    // all blocked (and no build-lane rows either).
     const main = await showTrust(
-      doctorReport(hostId, { probe: (rows) => rows.filter((row) => row.id !== 'credential-env') }),
-      '1 check did not pass',
+      doctorReport(hostId, {
+        probe: (rows) =>
+          rows.filter(
+            (row) => !['credential-env', 'worktree-git', 'gate-sandbox'].includes(row.id),
+          ),
+      }),
+      '3 checks did not pass',
     );
     expect(
       await trustRow('Credentials in the shell environment')
@@ -588,7 +598,7 @@ describe('changes and trust pages', () => {
         .count(),
     ).toBe(1);
     expect(await main.getByText('Blocked', { exact: true }).count()).toBe(8);
-    expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('3 checks did not pass', { exact: true }).count()).toBe(1);
     expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
   });
 
@@ -600,7 +610,7 @@ describe('changes and trust pages', () => {
     const modeRow = trustRow('Agent permission mode');
     expect(await modeRow.getByText('Not checked', { exact: true }).count()).toBe(1);
     expect(await modeRow.getByText(/Not recorded in this report/).count()).toBe(1);
-    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(9);
+    expect(await main.getByText('Blocked', { exact: true }).count()).toBe(11);
     expect(await main.getByText('1 check did not pass', { exact: true }).count()).toBe(1);
     expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
   });
@@ -643,14 +653,14 @@ describe('changes and trust pages', () => {
             evidence: `${NOT_COUNTED}${row.evidence}`,
           })),
       }),
-      '10 checks did not pass',
+      '12 checks did not pass',
     );
     const isolationRow = trustRow('Sandbox isolation settings');
     expect(await isolationRow.getByText('Fail', { exact: true }).count()).toBe(1);
     expect(await isolationRow.getByText(ISOLATION_FAIL, { exact: true }).count()).toBe(1);
     expect(await isolationRow.getByText(`Fix: ${ISOLATION_FIX}`, { exact: true }).count()).toBe(1);
     expect(await main.getByText('Blocked', { exact: true }).count()).toBe(0);
-    expect(await main.getByText('10 checks did not pass', { exact: true }).count()).toBe(1);
+    expect(await main.getByText('12 checks did not pass', { exact: true }).count()).toBe(1);
     expect(await main.getByText('Agents are boxed in', { exact: true }).count()).toBe(0);
   });
 
@@ -685,7 +695,7 @@ describe('changes and trust pages', () => {
       expect(await ghRow.getByText(GH_COVERED_SUPPORTING, { exact: true }).count()).toBe(1);
       expect(await ghRow.getByText('cannot read', { exact: true }).count()).toBe(0);
       // Every other probe row renders as before.
-      expect(await main.getByText('Blocked', { exact: true }).count()).toBe(8);
+      expect(await main.getByText('Blocked', { exact: true }).count()).toBe(10);
       expect(
         await trustRow('Credentials in the shell environment')
           .getByText('cannot read', { exact: true })

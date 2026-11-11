@@ -26,18 +26,28 @@ async function freshRepo(): Promise<{
   dir: string;
   gitDir: string;
   home: string;
-  host: { id: string; gitCommonDir: string };
+  host: { id: string; gitCommonDir: string; root: string; baseBranch: string };
 }> {
   const dir = makeScratchDir('irepo');
   await gitIn(dir, ['-c', 'init.defaultBranch=master', 'init', '-q']);
   const gitDir = join(dir, '.git');
   const home = makeScratchDir('ihome');
-  return { dir, gitDir, home, host: { id: 'cena', gitCommonDir: gitDir } };
+  return {
+    dir,
+    gitDir,
+    home,
+    host: { id: 'cena', gitCommonDir: gitDir, root: dir, baseBranch: 'master' },
+  };
+}
+
+/** The snapshot `trust` takes: the git surface plus the committed project settings. */
+function snap(repo: { gitDir: string; dir: string }) {
+  return snapshotIntegrity(repo.gitDir, { project: { root: repo.dir, baseBranch: 'master' } });
 }
 
 async function baselined() {
   const repo = await freshRepo();
-  writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+  writeBaseline(repo.home, repo.host.id, await snap(repo));
   return repo;
 }
 
@@ -98,7 +108,7 @@ describe('checkIntegrity', () => {
   it('is no-baseline before the owner trusts the host, then ok after writeBaseline', async () => {
     const repo = await freshRepo();
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'no-baseline' });
-    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
     expect(readBaseline(repo.home, repo.host.id)?.schema).toBe('counterpoint/integrity/v2');
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
   });
@@ -164,7 +174,7 @@ describe('checkIntegrity', () => {
     // A relative include resolves against the including file's directory (.git/).
     writeFileIn(repo.gitDir, 'extra.inc', '[user]\n\tname = a\n');
     await gitIn(repo.dir, ['config', 'include.path', 'extra.inc']);
-    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
     writeFileIn(repo.gitDir, 'extra.inc', '[core]\n\tpager = sh -c id\n');
     const result = await checkIntegrity(repo.home, repo.host);
@@ -185,7 +195,7 @@ describe('checkIntegrity', () => {
     writeFileIn(dir, 'a.inc', '[include]\n\tpath = b.inc\n');
     writeFileIn(dir, 'b.inc', '[user]\n\tname = b\n');
     await gitIn(repo.dir, ['config', 'include.path', join(dir, 'a.inc')]);
-    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
     expect(Object.keys(readBaseline(repo.home, repo.host.id)?.includes ?? {})).toEqual([
       join(dir, 'a.inc'),
       join(dir, 'b.inc'),
@@ -213,7 +223,7 @@ describe('checkIntegrity', () => {
     await gitIn(repo.dir, ['config', 'extensions.worktreeConfig', 'true']);
     const wt = join(makeScratchDir('iwt'), 'wt');
     await gitIn(repo.dir, ['worktree', 'add', '-q', '--detach', wt]);
-    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
     expect(await checkIntegrity(repo.home, repo.host)).toEqual({ state: 'ok' });
     await gitIn(wt, ['config', '--worktree', 'pager.log', 'sh -c id']);
     const result = await checkIntegrity(repo.home, repo.host);
@@ -231,7 +241,7 @@ describe('checkIntegrity', () => {
 
   it('reads a v1 baseline as having no worktree configs or include targets', async () => {
     const repo = await freshRepo();
-    const v2 = await snapshotIntegrity(repo.gitDir);
+    const v2 = await snap(repo);
     const { worktreeConfigs: _w, includes: _i, ...rest } = v2;
     const dir = join(repo.home, 'hosts', repo.host.id);
     writeFileIn(
@@ -248,7 +258,7 @@ describe('checkIntegrity', () => {
   it('reports a changed remote.origin.url with before and after', async () => {
     const repo = await freshRepo();
     await gitIn(repo.dir, ['remote', 'add', 'origin', 'git@github.com:owner/cena.git']);
-    writeBaseline(repo.home, repo.host.id, await snapshotIntegrity(repo.gitDir));
+    writeBaseline(repo.home, repo.host.id, await snap(repo));
     await gitIn(repo.dir, ['remote', 'set-url', 'origin', 'git@evil.example:x.git']);
     const result = await checkIntegrity(repo.home, repo.host);
     expect(result).toEqual({

@@ -26,11 +26,11 @@ import {
 import { parseStreamJson, type StreamEvent, sessionModeEvidence } from '../../src/agent/runner.ts';
 import {
   judgeAgentMode,
-  PROBE_TARGET_IDS,
   type ProbeResult,
   ProbeTarget,
   type ProbeTargetId,
   reachedOnlyByKeychain,
+  SESSION_PROBE_TARGET_IDS,
 } from '../../src/core/security/doctor-report.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -137,6 +137,8 @@ function load(name: string): StreamEvent[] {
   return parseStreamJson(fixtureText(name));
 }
 
+/** The nine rows the differential sessions judge. */
+type SessionProbeTargetId = Exclude<ProbeTargetId, 'worktree-git' | 'gate-sandbox'>;
 /** A JSON-level copy of a stream with every occurrence of `from` replaced by `to`. */
 function replaced(name: string, from: string, to: string): StreamEvent[] {
   return parseStreamJson(fixtureText(name).split(from).join(to));
@@ -146,7 +148,7 @@ function results(targets: readonly ProbeTarget[]): Record<string, ProbeResult> {
   return Object.fromEntries(targets.map((t) => [t.id, t.result]));
 }
 
-const LEGACY_EXPECTED: Record<ProbeTargetId, ProbeResult> = {
+const LEGACY_EXPECTED: Record<SessionProbeTargetId, ProbeResult> = {
   'signing-key': 'blocked',
   ssh: 'blocked',
   // The real finding of the first live run: the temporary Keychain canary item was readable from
@@ -399,7 +401,7 @@ describe('evaluateProbe', () => {
 
   it('returns one schema-valid row per probe target, in order, each with evidence', () => {
     const targets = evaluateProbe(plan, treatment, control, options);
-    expect(targets.map((t) => t.id)).toEqual([...PROBE_TARGET_IDS]);
+    expect(targets.map((t) => t.id)).toEqual([...SESSION_PROBE_TARGET_IDS]);
     for (const target of targets) {
       expect(ProbeTarget.parse(target)).toEqual(target);
       expect(target.evidence.length).toBeGreaterThan(0);
@@ -949,7 +951,7 @@ describe('the outside-workdir row (deterministic refusals only)', () => {
     );
     const r = results(targets);
     expect(r['outside-workdir']).toBe('not-checked');
-    for (const id of PROBE_TARGET_IDS.filter((t) => t !== 'outside-workdir')) {
+    for (const id of SESSION_PROBE_TARGET_IDS.filter((t) => t !== 'outside-workdir')) {
       expect(r[id], id).toBe('blocked');
     }
   });
@@ -1581,7 +1583,7 @@ describe('isCredentialName', () => {
 // --- The refrozen live pair (claude 2.1.322, auto mode, scrub opted out) ----------------------
 
 /** The matrix the nine-row live run printed (.tmp/live-probe/targets.json, kept in its evidence). */
-const LIVE_PRINTED: Record<ProbeTargetId, ProbeResult> = {
+const LIVE_PRINTED: Record<SessionProbeTargetId, ProbeResult> = {
   'signing-key': 'blocked',
   ssh: 'blocked',
   // Reached only through the Keychain lookup, the owner-accepted gh-keychain residual.
@@ -1785,7 +1787,7 @@ describe('structured evidence on the real streams', () => {
   it('gives every Blocked row of the refrozen pair trusted: true and one record per planned step', () => {
     const blocked = liveTargets.filter((t) => t.result === 'blocked');
     expect(blocked.map((t) => t.id)).toEqual(
-      PROBE_TARGET_IDS.filter((id) => LIVE_PRINTED[id] === 'blocked'),
+      SESSION_PROBE_TARGET_IDS.filter((id) => LIVE_PRINTED[id] === 'blocked'),
     );
     for (const target of blocked) {
       expect(target.trusted, target.id).toBe(true);

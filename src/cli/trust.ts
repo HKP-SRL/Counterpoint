@@ -214,7 +214,7 @@ export function describeChange(change: IntegrityChange): string {
 
 /**
  * The full execution-capable surface, grouped config / hooks / info / config.worktree / worktree
- * configs / included files.
+ * configs / included files / project settings.
  */
 export function formatIntegritySnapshot(snapshot: IntegritySnapshot): string[] {
   const lines: string[] = ['config'];
@@ -237,6 +237,9 @@ export function formatIntegritySnapshot(snapshot: IntegritySnapshot): string[] {
   for (const [area, record] of [
     ['worktree configs', snapshot.worktreeConfigs],
     ['included files', snapshot.includes],
+    // Keys of the committed .claude/settings.json that run programs or shape sessions, by digest;
+    // the values themselves are in the file on the base branch (env may hold secrets).
+    ['project settings (.claude/settings.json on the base branch)', snapshot.projectSettings],
   ] as const) {
     lines.push(area);
     const entries = Object.entries(record);
@@ -265,7 +268,9 @@ export async function trustHostCommand(
     return found.code;
   }
   const { host } = found;
-  const snapshot = await snapshotIntegrity(host.gitCommonDir);
+  const snapshot = await snapshotIntegrity(host.gitCommonDir, {
+    project: { root: host.root, baseBranch: host.baseBranch },
+  });
 
   let baseline: IntegritySnapshot | null = null;
   try {

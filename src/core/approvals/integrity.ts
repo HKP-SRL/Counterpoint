@@ -13,6 +13,11 @@
 // names, so a doctor probe killed midway cannot make approve refuse, while any real hook name is
 // always captured. The owner accepts a baseline with `counterpoint trust {host}`;
 // approve and doctor refuse when the current snapshot differs.
+//
+// The host's committed `.claude/settings.json` (at the base branch tip) joins the surface: builder
+// sessions load it (`--setting-sources user,project`), and its hooks, helpers, plugins and env run
+// or shape what runs as the owner (project-settings.ts). Only its execution-capable keys are
+// recorded, by digest. The field is additive: a baseline from before it reads as none.
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -33,6 +38,7 @@ import { writeFileAtomic0600 } from '../fs/atomic.ts';
 import { runGit } from '../git/run.ts';
 import { hostDir } from '../host/home.ts';
 import { PROBE_GIT_ARTIFACT_RE } from '../ids.ts';
+import { describeProjectSettings, readProjectSettings } from '../security/project-settings.ts';
 
 const SCHEMA = 'counterpoint/integrity/v2';
 /** The first format: no worktree configs, no include targets. Read as v2 with both empty. */
@@ -123,10 +129,19 @@ export interface IntegritySnapshot {
    * through symlinks, `missing`, `other` or `unresolved` (a `~user/` path).
    */
   includes: Record<string, string>;
+  /** Execution-capable key of the committed `.claude/settings.json` → `sha256:…` of its value. */
+  projectSettings: Record<string, string>;
 }
 
 export interface IntegrityChange {
-  area: 'config' | 'hooks' | 'info' | 'config.worktree' | 'worktree config' | 'include';
+  area:
+    | 'config'
+    | 'hooks'
+    | 'info'
+    | 'config.worktree'
+    | 'worktree config'
+    | 'include'
+    | 'project settings';
   name: string;
   before: string | null;
   after: string | null;
@@ -140,6 +155,7 @@ const SnapshotSchema = z.object({
   configWorktree: z.string().nullable(),
   worktreeConfigs: z.record(z.string(), z.string()),
   includes: z.record(z.string(), z.string()),
+  projectSettings: z.record(z.string(), z.string()).default({}),
 });
 
 /**
@@ -161,6 +177,7 @@ const StoredSchema = z.union([
       schema: SCHEMA,
       worktreeConfigs: {} as Record<string, string>,
       includes: {} as Record<string, string>,
+      projectSettings: {} as Record<string, string>,
     })),
 ]);
 
@@ -311,7 +328,7 @@ async function describeIncludes(
 /** Snapshots the execution-capable surface of the repository whose common git dir is given. */
 export async function snapshotIntegrity(
   gitCommonDir: string,
-  options: { homeDir?: string } = {},
+  options: { homeDir?: string; project?: { root: string; baseBranch: string } } = {},
 ): Promise<IntegritySnapshot> {
   const isProbe = (name: string) => PROBE_GIT_ARTIFACT_RE.test(name);
   const homeDir = options.homeDir ?? homedir();
@@ -334,6 +351,12 @@ export async function snapshotIntegrity(
     configWorktree: describeEntry(join(gitCommonDir, 'config.worktree')),
     worktreeConfigs,
     includes: await describeIncludes(gitCommonDir, configFiles, homeDir),
+    projectSettings:
+      options.project === undefined
+        ? {}
+        : describeProjectSettings(
+            await readProjectSettings(options.project.root, options.project.baseBranch),
+          ),
   };
 }
 
@@ -373,6 +396,7 @@ export function compareIntegrity(
   compareRecords('info', baseline.info, current.info, changes);
   compareRecords('worktree config', baseline.worktreeConfigs, current.worktreeConfigs, changes);
   compareRecords('include', baseline.includes, current.includes, changes);
+  compareRecords('project settings', baseline.projectSettings, current.projectSettings, changes);
   if (baseline.configWorktree !== current.configWorktree) {
     changes.push({
       area: 'config.worktree',
@@ -428,11 +452,16 @@ export type IntegrityState =
 /** Compares the host's current snapshot with its baseline. */
 export async function checkIntegrity(
   home: string,
-  host: { id: string; gitCommonDir: string },
+  host: { id: string; gitCommonDir: string; root: string; baseBranch: string },
 ): Promise<IntegrityState> {
   const baseline = readBaseline(home, host.id);
   if (baseline === null) return { state: 'no-baseline' };
-  const result = compareIntegrity(baseline, await snapshotIntegrity(host.gitCommonDir));
+  const result = compareIntegrity(
+    baseline,
+    await snapshotIntegrity(host.gitCommonDir, {
+      project: { root: host.root, baseBranch: host.baseBranch },
+    }),
+  );
   return result.ok ? { state: 'ok' } : { state: 'changed', changes: result.changes };
 }
 

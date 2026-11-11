@@ -375,8 +375,17 @@ describe('GET /api/hosts/:hostId/doctor', () => {
     'git-info',
     'outside-workdir',
     'credential-env',
+    'worktree-git',
+    'gate-sandbox',
   ];
-  const WRITE_IDS = new Set(['git-config', 'git-hooks', 'git-info', 'outside-workdir']);
+  const WRITE_IDS = new Set([
+    'git-config',
+    'git-hooks',
+    'git-info',
+    'outside-workdir',
+    'worktree-git',
+    'gate-sandbox',
+  ]);
   const reportFile = () => join(home, 'hosts', hostId, 'doctor.json');
   const report = (overrides: Record<string, unknown> = {}) => {
     const check = (id: string) => ({ id, label: id, result: 'pass', detail: 'ok' });

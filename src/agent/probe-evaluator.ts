@@ -42,7 +42,6 @@
 // evidence: it holds no accepted-risk logic and imports nothing from the accepted-risk record;
 // the verdict layer (src/core/security/doctor-report.ts) decides what an accepted risk covers.
 import {
-  PROBE_TARGET_IDS,
   type ProbeLeak,
   type ProbeResult,
   type ProbeStepClass,
@@ -53,6 +52,7 @@ import {
   type ProbeTargetId,
   probeTargetLabel,
   probeTargetMode,
+  SESSION_PROBE_TARGET_IDS,
 } from '../core/security/doctor-report.ts';
 import { CREDENTIAL_ENV_DENY } from '../core/security/sandbox-settings.ts';
 import {
@@ -566,7 +566,7 @@ function isInsideDir(path: string, dir: string): boolean {
 }
 
 /**
- * Turns both probe sessions into one verdict per probe target, in PROBE_TARGET_IDS order, in the
+ * Turns both probe sessions into one verdict per session probe target, in SESSION_PROBE_TARGET_IDS order, in the
  * doctor report's ProbeTarget shape.
  */
 export function evaluateProbe(
@@ -615,7 +615,7 @@ export function evaluateProbe(
     controlSteps(plan.treatment.steps, tClass) && controlSteps(plan.control.steps, cClass);
   const treatmentRaw = serialise(treatment);
 
-  return PROBE_TARGET_IDS.map((id): ProbeTarget => {
+  return SESSION_PROBE_TARGET_IDS.map((id): ProbeTarget => {
     const readTarget = plan.readTargets.find((t) => t.id === id);
     const writeTarget = plan.writeTargets.find((t) => t.id === id);
     const mode = probeTargetMode(id);

@@ -56,10 +56,10 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 7. Doctor rows for the build lane
 
-- [ ] 7.1 Builder profile: `--setting-sources user,project`; the host's committed `.claude/settings.json` joins the isolation check; its hooks join the integrity baseline
-- [ ] 7.2 Worktree git-access probe row (treatment in a temporary linked worktree of the host must not create a ref; control in a mirror worktree must)
-- [ ] 7.3 Gate-sandbox probe row (`srt` profile: protected read, outside write and console port refused; allowed port reached)
-- [ ] 7.4 Live doctor proof on the owner's machine with the three new rows
+- [x] 7.1 Builder profile: `--setting-sources user,project`; the host's committed `.claude/settings.json` joins the isolation check; its hooks join the integrity baseline
+- [x] 7.2 Worktree git-access probe row (treatment in a temporary linked worktree of the host must not create a ref; control in a mirror worktree must)
+- [x] 7.3 Gate-sandbox probe row (`srt` profile: protected read, outside write and console port refused; allowed port reached)
+- [x] 7.4 Live doctor proof on the owner's machine with the three new rows
 
 ## 8. Worktrees and builder sessions
 
