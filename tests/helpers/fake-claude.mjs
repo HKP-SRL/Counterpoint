@@ -6,7 +6,7 @@
 // and closing stdin letting the current turn finish before exit 0.
 //
 // A user message containing `SLOW` makes the turn wait 30 s (like a long tool call) unless it is
-// interrupted. `CHILD` starts a background `sleep 60` in the same process group and reports its
+// interrupted; a message sent during it ends the turn (delivered mid-turn). `CHILD` starts a background `sleep 60` in the same process group and reports its
 // pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
 // `CP_AGENT_RUN` tag it sees.
 import { spawn } from 'node:child_process';
@@ -57,6 +57,11 @@ function startTurn(text) {
         clearTimeout(timer);
         endTurn('error_during_execution');
       },
+      deliver(message) {
+        clearTimeout(timer);
+        out({ type: 'system', subtype: 'fake_delivered', text: message.slice(0, 80) });
+        endTurn('success');
+      },
     };
     return;
   }
@@ -80,7 +85,10 @@ process.stdin.on('data', (chunk) => {
       });
       busy?.abort();
     } else if (message.type === 'user') {
-      startTurn(String(message.message?.content ?? ''));
+      const text = String(message.message?.content ?? '');
+      // Like claude 2.1.322 (spike 5.1): a message sent mid-turn lands in the same turn.
+      if (busy !== null) busy.deliver(text);
+      else startTurn(text);
     }
   }
 });

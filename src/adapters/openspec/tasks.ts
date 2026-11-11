@@ -76,3 +76,37 @@ export function normalizeTasks(text: string): string {
 
   return `${lines.slice(start, end).join('\n')}\n`;
 }
+
+/** Each task line's description and whether it is done, in file order. */
+function taskLines(text: string): { description: string; done: boolean }[] {
+  const tasks: { description: string; done: boolean }[] = [];
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const match = TASK_LINE_RE.exec(line);
+    if (!match) continue;
+    tasks.push({
+      description: clip(match[2] ?? ''),
+      done: (match[1] ?? '').toLowerCase() === 'x',
+    });
+  }
+  return tasks;
+}
+
+/**
+ * Tasks open in `before` and done in `after`, matched by their text (a task listed twice is
+ * matched once per listing). Returned in `after` order.
+ */
+export function tickedTasks(before: string, after: string): string[] {
+  const open = new Map<string, number>();
+  for (const task of taskLines(before)) {
+    if (!task.done) open.set(task.description, (open.get(task.description) ?? 0) + 1);
+  }
+  const ticked: string[] = [];
+  for (const task of taskLines(after)) {
+    if (!task.done) continue;
+    const left = open.get(task.description) ?? 0;
+    if (left === 0) continue;
+    open.set(task.description, left - 1);
+    ticked.push(task.description);
+  }
+  return ticked;
+}

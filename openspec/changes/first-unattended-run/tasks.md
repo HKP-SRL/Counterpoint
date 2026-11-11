@@ -63,10 +63,10 @@ The first two groups come from the trusted-shell review and must be done before 
 
 ## 8. Worktrees and builder sessions
 
-- [ ] 8.1 Worktree manager: `cp/<change>` from the approved base commit, `<repo>-worktrees/<change>`, lock while held, hardened git only
-- [ ] 8.2 Builder prompt: change, apply workflow, previous handoff, failing gate output
-- [ ] 8.3 Orchestrator commit after each session: collect handoff and assumptions out of the worktree, restore planning files, record task ticks
-- [ ] 8.4 Budget handoff: wrap-up message at the budget, forced end at budget plus margin with a generated handoff
+- [x] 8.1 Worktree manager: `cp/<change>` from the approved base commit, `<repo>-worktrees/<change>`, lock while held, hardened git only
+- [x] 8.2 Builder prompt: change, apply workflow, previous handoff, failing gate output
+- [x] 8.3 Orchestrator commit after each session: collect handoff and assumptions out of the worktree, restore planning files, record task ticks
+- [x] 8.4 Budget handoff: wrap-up message at the budget, forced end at budget plus margin with a generated handoff
 
 ## 9. Gates
 

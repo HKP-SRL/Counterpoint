@@ -114,6 +114,25 @@ export interface FrameworkAdapter {
   snapshot(reader: GitFileReader, commit: string): Promise<ChangeSnapshot>;
   /** The inputs an approval of `changeId` covers. Throws ChangeNotFoundError for an unknown id. */
   approvalInputs(reader: GitFileReader, commit: string, changeId: string): Promise<ApprovalInput[]>;
+  /**
+   * True for a repository-relative path that belongs to the host's planning (build-runs: builds
+   * never write planning files; planning-writes: Builds never write planning files directly).
+   */
+  isPlanningPath(path: string): boolean;
+  /** The repository-relative path of the change's task list, or null when it has none. */
+  tasksPath(change: ChangeFacts): string | null;
+  /**
+   * Tasks that are open in `before` and done in `after` (two versions of the task list), by their
+   * text, in the order they appear in `after`. Used to record a builder's progress.
+   */
+  tickedTasks(before: string, after: string): string[];
+  /** True when two versions of a task list differ only in which boxes are ticked. */
+  sameApartFromTicks(before: string, after: string): boolean;
+  /**
+   * What a builder is told about implementing `change` with the host's own workflow (which
+   * artifacts to follow, which skill or command applies the change, how progress is recorded).
+   */
+  buildInstructions(change: ChangeFacts): string;
 }
 
 export class ChangeNotFoundError extends Error {
