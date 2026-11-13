@@ -153,7 +153,7 @@ describe('question cards through the API', () => {
       state: 'answered',
       answer: 1,
       note: 'the old site',
-      outcome: 'Sent to the session that asked.',
+      outcome: 'Not read yet',
     });
     expect((await post(`/api/hosts/${hostId}/cards/${card.id}/answer`, { option: 0 })).status).toBe(
       409,
@@ -167,5 +167,29 @@ describe('question cards through the API', () => {
     };
     expect(after.cards.map((c) => c.id)).not.toContain(card.id);
     expect(after.answered.map((c) => c.id)).toContain(card.id);
+  });
+});
+
+describe('run notices', () => {
+  it('logs a notice nobody can act on under Done for you, once, instead of a card', async () => {
+    const { CardDesk } = await import('../../src/server/cards.ts');
+    const { syncRunCards } = await import('../../src/build/run-cards.ts');
+    const { listDoneForYou, listWaitingCards } = await import('../../src/core/store/cards.ts');
+    const desk = new CardDesk({ store: db, bus: new EventBus() });
+    insertRun(db, { id: 'run-n', hostId, settings: {}, stopAt: null }, 9000);
+    addRunNotice(db, 'run-n', 'Preview links were slow to appear.');
+    addRunNotice(db, 'run-n', "Your login shell's environment could not be read.");
+    endRun(db, 'run-n', { reason: 'finished', detail: null }, 9500);
+    syncRunCards(desk, hostId);
+    syncRunCards(desk, hostId);
+    const notices = listWaitingCards(db, hostId).filter((card) => card.kind === 'notice');
+    // Only the login shell, which the owner can act on, is a card.
+    expect(notices.map((card) => card.question)).toEqual([
+      "Your login shell couldn't be read. Re-read it now?",
+    ]);
+    const lines = listDoneForYou(db, hostId).map((entry) => entry.text);
+    expect(lines.filter((text) => text.includes('Preview links'))).toEqual([
+      'Run run-n: Preview links were slow to appear.',
+    ]);
   });
 });

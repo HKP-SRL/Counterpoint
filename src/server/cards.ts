@@ -6,6 +6,7 @@
 // source `session`, which the store refuses to give an action. Answering a card never runs
 // anything the card's text says: only the option's catalog action, and only Counterpoint attached
 // one.
+import { ASK_NOT_READ } from '../core/store/ask.ts';
 import {
   addDoneForYou,
   answerCard,
@@ -13,11 +14,13 @@ import {
   type CardRow,
   deferCard,
   getCard,
+  hasDoneForYou,
   insertCard,
   type NewCard,
   reopenCard,
   resolveCard,
   resolveMissingCards,
+  setCardOptions,
   setCardOutcome,
   setCardWhy,
 } from '../core/store/cards.ts';
@@ -136,6 +139,16 @@ export class CardDesk {
    * and records why as the outcome.
    */
   async answer(id: string, input: { option: number; note?: string | null }): Promise<CardRow> {
+    // Later as an option (recommended where the other options merge to the base): the card stays.
+    const asked = getCard(this.#o.store, id);
+    if (
+      asked?.options[input.option]?.action?.type === 'later' &&
+      (asked.state === 'open' || asked.state === 'deferred')
+    ) {
+      const deferred = this.defer(id);
+      if (deferred.outcome === null) this.outcome(deferred, 'Later: it stays here.');
+      return getCard(this.#o.store, id) as CardRow;
+    }
     const card = answerCard(this.#o.store, id, input, this.#now());
     this.#publish(card.hostId, { cardId: card.id, state: 'answered' });
     for (const listener of this.#listeners) {
@@ -147,9 +160,10 @@ export class CardDesk {
     }
     const action = card.options[card.answer ?? -1]?.action;
     if (action === undefined) {
-      // A listener may have said where the answer went (the asking session had ended).
+      // A listener may have said where the answer went (the asking session had ended). Otherwise
+      // it waits for the session: "Read by the session" once a wait or check_answer reads it.
       if (card.source === 'session' && getCard(this.#o.store, id)?.outcome == null) {
-        this.outcome(card, 'Sent to the session that asked.');
+        this.outcome(card, ASK_NOT_READ);
       }
       return getCard(this.#o.store, id) as CardRow;
     }
@@ -183,6 +197,16 @@ export class CardDesk {
     this.#publish(card.hostId, { cardId: card.id, why: true });
   }
 
+  /** Gives a waiting recomputed card the options it is raised with now. */
+  setOptions(
+    card: Pick<CardRow, 'id' | 'hostId'>,
+    input: Pick<NewCard, 'options' | 'recommended'>,
+  ): void {
+    if (setCardOptions(this.#o.store, card.id, input, this.#now())) {
+      this.#publish(card.hostId, { cardId: card.id, options: true });
+    }
+  }
+
   /** Puts a card back in the inbox, unanswered, with an optional line on why. */
   reopen(card: Pick<CardRow, 'id' | 'hostId'>, outcome: string | null = null): void {
     reopenCard(this.#o.store, card.id, this.#now());
@@ -206,5 +230,10 @@ export class CardDesk {
   doneForYou(hostId: string | null, text: string, undo?: CardAction | null): void {
     addDoneForYou(this.#o.store, { hostId, text, undo: undo ?? null }, this.#now());
     this.#publish(hostId, { doneForYou: true });
+  }
+
+  /** Logs a line once: a recomputed cause logged again adds nothing. */
+  doneForYouOnce(hostId: string | null, text: string): void {
+    if (!hasDoneForYou(this.#o.store, hostId, text)) this.doneForYou(hostId, text);
   }
 }

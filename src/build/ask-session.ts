@@ -20,13 +20,20 @@ import { execa } from 'execa';
 import { resolveClaudeBinary } from '../agent/runner.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import {
+  ASK_NOT_READ,
   ASK_WAIT_CAP_MS,
   askKeyPath,
   mintAskCapability,
   mintInteractiveKey,
   revokeAskCapability,
 } from '../core/store/ask.ts';
-import { addChangeNote, type CardRow, reopenCard } from '../core/store/cards.ts';
+import {
+  addChangeNote,
+  type CardRow,
+  listSessionCards,
+  reopenCard,
+  setCardOutcome,
+} from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { listRunChanges } from '../core/store/runs.ts';
 import { getAgentSession } from '../core/store/sessions.ts';
@@ -107,6 +114,16 @@ export function openBuilderAsk(input: {
     close: () => {
       revokeAskCapability(input.db, sessionId);
       rmSync(mcpConfig, { force: true });
+      // An answer this session never read goes to the change's next session (its note is kept).
+      for (const card of listSessionCards(input.db, sessionId)) {
+        if (card.answer !== null && card.outcome === ASK_NOT_READ) {
+          setCardOutcome(
+            input.db,
+            card.id,
+            `The next session on ${input.change} gets this answer.`,
+          );
+        }
+      }
     },
   };
 }

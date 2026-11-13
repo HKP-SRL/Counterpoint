@@ -110,6 +110,9 @@ describe('PlanningLane', () => {
     expect(row).toMatchObject({ state: 'merged', prUrl: 'https://github.com/alex/Cena/pull/1' });
     expect(await remoteFile()).toBe(TICKED);
     expect(github.prs[0]).toMatchObject({ head: `cp-plan/${id}`, base: 'master', state: 'MERGED' });
+    // The commit names the write that made it.
+    const body = await runGit(repo.root, ['log', '-1', '--format=%B', row?.commit as string]);
+    expect(body.stdout).toContain(`\n\nCounterpoint-Write: ${id}`);
     // Fetched: the console reads the remote base.
     const fetched = await runGit(repo.root, ['show', `refs/remotes/origin/master:${TASKS}`]);
     expect(fetched.stdout).toBe(TICKED);

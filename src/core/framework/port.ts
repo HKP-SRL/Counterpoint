@@ -50,6 +50,11 @@ export interface ChangeTasks {
   done: number;
   /** Unchecked tasks whose text starts with `Owner:`: steps only the owner can do. */
   ownerSteps: string[];
+  /**
+   * The owner steps listed after open build work: they are about the built change, so they wait
+   * until it is built. Absent: none wait.
+   */
+  ownerStepsAfterBuild?: string[];
 }
 
 /** What the adapter knows about one change (openspec-host-adapter design decision 3). */

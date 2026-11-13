@@ -16,11 +16,11 @@ When a newer Counterpoint is installed while the daemon runs, the daemon SHALL r
 ## MODIFIED Requirements
 
 ### Requirement: Crash-only restart
-On every start the daemon SHALL reconcile its state from scratch: clear stale run files, apply store migrations, expire sign-in codes, expire console sessions unless the start is a planned self-restart handed over by the previous daemon, and re-check registered hosts. Liveness SHALL be decided by the control channel answering, never by a pid file alone.
+On every start the daemon SHALL reconcile its state from scratch: clear stale run files, apply store migrations, expire sign-in codes, drop console sessions that have expired, and re-check registered hosts. Console sessions that have not expired SHALL be kept, after a crash as after a planned self-restart, so a restart never needs a terminal to sign in again. Liveness SHALL be decided by the control channel answering, never by a pid file alone.
 
 #### Scenario: Start after a crash
 - **WHEN** the daemon was killed and the owner runs `counterpoint`
-- **THEN** a new daemon starts, previous console sessions are signed out, and the owner gets a new sign-in link
+- **THEN** a new daemon starts and the open console reconnects with its existing session
 
 #### Scenario: Planned self-restart
 - **WHEN** the daemon restarts itself into a new install
