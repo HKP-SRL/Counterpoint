@@ -13,11 +13,15 @@ When every gate passes for a change, Counterpoint SHALL push its branch and open
 - **THEN** a PR for that change's branch is opened against the base branch
 
 ### Requirement: Generated PR body
-The PR body SHALL be generated from the change's artifacts (title, why, tasks) and SHALL list every decision the builder assumed.
+The PR body SHALL be generated from the change's artifacts (title, why, tasks) and SHALL list every decision the builder assumed. It SHALL also say what share of the change's added lines is tests, and name every existing test file the change edited or deleted.
 
 #### Scenario: Assumed decision
 - **WHEN** the builder proceeded on an assumption during the build
 - **THEN** the PR body lists it under assumed decisions
+
+#### Scenario: Existing test edited
+- **WHEN** the build edited one existing test file and added three new ones
+- **THEN** the PR body gives the test share and names the one edited file
 
 ### Requirement: Preview link
 Each PR SHALL carry a preview link: the host's own preview deploy when one exists, otherwise a local preview Counterpoint serves for that worktree on loopback with its own port.

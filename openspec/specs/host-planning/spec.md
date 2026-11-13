@@ -63,7 +63,7 @@ A change whose files cannot be read or parsed SHALL show as unreadable with the 
 - **THEN** the change shows as unreadable with that reason
 
 ### Requirement: Change statuses
-Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, or every task checked); On runway or Changed since signed (from its approval); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve and Changed since signed changes SHALL offer approval.
+Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, or every task checked); On runway (the owner approved it); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve changes SHALL offer approval, and only On runway changes SHALL offer withdrawing it.
 
 #### Scenario: Missing tasks
 - **WHEN** a change has a proposal but no tasks.md
@@ -73,16 +73,20 @@ Each change SHALL show one status derived at read time, in this precedence: Unre
 - **WHEN** every task in an unarchived change's tasks.md is checked
 - **THEN** it shows Built and is not offered for approval
 
+#### Scenario: Approved change edited
+- **WHEN** an On runway change's proposal is edited on the base branch
+- **THEN** it still shows On runway
+
 ### Requirement: Change detail
-The console SHALL show a change's detail page with its title, why, dependencies, artifacts, task progress, owner steps (unchecked tasks whose text starts with `Owner:`), base-branch tip, approval state, and every file an approval would cover with a short digest.
+The console SHALL show a change's detail page with its title, why, dependencies, artifacts, task progress, owner steps (unchecked tasks whose text starts with `Owner:`), base-branch tip and approval state.
 
 #### Scenario: Open a ready change
 - **WHEN** the owner opens a Ready to approve change
-- **THEN** the page lists the covered files with 12-hex digests and offers `Approve change`
+- **THEN** the page offers `Approve`, and one click approves it
 
 #### Scenario: Owner step present
 - **WHEN** a ready change has an unchecked task `Owner: create the Supabase project`
-- **THEN** the detail page and the approval summary show it prominently, and the change can still be approved
+- **THEN** the detail page shows it prominently, and the change can still be approved
 
 ### Requirement: Live refresh from the base branch
 When the base-branch tip moves, the change list, statuses and runway SHALL refresh in the console within a few seconds without a reload.
