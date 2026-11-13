@@ -25,6 +25,7 @@ import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../buil
 import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
 import { createDeliver } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
+import { identityFallbackNotice } from '../build/identity-card.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { readOwnerEnv } from '../build/owner-env.ts';
@@ -352,6 +353,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
   });
   const desk = new CardDesk({ store, bus, log, notify: (card) => notifier.notify(card) });
+  // A commit without the owner's git identity says so in Needs You, once (owner-identity).
+  const identityFallback = identityFallbackNotice(desk, async () => (await readOwnerEnv()).env);
   /** What the card that started a planning write says while it lands (D-12). */
   const writeOutcome = (row: PlanningWriteRow): string | null => {
     switch (row.state) {
@@ -380,6 +383,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     ownerEnv: async () => (await readOwnerEnv()).env,
     fetchBase: (host, env) => fetcher.fetch(host, env),
+    onIdentityFallback: () => identityFallback(),
     onChange: (row) => {
       const card = row.cardId === null ? undefined : getCard(store, row.cardId);
       const text = writeOutcome(row);
@@ -456,6 +460,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const orchestrator = new Orchestrator({
     home: options.home,
     db: store,
+    onIdentityFallback: () => identityFallback(),
     host: (hostId) => runtimes.get(hostId),
     approvals,
     governor,

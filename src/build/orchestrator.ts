@@ -292,6 +292,8 @@ export interface OrchestratorOptions {
   ) => MissingServiceProgram[];
   missingRunTools?: (env: Readonly<Record<string, string>>) => string[];
   commitSession?: typeof commitSession;
+  /** Told when a session commit falls back to Counterpoint's identity (owner-identity). */
+  onIdentityFallback?: (hostId: string) => void;
   prepareWorktree?: typeof prepareWorktree;
   calibrateWindow?: typeof calibrateWindow;
   planningEdits?: typeof planningEdits;
@@ -1425,6 +1427,7 @@ export class Orchestrator {
       runId,
       baseCommit: c.baseCommit,
       interrupted,
+      onIdentityFallback: () => this.#o.onIdentityFallback?.(runtime.host.id),
     });
     if (commit.ticked.length > 0) updateRunChange(db, c.row.id, { taskTicks: commit.ticked });
     if (commit.restored.length > 0) {

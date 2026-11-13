@@ -43,11 +43,22 @@ At the start of every run, Counterpoint SHALL read the owner's environment from 
 - **THEN** sessions and gates see it, as a command in the owner's own terminal would
 
 ### Requirement: Commits carry the owner's identity
-Every commit Counterpoint makes in a host repository SHALL be authored and committed with the owner's git identity, as the owner's own `git commit` in that repository would use it, and SHALL carry a `Counterpoint-Run` trailer naming the run or session that made it. Without an owner identity in git config, Counterpoint SHALL use its own identity and Needs You SHALL say so.
+Every commit Counterpoint makes in a host repository SHALL be authored and committed with the owner's git identity, as the owner's own `git commit` in that repository would use it. Without an owner identity in git config, Counterpoint SHALL use its own identity and Needs You SHALL say so with one card that offers to set the identity GitHub knows for the owner.
+
+#### Scenario: No git identity
+- **WHEN** a commit falls back to Counterpoint's own identity because git config names no owner
+- **THEN** one card in Needs You says so and offers to set the owner's name and email, and later commits raise no second card
 
 #### Scenario: Preview host checks the author
 - **WHEN** a build's pull request is opened on a host whose previews deploy only commits from known accounts
 - **THEN** its commits are authored by the owner and the preview deploys
+
+### Requirement: Commits name what made them
+Every commit Counterpoint makes SHALL carry a trailer naming what made it. A build session's commit and a build branch's tick commit SHALL carry `Counterpoint-Run` with the run, and the session where there is one. A planning write's commit (Done on an owner step, Land it, ticks after a merged build) SHALL carry `Counterpoint-Write` with the write's id.
+
+#### Scenario: Planning write traced
+- **WHEN** the owner reads the history of the base branch after marking an owner step Done
+- **THEN** the tick's commit carries `Counterpoint-Write: <id>`
 
 #### Scenario: Agent work stays identifiable
 - **WHEN** the owner reads the history of a build branch

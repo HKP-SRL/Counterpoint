@@ -21,6 +21,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveBase } from '../core/git/base-ref.ts';
+import { ownerIdentity } from '../core/git/run.ts';
 import { hostDir } from '../core/host/home.ts';
 import {
   checkWrite,
@@ -61,6 +62,9 @@ import {
   writeBody,
 } from './deliver.ts';
 
+/** The trailer naming the planning write a commit came from. */
+export const WRITE_TRAILER = 'Counterpoint-Write';
+
 /** Times a write is made again on a moved base before it waits for the owner. */
 const MAX_REDOS = 3;
 /** How often, and how many times, a just-opened PR is asked again while GitHub works it out. */
@@ -91,6 +95,8 @@ export interface PlanningLaneOptions {
   ) => Promise<{ error: string | null }>;
   /** Told about every change to a write (the daemon updates its card and the console). */
   onChange?: (row: PlanningWriteRow) => void;
+  /** Told when a write's commit falls back to Counterpoint's identity (git config names no owner). */
+  onIdentityFallback?: (hostId: string) => void;
   log?: (event: string, fields: Record<string, unknown>) => void;
   /** Seams for tests. */
   gh?: GhRun;
@@ -400,7 +406,10 @@ export class PlanningLane {
         'This project is no longer registered with Counterpoint.',
       );
     }
-    const write: PlanningWrite = { message: row.message, edits: row.edits };
+    // Every planning write's commit names the write that made it (owner-identity).
+    const message = `${row.message.trimEnd()}\n\n${WRITE_TRAILER}: ${row.id}`;
+    const write: PlanningWrite = { message, edits: row.edits };
+    if ((await ownerIdentity(host.root)) === null) this.#o.onIdentityFallback?.(row.hostId);
     const fetched = await this.#o.fetchBase(host, env);
     const base = await resolveBase(host.root, host.baseBranch);
     if (base.localOnly && base.remote === null) {
@@ -423,7 +432,7 @@ export class PlanningLane {
     if (!composed.ok) {
       return this.#block(row, 'conflict', `Can't make it on ${base.label}: ${composed.detail}`);
     }
-    const made = await commitOnBase(host.root, base.tip, composed.files, row.message);
+    const made = await commitOnBase(host.root, base.tip, composed.files, message);
     if (!made.changed) {
       // Already on the base (someone made the same edit): nothing to land.
       if (row.prUrl !== null) await this.#close(row.prUrl, row.hostId, env).catch(() => undefined);
