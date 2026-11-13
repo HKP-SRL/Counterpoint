@@ -6,9 +6,11 @@
 // - with the run's environment (the owner's), plus `CI=1`, no colors, and the gate's tag
 //   `CP_GATE_RUN=<id>`, plus the service environment and the test-lock marker the caller passes;
 // - detached, in its own process group, with no stdin. On timeout or stop the whole group gets
-//   SIGTERM, then SIGKILL after a grace period; when the command ends, anything left in its group
-//   is killed, and the owner's processes are swept for its tag (process-sweep.ts). What the sweep
-//   found is recorded with the result.
+//   SIGTERM, then SIGKILL after a grace period; a Stop after a timeout kills it at once. The gate
+//   ends when its command exits (its output gets a short drain time, child-end.ts), so a process
+//   that left the group holding the output cannot keep it running; then anything left in its
+//   group is killed, and the owner's processes are swept for its tag (process-sweep.ts). What the
+//   sweep found is recorded with the result.
 // Output (stdout and stderr together) streams to the gate's log file as it arrives; the last lines,
 // stripped of terminal sequences, are kept with the result.
 //
@@ -24,6 +26,7 @@ import { dirname } from 'node:path';
 import { killGroup } from '../agent/runner.ts';
 import type { GateConfig } from '../core/host/host-config.ts';
 import type { GateEnd, GateFailReason, GateSurvivor } from '../core/store/runs.ts';
+import { DEFAULT_DRAIN_MS, watchChildEnd } from './child-end.ts';
 import { withoutCounterpoint } from './owner-env.ts';
 import { sweepTagged } from './process-sweep.ts';
 
@@ -31,6 +34,8 @@ export const GATE_TAG_ENV = 'CP_GATE_RUN';
 const TAIL_LINES = 60;
 const KEEP_BYTES = 256 * 1024;
 const DEFAULT_KILL_GRACE_MS = 5000;
+/** After the SIGKILL and the drain time, how much longer a gate may take to end before it is let go. */
+const GIVE_UP_EXTRA_MS = 1000;
 
 export interface GateRunInput {
   gate: GateConfig;
@@ -47,6 +52,8 @@ export interface GateRunInput {
   /** The gate's tag; random when absent. Record it before the gate starts (crash recovery). */
   processTag?: string;
   killGraceMs?: number;
+  /** How long the output may stay open after the command exits (child-end.ts). */
+  drainMs?: number;
   /** Called once the process exists (record the pid for crash recovery). */
   onStart?: (pid: number) => void;
   /** For tests: the tag sweep. */
@@ -135,62 +142,77 @@ export async function runGate(input: GateRunInput): Promise<GateRunResult> {
   };
 
   const argv = input.command ?? input.gate.command;
+  const drainMs = input.drainMs ?? DEFAULT_DRAIN_MS;
   let stopped = false;
   let timedOut = false;
+  let stopRequested = false;
   let spawnError: string | null = null;
-  let pid: number | undefined;
+  let logClosed = false;
 
-  const ended = await new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(
-    (resolveEnded) => {
-      let settled = false;
-      const resolve = (value: { exitCode: number | null; signal: NodeJS.Signals | null }) => {
-        if (settled) return;
-        settled = true;
-        resolveEnded(value);
-      };
-      const child = spawn(argv[0] as string, argv.slice(1), {
-        cwd: input.worktree,
-        env: gateEnv(input.parentEnv ?? process.env, input.env ?? {}, tag),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
-      pid = child.pid;
-      const end = (why: 'timeout' | 'stopped') => {
-        if (pid === undefined || stopped || timedOut) return;
-        if (why === 'timeout') timedOut = true;
-        else stopped = true;
-        killGroup(pid, 'SIGTERM');
-        setTimeout(() => {
-          if (pid !== undefined) killGroup(pid, 'SIGKILL');
-        }, graceMs).unref();
-      };
-      const timer = setTimeout(() => end('timeout'), input.gate.timeout);
-      timer.unref();
-      const onAbort = () => end('stopped');
-      if (input.signal?.aborted) queueMicrotask(onAbort);
-      else input.signal?.addEventListener('abort', onAbort, { once: true });
+  const child = spawn(argv[0] as string, argv.slice(1), {
+    cwd: input.worktree,
+    env: gateEnv(input.parentEnv ?? process.env, input.env ?? {}, tag),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  const pid = child.pid;
+  const watch = watchChildEnd(child, drainMs);
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  /** SIGTERM to the group, SIGKILL after `grace`; the gate ends at the latest a little later. */
+  const terminate = (grace: number) => {
+    if (pid === undefined) return;
+    if (grace > 0) {
+      killGroup(pid, 'SIGTERM');
+      timers.push(setTimeout(() => killGroup(pid, 'SIGKILL'), grace));
+    } else killGroup(pid, 'SIGKILL');
+    // A process that does not die (or a pipe that never closes) cannot hold the gate or the run.
+    timers.push(setTimeout(() => watch.giveUp(), grace + drainMs + GIVE_UP_EXTRA_MS));
+  };
+  const end = (why: 'timeout' | 'stopped') => {
+    if (pid === undefined) return;
+    if (why === 'timeout') {
+      if (timedOut || stopRequested) return;
+      timedOut = true;
+      terminate(graceMs);
+      return;
+    }
+    if (stopRequested) return;
+    stopRequested = true;
+    // The first cause names the failure; a Stop still ends a gate already ending on its timeout,
+    // at once.
+    if (!timedOut) stopped = true;
+    terminate(timedOut ? 0 : graceMs);
+  };
+  timers.push(setTimeout(() => end('timeout'), input.gate.timeout));
+  const onAbort = () => end('stopped');
+  if (input.signal?.aborted) queueMicrotask(onAbort);
+  else input.signal?.addEventListener('abort', onAbort, { once: true });
 
-      child.stdout?.setEncoding('utf8');
-      child.stderr?.setEncoding('utf8');
-      child.stdout?.on('data', keep);
-      child.stderr?.on('data', keep);
-      const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
-        clearTimeout(timer);
-        input.signal?.removeEventListener('abort', onAbort);
-        resolve({ exitCode, signal });
-      };
-      child.on('error', (error) => {
-        spawnError = error.message;
-        // A process that never started emits no `close`.
-        if (pid === undefined) finish(null, null);
-      });
-      child.on('close', finish);
-      if (pid !== undefined) input.onStart?.(pid);
-    },
-  );
+  const take = (chunk: string) => {
+    if (!logClosed) keep(chunk);
+  };
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', take);
+  child.stderr?.on('data', take);
+  child.on('error', (error) => {
+    spawnError = error.message;
+    // A process that never started emits no `exit`.
+    if (pid === undefined) watch.giveUp();
+  });
+  if (pid !== undefined) input.onStart?.(pid);
+
+  const ended = await watch.ended;
+  for (const timer of timers) clearTimeout(timer);
+  input.signal?.removeEventListener('abort', onAbort);
 
   // Whatever is left in the group goes with it; then the tag sweep for what left the group.
   if (pid !== undefined) killGroup(pid, 'SIGKILL');
+  if (pid !== undefined && !ended.drained) {
+    keep(
+      `\n[counterpoint] the gate ended, but a process it started kept its output open; Counterpoint stopped reading it.\n`,
+    );
+  }
   const swept = await (input.sweep ?? sweepTagged)(GATE_TAG_ENV, tag, { graceMs: 1000 });
   const survivors: GateSurvivor[] = swept.found.map(({ pid: p, command }) => ({
     pid: p,
@@ -203,6 +225,7 @@ export async function runGate(input: GateRunInput): Promise<GateRunResult> {
   }
   if (swept.error !== null)
     keep(`\n[counterpoint] the process sweep could not run: ${swept.error}\n`);
+  logClosed = true;
   closeSync(log);
 
   const output = stripTerminal(kept);

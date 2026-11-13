@@ -9,7 +9,13 @@
 // The preview runs like a gate: as an ordinary child process with the owner's permissions and
 // environment (their login shell's, read when the preview starts), detached in its own process
 // group, tagged for the sweep. Starting a build of the change stops its preview first.
+//
+// Previews are not in the store, so every preview also carries the Counterpoint home's preview tag
+// (`CP_PREVIEW_OF=<hash of the home>`): a daemon that crashed left its previews running, and the
+// next daemon sweeps that tag when it starts (sweepLeftovers). A preview ends when its command
+// exits, even if a process it started still holds its output (child-end.ts).
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -20,13 +26,14 @@ import {
   writeSync,
 } from 'node:fs';
 import { connect, createServer } from 'node:net';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { killGroup } from '../agent/runner.ts';
 import { hostDir } from '../core/host/home.ts';
 import { HostConfigError, readHostConfig } from '../core/host/host-config.ts';
 import { HOST_ID_RE, isChangeId } from '../core/ids.ts';
 import type { Store } from '../core/store/db.ts';
 import { latestBuiltRunChange } from '../core/store/runs.ts';
+import { watchChildEnd } from './child-end.ts';
 import { GATE_TAG_ENV, gateEnv, lastLines, newGateTag, stripTerminal } from './gate-runner.ts';
 import type { RunHost } from './orchestrator.ts';
 import { readOwnerEnv } from './owner-env.ts';
@@ -34,6 +41,13 @@ import { sweepTagged } from './process-sweep.ts';
 import { worktreePathFor } from './worktrees.ts';
 
 export const FIRST_PREVIEW_PORT = 4174;
+/** Carried by every preview of one Counterpoint home, so a later daemon can end them. */
+export const PREVIEW_TAG_ENV = 'CP_PREVIEW_OF';
+
+/** The preview tag of a Counterpoint home: the same for every daemon that uses it. */
+export function previewHomeTag(home: string): string {
+  return createHash('sha256').update(resolve(home)).digest('hex').slice(0, 32);
+}
 const PORT_SPAN = 200;
 const READY_TIMEOUT_MS = 3 * 60 * 1000;
 const READY_POLL_MS = 500;
@@ -83,6 +97,8 @@ export interface LocalPreviewOptions {
   env?: () => Promise<Readonly<Record<string, string>>>;
   readyTimeoutMs?: number;
   now?: () => number;
+  /** For tests: the tag sweep. */
+  sweep?: typeof sweepTagged;
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -116,6 +132,16 @@ export class LocalPreviews {
   constructor(options: LocalPreviewOptions) {
     this.#o = options;
     this.#now = options.now ?? Date.now;
+  }
+
+  /**
+   * Ends the previews an earlier daemon of this home left running (it crashed, or was killed).
+   * Call once at daemon start, before any preview starts.
+   */
+  sweepLeftovers(): ReturnType<typeof sweepTagged> {
+    return (this.#o.sweep ?? sweepTagged)(PREVIEW_TAG_ENV, previewHomeTag(this.#o.home), {
+      graceMs: 1000,
+    });
   }
 
   status(hostId: string, change: string): PreviewStatus {
@@ -236,28 +262,34 @@ export class LocalPreviews {
     const running: Running = { status, pid: undefined, tag, kept: '', stopping: false, scratch };
     this.#running.set(key(hostId, change), running);
 
+    let exited = false;
     const keep = (chunk: string) => {
+      if (exited) return;
       writeSync(log, chunk);
       running.kept = (running.kept + chunk).slice(-KEEP_BYTES);
     };
     const child = spawn(argv[0] as string, argv.slice(1), {
       cwd: worktree,
-      env: gateEnv(ownerEnv, { PORT: String(port) }, tag),
+      env: gateEnv(
+        ownerEnv,
+        { PORT: String(port), [PREVIEW_TAG_ENV]: previewHomeTag(this.#o.home) },
+        tag,
+      ),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
     running.pid = child.pid;
+    const watch = watchChildEnd(child);
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', keep);
     child.stderr?.on('data', keep);
-    let exited = false;
     const onExit = (reason: string) => {
       if (exited) return;
       exited = true;
       closeSync(log);
       if (running.pid !== undefined) killGroup(running.pid, 'SIGKILL');
-      void sweepTagged(GATE_TAG_ENV, tag, { graceMs: 1000 });
+      void (this.#o.sweep ?? sweepTagged)(GATE_TAG_ENV, tag, { graceMs: 1000 });
       if (this.#running.get(key(hostId, change)) !== running) return;
       const tail = lastLines(stripTerminal(running.kept), 30);
       // A reason set by stop() (the port never opened) wins over the exit itself.
@@ -281,12 +313,15 @@ export class LocalPreviews {
           };
       this.#publish(running.status);
     };
-    child.on('error', (error) => onExit(`The preview could not start: ${error.message}`));
-    child.on('close', (code, signal) =>
+    child.on('error', (error) => {
+      onExit(`The preview could not start: ${error.message}`);
+      watch.giveUp();
+    });
+    void watch.ended.then(({ exitCode, signal }) =>
       onExit(
         signal !== null
           ? `The preview stopped (${signal}).`
-          : `The preview exited with code ${code ?? '?'}.`,
+          : `The preview exited with code ${exitCode ?? '?'}.`,
       ),
     );
     this.#publish(status);

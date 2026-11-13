@@ -145,7 +145,7 @@ The builder SHALL NOT take an action that cannot be undone outside its worktree:
 - **THEN** the builder does it without asking
 
 ### Requirement: A run ends only when it cannot go on
-A run SHALL end only when every chosen change is built, parked or skipped; when the owner stops it; at its stop time; or when no session can run at all (an authentication, credit or spend-limit error, a missing program, or a host config that cannot be read). A parked change SHALL never end the run. A change that depends on a parked change SHALL be skipped with that reason.
+A run SHALL end only when every chosen change is built, parked or skipped; when the owner stops it; at its stop time; or when no session or gate can run at all (an authentication, credit or spend-limit error, a missing program, a host config that cannot be read, or a host service that will not start). A parked change SHALL never end the run. A change that depends on a parked change SHALL be skipped with that reason.
 
 #### Scenario: One change parks
 - **WHEN** the first of three chosen changes parks and the other two do not depend on it

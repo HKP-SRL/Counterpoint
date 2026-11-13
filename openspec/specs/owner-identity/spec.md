@@ -16,6 +16,10 @@ Every agent session SHALL be a headless Claude Code session in auto permission m
 - **WHEN** a build task needs the host's local database running
 - **THEN** the session starts it and works against it
 
+#### Scenario: A session leaves a server running
+- **WHEN** a session starts a dev server in a process group of its own and then ends
+- **THEN** Counterpoint ends that server before anything else runs, so it holds no port and no test lock
+
 #### Scenario: Nothing waits for a person
 - **WHEN** a tool call would need a person's permission
 - **THEN** it is denied at once and the session continues with the denial

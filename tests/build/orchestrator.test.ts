@@ -3,7 +3,7 @@
 // store.
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRunner } from '../../src/agent/runner.ts';
 import { builderSessionKey, onBuilderAnswer } from '../../src/build/ask-session.ts';
@@ -14,7 +14,7 @@ import type {
   startBuilderSession,
 } from '../../src/build/builder-session.ts';
 import { createDeliver } from '../../src/build/deliver.ts';
-import type { GateRound, runGateRound } from '../../src/build/gates.ts';
+import { describeServiceDown, type GateRound, type runGateRound } from '../../src/build/gates.ts';
 import { Governor, type SessionOutcome } from '../../src/build/governor.ts';
 import { DEFAULT_HOST_SETTINGS, writeHostSettings } from '../../src/build/host-settings.ts';
 import {
@@ -621,6 +621,52 @@ describe('a run', () => {
     expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
   });
 
+  // gates: A service that will not start stops the run. Seen live: Docker was not running, so
+  // `supabase start` failed, and three builder sessions were spent before the change parked.
+  it('stops the run with a resume card, spending no attempt, when a service will not start', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions();
+    let rounds = 0;
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: async () => {
+        rounds += 1;
+        return {
+          kind: 'service-down',
+          entries: [],
+          detail: describeServiceDown({
+            service: 'supabase',
+            detail: 'service supabase start exited 1',
+            tail: 'Cannot connect to the Docker daemon. Is the docker daemon running?',
+          }),
+        };
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(1);
+    expect(rounds).toBe(1);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^The host service "supabase" would not start/),
+    });
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.state, c.attempts])).toEqual([
+      ['stopped', 0],
+      ['stopped', 0],
+    ]);
+    const [card] = runCards(ctx.db, 'cena');
+    expect(card).toMatchObject({
+      kind: 'run-stopped',
+      question: "The supabase service won't start. Resume once it's running?",
+      why: expect.stringContaining('Cannot connect to the Docker daemon'),
+      recommended: 0,
+    });
+    expect(card?.options[0]).toMatchObject({
+      action: { type: 'resume-run', runId: started.runId },
+    });
+  });
+
   it('parks on an ask-first question and shows it in Needs You with its options', async () => {
     const ctx = await host();
     const sessions = fakeSessions(() => ({
@@ -826,6 +872,43 @@ describe('a run', () => {
     expect(changes[1]?.reason).toMatch(/Not built/);
     const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
     expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+  });
+
+  // build-runs: Stop time honoured. The stop time passes while a session works: the session hands
+  // off, no new session starts, and the rest is recorded as not built.
+  it('stops at a clean point when the stop time passes mid-session (fake clock)', async () => {
+    const ctx = await host();
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const sessions = fakeSessions(() => ({ wait: true }));
+      const { o } = orchestrator(ctx, {
+        startBuilderSession: sessions.start,
+        runGateRound: gates([]).round,
+      });
+      const twoHours = 2 * 60 * 60 * 1000;
+      const started = await o.start('cena', { ...SETTINGS, stopAt: Date.now() + twoHours });
+      if (!started.ok) throw new Error(started.error);
+      while (sessions.count() === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(o.running()).not.toBeNull();
+      expect(getRun(ctx.db, started.runId)?.state).toBe('running');
+      // The clock reaches the stop time while the session is still working.
+      vi.advanceTimersByTime(twoHours);
+      await o.idle();
+      expect(sessions.count()).toBe(1);
+      expect(getRun(ctx.db, started.runId)).toMatchObject({
+        state: 'ended',
+        endReason: 'stop-time',
+        endDetail: 'The stop time was reached.',
+      });
+      const changes = listRunChanges(ctx.db, started.runId);
+      expect(changes.map((c) => c.state)).toEqual(['stopped', 'stopped']);
+      expect(changes[0]?.reason).toMatch(/clean point/);
+      expect(changes[1]?.reason).toMatch(/Not built: the run ended \(stop-time\)/);
+      const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
+      expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('builds a change whose plan was revised after approval, from the base-branch tip', async () => {

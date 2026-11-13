@@ -25,6 +25,7 @@ import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../buil
 import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
 import { createDeliver } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
+import { endLiveProcesses } from '../build/live-processes.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { readOwnerEnv } from '../build/owner-env.ts';
@@ -66,6 +67,7 @@ import {
   successorSpawner,
   takeHandover,
 } from './restart.ts';
+import { stopForSignal } from './signal-stop.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
 
 const SQLITE_BUSY = 5;
@@ -535,6 +537,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log('recovery-failed', { message: error.message });
     return null;
   });
+  // Previews are not in the store: end what a crashed daemon left running, by the home's tag.
+  const sweptPreviews = await previews.sweepLeftovers();
+  if (sweptPreviews.found.length > 0 || sweptPreviews.error !== null) {
+    log('previews-swept', { ended: sweptPreviews.found.length, error: sweptPreviews.error });
+  }
   // A Do it for me session the last daemon was running is gone: its step card comes back.
   await steps.recover().catch((error: Error) => {
     log('owner-steps-recovery-failed', { message: error.message });
@@ -710,7 +717,24 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 
-  process.once('SIGTERM', () => void stop('SIGTERM'));
-  process.once('SIGINT', () => void stop('SIGINT'));
+  // A signal stops like the owner's stop: the run's clean point and its report first, within a
+  // time limit (signal-stop.ts). A second signal stops at once.
+  let signalled = false;
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (signalled) {
+      void stop(`${signal} again`);
+      return;
+    }
+    signalled = true;
+    void stopForSignal({
+      signal,
+      orchestrator,
+      endProcesses: () => endLiveProcesses(store),
+      stop,
+      log,
+    });
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
   log('started', { pid: process.pid, port: bound });
 }

@@ -7,7 +7,8 @@
 //
 // A user message containing `SLOW` makes the turn wait 30 s (like a long tool call) unless it is
 // interrupted; a message sent during it ends the turn (delivered mid-turn). `CHILD` starts a background `sleep 60` in the same process group and reports its
-// pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
+// pid. `ESCAPE` starts a node process in a group of its own that inherits the tag and holds this
+// process's stdout (a dev server a builder started), and reports its pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
 // `CP_AGENT_RUN` tag it sees, its working folder, its arguments and a few variables.
 import { spawn } from 'node:child_process';
 
@@ -55,6 +56,14 @@ function startTurn(text) {
     message: { id, usage, content: [{ type: 'text', text: text.slice(0, 40) }] },
   });
   if (text.includes('HANG')) process.on('SIGTERM', () => {});
+  if (text.includes('ESCAPE')) {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+      detached: true,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    child.unref();
+    out({ type: 'system', subtype: 'fake_escaped', pid: child.pid });
+  }
   if (text.includes('CHILD')) {
     const child = spawn('sleep', ['60'], { stdio: 'ignore' });
     out({ type: 'system', subtype: 'fake_child', pid: child.pid });
