@@ -8,9 +8,10 @@ import type { Orchestrator, RunView } from '../../src/build/orchestrator.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
-import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
+import { hostRegistryStore, openStore, type Store, upsertHost } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
 import {
+  activeRun,
   endRun,
   insertRun,
   insertRunChange,
@@ -217,6 +218,38 @@ describe('runs from the console', () => {
         reason: 'Gate "unit" failed 3 times (last: exit code 1).',
       }),
     ]);
+  });
+
+  it('shows a run going in another project, named, so Start is not offered here', async () => {
+    upsertHost(db, {
+      id: 'kitchen-1',
+      root: '/x/kitchen',
+      gitCommonDir: '/x/kitchen/.git',
+      baseBranch: 'main',
+      adapter: 'openspec',
+    });
+    // One run at a time on this computer: the one an earlier test left going ends first.
+    const going = activeRun(db);
+    if (going !== undefined) endRun(db, going.id, { reason: 'finished' });
+    insertRun(
+      db,
+      { id: 'run-k', hostId: 'kitchen-1', settings: {}, stopAt: null },
+      Date.now() + 60_000,
+    );
+    try {
+      const body = (await (await request('GET', `/api/hosts/${hostId}/run`)).json()) as Record<
+        string,
+        unknown
+      >;
+      expect(body.elsewhere).toEqual({ hostId: 'kitchen-1', hostName: 'kitchen', runId: 'run-k' });
+    } finally {
+      endRun(db, 'run-k', { reason: 'finished' });
+    }
+    const after = (await (await request('GET', `/api/hosts/${hostId}/run`)).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(after.elsewhere).toBeNull();
   });
 });
 

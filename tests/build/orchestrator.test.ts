@@ -37,16 +37,19 @@ import { runNeedsYou } from '../../src/core/runway/run-items.ts';
 import { approveChange, withdrawApproval } from '../../src/core/store/approvals.ts';
 import { findAskGrant } from '../../src/core/store/ask.ts';
 import { getCard, insertCard, listWaitingCards } from '../../src/core/store/cards.ts';
+import { decideParked } from '../../src/core/store/change-lane.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
 import {
   activeRun,
+  endRun,
   getRun,
   insertRun,
   insertRunChange,
   latestRun,
   listGateResults,
   listRunChanges,
+  parkRunChange,
   runChangeTicks,
   updateRunChange,
 } from '../../src/core/store/runs.ts';
@@ -268,6 +271,56 @@ describe('starting a run', () => {
     expect(await o.start('cena', SETTINGS)).toMatchObject({ ok: false, status: 409 });
     o.stop('cena');
     await o.idle();
+  });
+
+  it('names the other project when its run is going', async () => {
+    const ctx = await host();
+    upsertHost(ctx.db, {
+      id: 'kitchen-1',
+      root: '/x/kitchen',
+      gitCommonDir: '/x/kitchen/.git',
+      baseBranch: 'main',
+      adapter: 'openspec',
+    });
+    insertRun(ctx.db, { id: 'run-k', hostId: 'kitchen-1', settings: {}, stopAt: null });
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    expect(await o.start('cena', SETTINGS)).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringMatching(/^A run is already going in kitchen-1: one run at a time/),
+    });
+  });
+
+  it('builds by default only what can build now, and never a held change', async () => {
+    const ctx = await host();
+    // a-thing parked in an earlier run; the owner left it parked. b-thing can build.
+    insertRun(ctx.db, { id: 'r0', hostId: 'cena', settings: {}, stopAt: null }, 1);
+    const parked = insertRunChange(ctx.db, { runId: 'r0', change: 'a-thing', position: 0 });
+    parkRunChange(ctx.db, parked, 'Gate failed.');
+    endRun(ctx.db, 'r0', { reason: 'finished' }, 2);
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    decideParked(ctx.db, {
+      hostId: 'cena',
+      change: 'a-thing',
+      runChangeId: parked,
+      hold: true,
+      reason: 'left-parked',
+    });
+    expect(await o.start('cena', { ...SETTINGS, changes: ['a-thing'] })).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringMatching(/^Not built now: a-thing \(on hold: you left it parked\)/),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, started.runId).map((c) => c.change)).toEqual(['b-thing']);
   });
 });
 

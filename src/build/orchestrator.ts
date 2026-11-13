@@ -40,7 +40,7 @@
 // gate round counts nothing); no new session starts. What remains is recorded.
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { z } from 'zod';
 import type { AgentRunner, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter } from '../agent/usage.ts';
@@ -419,8 +419,18 @@ export class Orchestrator {
         error: `${hostId} has no planning framework Counterpoint can read.`,
       };
     }
-    if (this.#active !== null || activeRun(this.#o.db) !== undefined) {
-      return { ok: false, status: 409, error: 'A run is already going. Stop it first.' };
+    const going = activeRun(this.#o.db);
+    if (this.#active !== null || going !== undefined) {
+      const other = going?.hostId ?? this.#active?.hostId ?? hostId;
+      if (other === hostId) {
+        return { ok: false, status: 409, error: 'A run is already going. Stop it first.' };
+      }
+      const name = basename(this.#o.host(other)?.host.root ?? other);
+      return {
+        ok: false,
+        status: 409,
+        error: `A run is already going in ${name}: one run at a time on this computer. Stop it there first, or start this one when it ends.`,
+      };
     }
 
     // The base as it is on the remote now: the runway, the build order and the config check read

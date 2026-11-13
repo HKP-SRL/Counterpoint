@@ -263,6 +263,14 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
     setChosen(idsKey === '' ? [] : idsKey.split(','));
   }, [idsKey]);
 
+  if (answer.elsewhere !== null) {
+    return (
+      <Text color="secondary">
+        {`A run is going in ${answer.elsewhere.hostName}: one run at a time on this computer. Start a run here once it ends.`}
+      </Text>
+    );
+  }
+
   if (answer.runway.length === 0) {
     return (
       <Text color="secondary">

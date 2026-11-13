@@ -20,6 +20,13 @@ The owner SHALL start a run from the console choosing which changes on the runwa
 - **WHEN** an agent session sends a start request without the console session or the control token
 - **THEN** the request is refused
 
+### Requirement: One run at a time on this computer
+Only one run SHALL go at a time on this computer, across projects. While a run goes in one project, every other project's run view SHALL say which project's run is going, and a start there SHALL be refused with a reason that names that project.
+
+#### Scenario: Two projects
+- **WHEN** a run is going in Cena and the owner opens another project's console
+- **THEN** its run view says a run is going in Cena, and starting a run there is refused, naming Cena
+
 ### Requirement: Run settings page
 Each project SHALL have a Settings page in the console holding its run settings: model, effort, context budget and per-session limits. Saving SHALL be a guarded POST to the daemon. Until the owner saves, defaults apply. A run SHALL use the settings saved when it starts and keep them until it ends. The Run card SHALL show the settings a new run will use. The CLI MAY override model, effort and budget for one run.
 

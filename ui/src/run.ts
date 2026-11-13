@@ -81,6 +81,8 @@ export interface RunAnswer {
   hostId: string;
   run: RunView | null;
   runway: RunwayPick[];
+  /** A run going in another project (one run at a time on this computer), or null. */
+  elsewhere: { hostId: string; hostName: string; runId: string } | null;
   claudeVersion: string | null;
 }
 
@@ -100,6 +102,12 @@ async function fetchRun(hostId: string, signal?: AbortSignal): Promise<RunAnswer
         }))
       : [],
     claudeVersion: typeof body.claudeVersion === 'string' ? body.claudeVersion : null,
+    elsewhere:
+      body.elsewhere !== null &&
+      typeof body.elsewhere === 'object' &&
+      typeof body.elsewhere.hostName === 'string'
+        ? body.elsewhere
+        : null,
   };
 }
 
