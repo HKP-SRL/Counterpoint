@@ -20,7 +20,7 @@ radius 12px (cards, dialogs), full for chips and avatars. Elements are 28px (sma
 
 **Dark cockpit (the core color rule):** when everything is normal, the page stays grey and quiet.
 Status colors appear only for exceptions:
-- warning yellow: parked items, approvals that changed after signing, the context meter above 80%
+- warning yellow: parked items, the context meter above 80%
 - error red: stopped runs, failed gates, No-go checks, the alarm hero
 - green and blue are **not** used for normal states (passed gates, "on runway", "in flight").
   Done is grey and passed is a grey check.
