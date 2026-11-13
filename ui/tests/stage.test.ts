@@ -40,6 +40,7 @@ describe('stages', () => {
   it('offers Retry only on a parked or held change, and says what holds it', () => {
     expect(canRetry({ kind: 'parked', reason: null })).toBe(true);
     expect(canRetry({ kind: 'held', why: 'left-parked', reason: null })).toBe(true);
+    expect(canRetry({ kind: 'held', why: 'question', reason: null })).toBe(false);
     expect(canRetry({ kind: 'pr-open', prUrl: 'https://x' })).toBe(false);
     expect(canRetry(null)).toBe(false);
     expect(stageBanner('b-thing', { kind: 'waits', on: ['a-thing'] }).description).toContain(

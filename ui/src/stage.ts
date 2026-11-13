@@ -71,9 +71,13 @@ export function stageLook(stage: ChangeStage): { label: string; variant: StageVa
   }
 }
 
-/** The change can be retried from its page: parked, or on hold after a park. */
+/**
+ * The change can be retried from its page: parked, or on hold after a park. One held by its
+ * builder's question is freed by the answer in Needs You instead.
+ */
 export function canRetry(stage: ChangeStage | null): boolean {
-  return stage !== null && (stage.kind === 'parked' || stage.kind === 'held');
+  if (stage === null) return false;
+  return stage.kind === 'parked' || (stage.kind === 'held' && stage.why !== 'question');
 }
 
 /** What the change page says about the stage: a title and one or two sentences. */
