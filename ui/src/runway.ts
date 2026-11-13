@@ -19,6 +19,8 @@ export type RunwaySnapshot = {
   tip: string | null;
   count: number;
   taskCount: number;
+  /** The changes on it that can build now (Run builds those). */
+  ready: number;
   items: RunwayItem[];
 };
 
@@ -45,6 +47,7 @@ async function fetchRunway(hostId: string, signal?: AbortSignal): Promise<Runway
     tip: typeof raw.tip === 'string' ? raw.tip : null,
     count: count(raw.count),
     taskCount: count(raw.taskCount),
+    ready: count(raw.ready),
     items: Array.isArray(raw.items)
       ? raw.items.map(parseItem).filter((item): item is RunwayItem => item !== null)
       : [],
