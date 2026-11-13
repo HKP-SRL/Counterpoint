@@ -1,8 +1,8 @@
 // The ask tool's routes on the control socket (owner-inbox D-5; ask-the-owner: A capability
 // limited to its own cards). `counterpoint mcp ask` calls these with its session's capability as
-// the bearer instead of the control token. They are the capability's only four calls: post a card
-// for this session, wait on it, read it, and list the session's cards. Another session's card
-// reads as unknown. The interactive setup key reaches one route only, `POST /session`, which opens
+// the bearer instead of the control token. They are the capability's only calls: post a card for
+// this session, wait on it, read it, list the session's cards, and say the session ended. Another
+// session's card reads as unknown. A builder's wait returns at once (builders never wait). The interactive setup key reaches one route only, `POST /session`, which opens
 // an interactive session with its own capability; its cards go to the inbox of the project the
 // session runs in, or to every inbox.
 import { realpathSync } from 'node:fs';
@@ -10,7 +10,10 @@ import { isAbsolute, sep } from 'node:path';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import {
+  ASK_NOT_READ,
   ASK_OPEN_LIMIT,
+  ASK_READ,
+  ASK_SESSION_ENDED,
   ASK_WAIT_REQUEST_MS,
   type AskGrant,
   AskInput,
@@ -19,6 +22,7 @@ import {
   findAskGrant,
   isInteractiveKey,
   openInteractiveSession,
+  revokeAskCapability,
 } from '../core/store/ask.ts';
 import { CardRefusal, type CardRow, listSessionCards } from '../core/store/cards.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
@@ -81,9 +85,36 @@ export function createAskRoutes(
     return card !== undefined && card.sessionId === grant.sessionId ? card : undefined;
   };
 
+  /** The card as the session reads it; an answer it reads now is "Read by the session". */
+  const read = (card: CardRow) => {
+    // As stored now: a wait wakes up before the answer's outcome is written.
+    const now = options.desk.get(card.id) ?? card;
+    if (now.answer !== null && (now.outcome === null || now.outcome === ASK_NOT_READ)) {
+      options.desk.outcome(now, ASK_READ);
+    }
+    return askCardView(now);
+  };
+
   app.get('/cards', (c) => {
     const grant = c.get('grant');
-    return c.json({ cards: listSessionCards(options.store, grant.sessionId).map(askCardView) });
+    return c.json({ cards: listSessionCards(options.store, grant.sessionId).map(read) });
+  });
+
+  /**
+   * The session's MCP server stopped (its input ended): an interactive session is gone for good,
+   * so its unanswered cards close as "Session ended" (listed under Answered) and its capability
+   * ends. A builder's cards stay answerable: the change's next session gets the answer.
+   */
+  app.post('/end', (c) => {
+    const grant = c.get('grant');
+    if (grant.kind !== 'interactive') return c.body(null, 204);
+    for (const card of listSessionCards(options.store, grant.sessionId)) {
+      if (card.state === 'open' || card.state === 'deferred') {
+        options.desk.resolve(card, ASK_SESSION_ENDED);
+      }
+    }
+    revokeAskCapability(options.store, grant.sessionId);
+    return c.body(null, 204);
   });
 
   app.post('/cards', async (c) => {
@@ -121,10 +152,11 @@ export function createAskRoutes(
         options: ask.options,
         recommended: ask.recommended,
         reversible: ask.reversible,
-        // Work waits on it: the session waits, or the step cannot be undone (D-6).
-        blocking: ask.wait || !ask.reversible,
+        // It notifies: the owner's own session is waiting in the chat, or the step cannot be
+        // undone (D-6). A builder never waits, so its reversible questions block nothing.
+        blocking: grant.kind === 'interactive' || !ask.reversible,
       });
-      return c.json({ card: askCardView(card) }, 201);
+      return c.json({ card: askCardView(card), waits: ask.wait && grant.kind !== 'builder' }, 201);
     } catch (error) {
       if (error instanceof CardRefusal) return c.json({ error: error.message }, 400);
       throw error;
@@ -134,15 +166,18 @@ export function createAskRoutes(
   app.get('/cards/:id', (c) => {
     const card = ownCard(c.get('grant'), c.req.param('id'));
     if (card === undefined) return c.json({ error: 'No such card for this session.' }, 404);
-    return c.json({ card: askCardView(card) });
+    return c.json({ card: read(card) });
   });
 
   app.post('/cards/:id/wait', async (c) => {
     const grant = c.get('grant');
     const id = c.req.param('id');
-    if (ownCard(grant, id) === undefined) {
+    const own = ownCard(grant, id);
+    if (own === undefined) {
       return c.json({ error: 'No such card for this session.' }, 404);
     }
+    // Builders never wait (build-runs): the card as it stands, at once.
+    if (grant.kind === 'builder') return c.json({ card: read(own), waits: false });
     let ms = ASK_WAIT_REQUEST_MS;
     try {
       const parsed = WaitBody.safeParse(await c.req.json());
@@ -152,7 +187,8 @@ export function createAskRoutes(
     }
     const card = await options.desk.waitForAnswer(id, ms, c.req.raw.signal);
     if (card === undefined) return c.json({ error: 'No such card for this session.' }, 404);
-    return c.json({ card: askCardView(card) });
+    // A wait the session gave up on (aborted) read nothing.
+    return c.json({ card: c.req.raw.signal.aborted ? askCardView(card) : read(card) });
   });
 
   return app;

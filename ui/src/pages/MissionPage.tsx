@@ -9,6 +9,7 @@
 //
 // Every card keeps its last good data on screen when a refresh fails, and only the first load
 // shows Skeletons.
+import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
@@ -63,7 +64,7 @@ function RunwayFigure({ hostId, runway }: { hostId: string; runway: RunwaySnapsh
           </Text>
         ) : (
           <Text type="supporting" color="secondary" hasTabularNumbers>
-            {`${changesText(runway.count)} on the runway · ${tasksCountText(runway.taskCount)} approved and ready ahead of the builder`}
+            {`${changesText(runway.count)} on the runway · ${runway.ready} ready to build · ${tasksCountText(runway.taskCount)} approved`}
           </Text>
         )}
       </VStack>
@@ -84,6 +85,9 @@ function RunwayFigure({ hostId, runway }: { hostId: string; runway: RunwaySnapsh
                   <Text type="code" color="secondary" textWrap="nowrap">
                     {item.changeId}
                   </Text>
+                  {item.waitingForSignOff ? (
+                    <Badge variant="warning" label="Waiting for sign-off" />
+                  ) : null}
                 </HStack>
               }
               description={

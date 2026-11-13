@@ -8,6 +8,7 @@ import {
   countTasks,
   normalizeTasks,
   TASKS_NORMALIZER,
+  tickTask,
 } from '../../../src/adapters/openspec/tasks.ts';
 
 describe('parseProposal', () => {
@@ -96,7 +97,12 @@ describe('countTasks', () => {
       '- [A](https://example.com) not a task',
       '- plain bullet',
     ].join('\r\n');
-    expect(countTasks(text)).toEqual({ total: 6, done: 3, ownerSteps: [] });
+    expect(countTasks(text)).toEqual({
+      total: 6,
+      done: 3,
+      ownerSteps: [],
+      ownerStepsAfterBuild: [],
+    });
   });
 
   it('lists unchecked Owner: tasks (after an optional number) as owner steps', () => {
@@ -111,7 +117,44 @@ describe('countTasks', () => {
       total: 5,
       done: 1,
       ownerSteps: ['Owner: create the Supabase project', 'Owner: add the API key'],
+      ownerStepsAfterBuild: [],
     });
+  });
+
+  it('marks the owner steps listed after an open build task as waiting for the build', () => {
+    const text = [
+      '- [x] 1.1 Build the menu',
+      '- [ ] 1.2 Owner: pick the font',
+      '- [ ] 2.1 Build the order screen',
+      '- [ ] 2.2 Owner: after the build, use it for a day',
+      '- [x] 2.3 Owner: done already',
+      '- [ ] 3.1 Owner: real-device check',
+    ].join('\n');
+    expect(countTasks(text)).toMatchObject({
+      ownerSteps: [
+        'Owner: pick the font',
+        'Owner: after the build, use it for a day',
+        'Owner: real-device check',
+      ],
+      ownerStepsAfterBuild: [
+        'Owner: after the build, use it for a day',
+        'Owner: real-device check',
+      ],
+    });
+  });
+});
+
+describe('tickTask', () => {
+  it('ticks an owner step longer than the clip by the text ownerSteps gave for it', () => {
+    const long = `Owner: ${'check every screen on a real phone and note what is hard; '.repeat(7)}`;
+    expect(long.length).toBeGreaterThan(400);
+    const list = `# Tasks\n\n- [x] 1.1 Build it\n- [ ] 13.3 ${long}\n- [ ] 13.4 Owner: short one\n`;
+    const [step] = countTasks(list).ownerSteps;
+    expect(step?.endsWith('…')).toBe(true);
+    expect(tickTask(list, step as string)).toBe(list.replace('[ ] 13.3', '[x] 13.3'));
+    // With its number on, as a builder names it, it matches too.
+    expect(tickTask(list, `13.3 ${long}`)).toBe(list.replace('[ ] 13.3', '[x] 13.3'));
+    expect(tickTask(list, 'Owner: not in the list')).toBeNull();
   });
 });
 

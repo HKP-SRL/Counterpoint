@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-11-13
-x-depends-on: [design-drafts, owner-inbox]
+x-depends-on: [design-drafts, design-drafts-follow-up, owner-inbox]
+x-drafts: [home]

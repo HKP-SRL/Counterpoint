@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Host-scoped navigation
-The console SHALL show a host switcher with each host's name and base branch, and pages for Home (with a count of waiting items, hidden at zero), Changes and Settings. Browser Back SHALL always work.
+The console SHALL show a host switcher with each host's name, base branch and count of waiting items (hidden at zero), and pages for Home (with a count of waiting items in every host, hidden at zero), Changes and Settings. Browser Back SHALL always work.
 
 #### Scenario: One host
 - **WHEN** only one host is registered and the owner opens `/`

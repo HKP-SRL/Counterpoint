@@ -17,11 +17,18 @@ The console SHALL offer Approve on every Ready to approve change, and one action
 - **THEN** all three are on the runway
 
 ### Requirement: Approval stays with the change
-An approval SHALL stay valid when the change's planning files or the host's gate config change afterwards. A build SHALL use the change as committed at the base-branch tip when the build starts. An approval SHALL end only when the change is built or the owner withdraws it.
+An approval SHALL stay valid when the change's planning files or the host's gate config change afterwards. A build SHALL use the change as committed at the base-branch tip when the build starts. An approval SHALL end only when the change is built, when only owner steps are left in it, or when the owner withdraws it.
 
 #### Scenario: Plan revised after approval
 - **WHEN** the owner revises an approved change's tasks and commits them to the base branch
 - **THEN** the change stays on the runway and its next build uses the revised tasks
+
+### Requirement: Approval of a removed change ends
+When an approved change is no longer in the planning files at the base-branch tip (renamed or removed), its approval SHALL end, and Needs You SHALL say so once, naming the change, in a card that does not block work. A change created later under that name SHALL need a new approval.
+
+#### Scenario: Approved change renamed
+- **WHEN** an approved change is renamed on the base branch
+- **THEN** its approval ends, Needs You names it once, and the renamed change shows Ready to approve
 
 ### Requirement: Withdraw in one click
 The console SHALL offer Withdraw on every On runway change. A withdrawn change SHALL leave the runway at once and show Ready to approve again.

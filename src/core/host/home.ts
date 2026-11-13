@@ -4,7 +4,7 @@
 //
 // Resolution: COUNTERPOINT_HOME, else the platform default. A missing home is refused and never
 // created here; only `counterpoint init` creates it, so state can never silently land on the
-// internal disk when the Dock volume is not mounted.
+// internal disk when the external volume it lives on is not mounted.
 import { chmodSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -21,7 +21,7 @@ export class HomeMissingError extends Error {
 
   constructor(path: string) {
     super(
-      `Counterpoint home "${path}" does not exist. If it is on the Dock volume, is it mounted? Nothing was created.`,
+      `Counterpoint home "${path}" does not exist. If it is on an external volume, is it mounted? Nothing was created.`,
     );
     this.name = 'HomeMissingError';
     this.path = path;

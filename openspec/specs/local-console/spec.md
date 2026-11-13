@@ -20,14 +20,22 @@ Every request SHALL carry the exact Host `127.0.0.1:{port}`. Any other Host, inc
 - **THEN** the server answers 403 and runs no route
 
 ### Requirement: Origin and content checks on writes
-Every non-GET request SHALL carry the exact console Origin, a same-origin fetch-metadata header and a JSON body. A cross-site or form-encoded post SHALL be refused.
+Every non-GET request SHALL carry the exact console Origin and a JSON body. A fetch-metadata header, when the request carries one, SHALL say same-origin. A cross-site or form-encoded post SHALL be refused.
 
 #### Scenario: Cross-site post
 - **WHEN** a page on another origin posts to a console API route
 - **THEN** the server answers 403 and the console shows `Request blocked`
 
 ### Requirement: One-time sign-in
-The owner SHALL sign in only through a link carrying a single-use code that expires within 5 minutes. The server SHALL exchange the code for an `HttpOnly; SameSite=Strict` session cookie that lasts at most 12 hours and SHALL store codes and sessions only as hashes. `counterpoint open` SHALL print a fresh link.
+The owner SHALL sign in only through a link carrying a single-use code that expires within 5 minutes. The server SHALL exchange the code for an `HttpOnly; SameSite=Strict` session cookie. A session SHALL end after 12 hours unused, each use moving that end 12 hours ahead, and SHALL last at most 30 days in all. The server SHALL store codes and sessions only as hashes. `counterpoint open` SHALL print a fresh link.
+
+#### Scenario: Console used every day
+- **WHEN** the owner uses the console each morning and evening for a week
+- **THEN** they are never asked to sign in again
+
+#### Scenario: Console left unused
+- **WHEN** the console is not used for 12 hours
+- **THEN** its session has ended and the browser lands on the signed-out screen
 
 #### Scenario: Link used twice
 - **WHEN** the owner opens a sign-in link that was already used

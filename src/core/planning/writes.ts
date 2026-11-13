@@ -13,8 +13,10 @@
 // planning-write lock while they land: SQLite's exclusive lock on one file, polled, so the daemon
 // never blocks while it waits and a crash can never leave it held.
 //
-// A write may only touch the host's planning files (the adapter decides), never `.counterpoint/`
-// or `.claude/`.
+// A write may only touch the host's planning files (the adapter decides), never `.git/`,
+// `.counterpoint/` or `.claude/`. An owner-step result the owner landed from its diff (a `code`
+// write) may touch any file of the repository, `.counterpoint/` included, but never `.git/` or
+// `.claude/`.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -109,13 +111,15 @@ export interface PlanningRules {
   isPlanningPath: (path: string) => boolean;
   /** The task list with `task` ticked, unchanged when done, null when it has no such task. */
   tickTask: (tasks: string, task: string) => string | null;
+  /** An owner-step result the owner landed: `.counterpoint/` paths are allowed too. */
+  code?: boolean;
 }
 
 export type ComposeResult =
   | { ok: true; files: PlanningFile[] }
   | { ok: false; reason: 'invalid' | 'not-planning' | 'conflict'; detail: string };
 
-function checkPath(path: string): string | null {
+function checkPath(path: string, code: boolean): string | null {
   if (path === '' || path.length > 400) return 'An empty or overlong path.';
   if (path.startsWith('/') || path.includes('\\') || path.includes('\0')) {
     return `${path} is not a repository-relative path.`;
@@ -125,16 +129,23 @@ function checkPath(path: string): string | null {
     return `${path} is not a normalized path.`;
   }
   const top = segments[0]?.toLowerCase();
-  if (top === '.git' || top === '.counterpoint' || top === '.claude') {
-    return `${path} is not a planning file.`;
+  if (top === '.git' || top === '.claude') {
+    return code
+      ? `${path} is under ${top}/, which Counterpoint never writes.`
+      : `${path} is not a planning file.`;
   }
+  if (top === '.counterpoint' && !code) return `${path} is not a planning file.`;
   return null;
 }
 
-/** Why a write cannot be stored at all (a bad message, path or size), or null. */
+/**
+ * Why a write cannot be stored at all (a bad message, path or size), or null. `code`: an owner-step
+ * result the owner landed from its diff, which may also touch `.counterpoint/`.
+ */
 export function checkWrite(
   write: PlanningWrite,
   isPlanningPath: (path: string) => boolean,
+  options: { code?: boolean } = {},
 ): { reason: 'invalid' | 'not-planning'; detail: string } | null {
   const subject = write.message.split('\n')[0]?.trim() ?? '';
   if (subject === '' || write.message.length > 10_000 || write.message.includes('\0')) {
@@ -144,7 +155,7 @@ export function checkWrite(
     return { reason: 'invalid', detail: `A planning write holds 1 to ${MAX_EDITS} edits.` };
   }
   for (const edit of write.edits) {
-    const problem = checkPath(edit.path);
+    const problem = checkPath(edit.path, options.code === true);
     if (problem !== null) return { reason: 'not-planning', detail: problem };
     if (!isPlanningPath(edit.path)) {
       return { reason: 'not-planning', detail: `${edit.path} is not a planning file.` };
@@ -166,7 +177,7 @@ export async function composeWrite(
   write: PlanningWrite,
   rules: PlanningRules,
 ): Promise<ComposeResult> {
-  const refused = checkWrite(write, rules.isPlanningPath);
+  const refused = checkWrite(write, rules.isPlanningPath, { code: rules.code === true });
   if (refused !== null) return { ok: false, ...refused };
   const files = new Map<string, string | null>();
   const read = async (path: string): Promise<string | null> => {

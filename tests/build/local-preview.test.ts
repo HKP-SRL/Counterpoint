@@ -1,9 +1,14 @@
 // Local previews on demand (pull-requests: Preview link; owner decision 2026-11-11): the host
-// config's preview command, run under srt in the change's worktree on a free loopback port.
+// config's preview command, run as the owner in the change's worktree on a free loopback port.
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
-import { LocalPreviews, type PreviewStatus } from '../../src/build/local-preview.ts';
+import {
+  LocalPreviews,
+  PREVIEW_TAG_ENV,
+  type PreviewStatus,
+  previewHomeTag,
+} from '../../src/build/local-preview.ts';
 import type { RunHost } from '../../src/build/orchestrator.ts';
 import { worktreePathFor } from '../../src/build/worktrees.ts';
 import { createBaseResolver } from '../../src/core/git/base-ref.ts';
@@ -61,7 +66,7 @@ async function setup(config: string, state: 'green' | 'building' = 'green') {
     consolePort: 4170,
     publish: (_host, payload) => events.push(payload),
   });
-  return { previews, events };
+  return { previews, events, home };
 }
 
 async function until(read: () => PreviewStatus, done: (s: PreviewStatus) => boolean, ms = 30_000) {
@@ -101,8 +106,67 @@ describe('LocalPreviews refusals', () => {
   });
 });
 
-describe.skipIf(process.platform !== 'darwin')('LocalPreviews (live srt)', () => {
-  it('starts the preview sandboxed on a free loopback port, serves it, and stops it', async () => {
+describe('previews after a daemon crash', () => {
+  it('tags every preview with its home, so the next daemon can end what a crash left', async () => {
+    expect(previewHomeTag('/a/home')).toMatch(/^[0-9a-f]{32}$/);
+    expect(previewHomeTag('/a/home')).toBe(previewHomeTag('/a/home/'));
+    expect(previewHomeTag('/a/home')).not.toBe(previewHomeTag('/b/home'));
+    const { previews, home } = await setup(
+      `preview:\n  command: [node, -e, "console.log(process.env.${PREVIEW_TAG_ENV}); process.exit(3)", "{port}"]\n`,
+    );
+    const started = await previews.start('cena', 'a-thing');
+    if (!started.ok) throw new Error(started.error);
+    const exited = await until(
+      () => previews.status('cena', 'a-thing'),
+      (s) => s.state === 'exited',
+    );
+    expect(exited.tail).toBe(previewHomeTag(home));
+  }, 30_000);
+
+  it("sweeps the home's preview tag when asked at daemon start", async () => {
+    const swept: string[] = [];
+    const home = makeScratchDir('cp-preview');
+    const previews = new LocalPreviews({
+      home,
+      db: openStore(home),
+      host: () => null,
+      consolePort: 4170,
+      publish: () => {},
+      sweep: async (name, tag) => {
+        swept.push(`${name}=${tag}`);
+        return { found: [], error: null };
+      },
+    });
+    await previews.sweepLeftovers();
+    expect(swept).toEqual([`${PREVIEW_TAG_ENV}=${previewHomeTag(home)}`]);
+  });
+});
+
+describe.skipIf(process.platform !== 'darwin')('LocalPreviews (live)', () => {
+  it('ends a running preview by its home tag (live ps), as a restarted daemon does', async (ctx) => {
+    const { previews } = await setup(PREVIEW_CONFIG);
+    const started = await previews.start('cena', 'a-thing');
+    if (!started.ok) throw new Error(started.error);
+    const running = await until(
+      () => previews.status('cena', 'a-thing'),
+      (s) => s.state !== 'starting',
+    );
+    expect(running.state).toBe('running');
+    const swept = await previews.sweepLeftovers();
+    // Some sandboxed shells cannot read other processes' environments at all.
+    if (swept.found.length === 0) {
+      previews.stop('cena', 'a-thing');
+      ctx.skip();
+    }
+    const ended = await until(
+      () => previews.status('cena', 'a-thing'),
+      (s) => s.state !== 'running',
+    );
+    expect(ended.state).toBe('exited');
+    await expect(fetch(running.url as string)).rejects.toThrow();
+  }, 60_000);
+
+  it('starts the preview on a free loopback port, serves it, and stops it', async () => {
     const { previews, events } = await setup(PREVIEW_CONFIG);
     const started = await previews.start('cena', 'a-thing');
     if (!started.ok) throw new Error(started.error);

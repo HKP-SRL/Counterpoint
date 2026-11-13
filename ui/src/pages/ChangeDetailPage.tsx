@@ -5,7 +5,9 @@
 //
 // `Approve` is the page's one primary action, rendered only for Ready to approve: one click puts
 // the change on the runway (approvals: Approve in one click). An On runway change offers
-// `Withdraw` instead.
+// `Withdraw` instead, and `Retry` while it is parked or on hold. Where it stands in the build lane
+// (building, parked, on hold, PR open with its link, waiting on a dependency) shows in its badge
+// and a banner; a Built change says why it is built and keeps its open owner steps.
 // Every string comes from the host's planning files (untrusted) and renders as React text only.
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -24,9 +26,11 @@ import { type ReactNode, useEffect } from 'react';
 import { ApiError, apiGet, queryKeys } from '../api';
 import { useApprovalActions } from '../approvals';
 import { OwnerStepsBanner } from '../components/OwnerStepsBanner';
-import { StatusBadge } from '../components/StatusBadge';
+import { ChangeBadge } from '../components/StatusBadge';
+import { builtText, canRetry, stageBanner } from '../stage';
 import {
   type ChangeRow,
+  ChangeStatusBadges,
   changesQuery,
   notReadyText,
   parseChangeRow,
@@ -98,10 +102,27 @@ function ReasonBanners({ change }: { change: ChangeDetail }) {
         status="info"
         title="Already built"
         description={
-          change.archived
-            ? `${change.id} is archived, so there is nothing left to run. Approval is not offered.`
-            : `Every task in ${change.id} is checked, so there is nothing left to run. Approval is not offered.`
+          <>
+            {builtText(change.id, change.builtBy, change.ownerSteps.length)}
+            {change.builtBy === 'merged' && change.prUrl !== null ? (
+              <>
+                {' '}
+                <Link href={change.prUrl} target="_blank" rel="noreferrer">
+                  Open the PR
+                </Link>
+              </>
+            ) : null}
+          </>
         }
+      />,
+    );
+  } else if (change.status === 'owner-steps') {
+    banners.push(
+      <Banner
+        key="owner-steps-left"
+        status="info"
+        title="Only owner steps are left"
+        description={`Every other task in ${change.id} is checked, so there is nothing to build. It shows Built once the owner steps below are checked too. Approval is not offered.`}
       />,
     );
   } else if (change.status === 'not-planned') {
@@ -115,8 +136,49 @@ function ReasonBanners({ change }: { change: ChangeDetail }) {
     );
   }
 
+  if (change.drafts?.held === true) {
+    banners.push(
+      <Banner
+        key="drafts"
+        status="warning"
+        title="Waiting for sign-off"
+        description={`It builds once every screen is signed off and on the base branch. Waiting: ${change.drafts.waiting.join(', ')}.`}
+      />,
+    );
+  }
+
+  // Where it stands in the build lane, and what the owner can do about it.
+  if (change.stage !== null) {
+    const { title, description } = stageBanner(change.id, change.stage);
+    const prUrl =
+      change.stage.kind === 'pr-open' || change.stage.kind === 'pr-closed'
+        ? change.stage.prUrl
+        : null;
+    banners.push(
+      <Banner
+        key="stage"
+        status={change.stage.kind === 'parked' || change.stage.kind === 'held' ? 'warning' : 'info'}
+        title={title}
+        description={
+          prUrl !== null ? (
+            <>
+              {description}{' '}
+              <Link href={prUrl} target="_blank" rel="noreferrer">
+                Open the PR
+              </Link>
+            </>
+          ) : (
+            description
+          )
+        }
+      />,
+    );
+  }
+
   // Owner steps are shown prominently, but approval stays allowed (host-planning "Change detail").
-  if (change.ownerSteps.length > 0 && change.status !== 'built') {
+  // A built change keeps them until they are ticked or it is archived (owner-steps: Owner steps of
+  // built changes stay cards).
+  if (change.ownerSteps.length > 0 && !change.archived) {
     banners.push(<OwnerStepsBanner key="owner-steps" steps={change.ownerSteps} />);
   }
 
@@ -149,7 +211,7 @@ function DependsOn({ hostId, change }: { hostId: string; change: ChangeDetail })
           <Link key={dep} href={`/h/${hostId}/changes/${dep}`}>
             <HStack gap={2} vAlign="center" wrap="wrap">
               <Text type="code">{dep}</Text>
-              <StatusBadge status={known.status} />
+              <ChangeBadge status={known.status} stage={known.stage} />
             </HStack>
           </Link>
         );
@@ -233,24 +295,41 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
             <Heading level={2} accessibilityLevel={1}>
               {change.title}
             </Heading>
-            <StatusBadge status={change.status} />
+            <ChangeStatusBadges row={change} />
           </HStack>
-          {change.status === 'ready' ? (
-            <Button
-              label="Approve"
-              variant="primary"
-              isLoading={actions.pending === change.id}
-              onClick={() => void actions.approve(change.id)}
-            />
-          ) : null}
-          {change.status === 'on-runway' ? (
-            <Button
-              label="Withdraw"
-              variant="secondary"
-              isLoading={actions.pending === change.id}
-              onClick={() => void actions.withdraw(change.id)}
-            />
-          ) : null}
+          <HStack gap={2} vAlign="center">
+            {change.archived ? null : (
+              <Button
+                label="Drafts"
+                variant="secondary"
+                href={`/h/${hostId}/changes/${change.id}/drafts`}
+              />
+            )}
+            {change.status === 'ready' ? (
+              <Button
+                label="Approve"
+                variant="primary"
+                isLoading={actions.pending === change.id}
+                onClick={() => void actions.approve(change.id)}
+              />
+            ) : null}
+            {change.status === 'on-runway' && canRetry(change.stage) ? (
+              <Button
+                label="Retry"
+                variant="primary"
+                isLoading={actions.pending === change.id}
+                onClick={() => void actions.retry(change.id)}
+              />
+            ) : null}
+            {change.status === 'on-runway' ? (
+              <Button
+                label="Withdraw"
+                variant="secondary"
+                isLoading={actions.pending === change.id}
+                onClick={() => void actions.withdraw(change.id)}
+              />
+            ) : null}
+          </HStack>
         </HStack>
         <Text type="code" color="secondary">
           {change.id}

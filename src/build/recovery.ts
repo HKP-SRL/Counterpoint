@@ -7,7 +7,8 @@
 //    signalled. A stored pid alone is never signalled: after a reboot it may belong to anything;
 // 2. a change cut off mid-build gets its worktree's changes committed as
 //    `cp: <change> session <n> (interrupted)`, with a handoff Counterpoint writes when the session
-//    left none, so the next session continues from there;
+//    left none, so the next session continues from there (a base merge left half done is
+//    abandoned instead: the resumed build merges the base again);
 // 3. the run is returned for the orchestrator to resume (or end, when its stop time has passed).
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,6 +32,7 @@ import { GATE_TAG_ENV } from './gate-runner.ts';
 import type { RunHost } from './orchestrator.ts';
 import { sweepTagged } from './process-sweep.ts';
 import { commitSession } from './session-commit.ts';
+import { abortUnfinishedMerge } from './worktrees.ts';
 
 export interface RecoveryReport {
   /** The run to resume, or null. */
@@ -104,6 +106,8 @@ export async function recoverRuns(input: {
       continue;
     if (runtime === null || runtime.adapter === null || !existsSync(change.worktree)) continue;
     try {
+      // A base merge cut off while its conflicts were resolved is not committed: it is merged again.
+      if (await abortUnfinishedMerge(change.worktree)) continue;
       const snapshot = await runtime.adapter.snapshot(runtime.reader, change.baseCommit);
       const facts = findChange(snapshot.changes, change.change);
       if (facts === undefined || facts === null) continue;

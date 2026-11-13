@@ -196,6 +196,7 @@ describe('events outbox', () => {
       'doctor',
       'run',
       'settings',
+      'drafts',
     ]);
   });
 

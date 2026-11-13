@@ -54,6 +54,33 @@ describe('context meter on real streams (claude 2.1.322)', () => {
     expect(init && resultWindows(init).size).toBe(0);
   });
 
+  // Seen live (run 20261113-1030, session 14): a fork peaked at 459k while the main thread peaked
+  // at 410k, and the wrap-up fired on the fork's value.
+  it("counts only the main thread's messages, never a subagent's", () => {
+    const main = (id: string, tokens: number): StreamEvent => ({
+      type: 'assistant',
+      message: { id, usage: { input_tokens: tokens } },
+      parent_tool_use_id: null,
+    });
+    const sub = (id: string, tokens: number): StreamEvent => ({
+      type: 'assistant',
+      message: { id, usage: { input_tokens: tokens } },
+      parent_tool_use_id: 'toolu_fork',
+    });
+    const meter = new ContextMeter();
+    const fills = [
+      main('m1', 300_000),
+      sub('s1', 459_316),
+      main('m2', 409_618),
+      sub('s2', 120_000),
+      main('m2', 409_618),
+    ].map((event) => meter.observe(event));
+    expect(fills).toEqual([300_000, null, 409_618, null, null]);
+    expect(meter.latest).toBe(409_618);
+    expect(meter.peak).toBe(409_618);
+    expect(assistantFill(sub('s3', 1))).toBeNull();
+  });
+
   it('ignores malformed usage', () => {
     expect(assistantFill({ type: 'assistant', message: { id: 'x' } })).toBeNull();
     expect(
@@ -116,6 +143,18 @@ describe('buildClaudeArgv', () => {
 
   it('still needs a prompt without streaming input', () => {
     expect(() => buildClaudeArgv(base)).toThrow(/prompt/);
+  });
+});
+
+describe('sign-in check (fake claude)', () => {
+  const runnerWith = (login: string) =>
+    new ClaudeCliRunner({ binary: FAKE, env: { ...process.env, FAKE_CLAUDE_LOGIN: login } });
+
+  it("reads claude's own login state, and says it cannot tell when the answer is not JSON", async () => {
+    expect(await runnerWith('in').signedIn()).toBe(true);
+    expect(await runnerWith('out').signedIn()).toBe(false);
+    expect(await runnerWith('garbled').signedIn()).toBeNull();
+    expect(await new ClaudeCliRunner({ binary: '/nonexistent/claude' }).signedIn()).toBeNull();
   });
 });
 
@@ -221,6 +260,106 @@ describe('streaming session (fake claude)', () => {
       )
       .toBe(false);
   });
+
+  // A process the session started in a group of its own (a dev server, a database) outlives the
+  // group kill; it is swept by the session's tag when the session ends (first-unattended-run 3.3).
+  it('ends when claude exits and sweeps its tag, though a process that left its group holds the output', async () => {
+    const dir = makeScratchDir('cp-stream');
+    const events: KnownStreamEvent[] = [];
+    const swept: string[] = [];
+    let escaped = 0;
+    const sweeping = new ClaudeCliRunner({
+      binary: FAKE,
+      sweep: async (name, tag) => {
+        swept.push(`${name}=${tag}`);
+        process.kill(escaped, 'SIGKILL');
+        return { found: [{ pid: escaped, command: 'node dev-server' }], error: null };
+      },
+    });
+    const session = await sweeping.start({
+      argv: [],
+      cwd: dir,
+      timeoutMs: 20_000,
+      rawLogPath: join(dir, 'raw.jsonl'),
+      processTag: 'tag-escaped001',
+      onEvent: (event) => events.push(event as KnownStreamEvent),
+    });
+    try {
+      session.send('ESCAPE');
+      await waitFor(events, (e) => e.subtype === 'fake_escaped');
+      escaped = events.find((e) => e.subtype === 'fake_escaped')?.pid as number;
+      const started = Date.now();
+      session.endInput();
+      const end = await session.done;
+      expect(end.exitCode).toBe(0);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(swept).toEqual([`${AGENT_TAG_ENV}=tag-escaped001`]);
+      expect(end.survivors).toEqual([{ pid: escaped, command: 'node dev-server' }]);
+    } finally {
+      try {
+        process.kill(escaped, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  });
+
+  it('tags a one-shot session (an owner step) and sweeps its tag when it ends', async () => {
+    const dir = makeScratchDir('cp-stream');
+    const swept: string[] = [];
+    const oneShot = new ClaudeCliRunner({
+      binary: FAKE,
+      sweep: async (name, tag) => {
+        swept.push(`${name}=${tag}`);
+        return { found: [], error: null };
+      },
+    });
+    const run = await oneShot.run({
+      argv: [],
+      cwd: dir,
+      timeoutMs: 20_000,
+      rawLogPath: join(dir, 'raw.jsonl'),
+    });
+    expect(run.exitCode).toBe(0);
+    expect(swept).toHaveLength(1);
+    expect(swept[0]).toMatch(new RegExp(`^${AGENT_TAG_ENV}=[0-9a-f]{32}$`));
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'finds the escaped process by its tag with the live sweep',
+    async (ctx) => {
+      const { events, session } = await start('tag-livesweep01');
+      session.send('ESCAPE');
+      await waitFor(events, (e) => e.subtype === 'fake_escaped');
+      const escaped = events.find((e) => e.subtype === 'fake_escaped')?.pid as number;
+      try {
+        session.endInput();
+        const end = await session.done;
+        // Some sandboxed shells cannot read other processes' environments at all.
+        if (end.survivors?.length === 0 || end.sweepError) ctx.skip();
+        expect(end.survivors?.map((p) => p.pid)).toEqual([escaped]);
+        await expect
+          .poll(
+            () => {
+              try {
+                process.kill(escaped, 0);
+                return true;
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 5000 },
+          )
+          .toBe(false);
+      } finally {
+        try {
+          process.kill(escaped, 'SIGKILL');
+        } catch {
+          // gone
+        }
+      }
+    },
+  );
 
   it('escalates to SIGKILL when SIGTERM is ignored', async () => {
     const { session, events } = await start();

@@ -12,6 +12,8 @@ export type RunwayItem = {
   taskCount: number;
   /** Epoch ms. */
   approvedAt: number;
+  /** Its design drafts hold it until every screen is signed off (design-drafts D-12). */
+  waitingForSignOff: boolean;
 };
 
 export type RunwaySnapshot = {
@@ -19,6 +21,8 @@ export type RunwaySnapshot = {
   tip: string | null;
   count: number;
   taskCount: number;
+  /** The changes on it that can build now (Run builds those). */
+  ready: number;
   items: RunwayItem[];
 };
 
@@ -34,6 +38,7 @@ function parseItem(value: unknown): RunwayItem | null {
     title: typeof value.title === 'string' && value.title !== '' ? value.title : value.changeId,
     taskCount: count(value.taskCount),
     approvedAt: count(value.approvedAt),
+    waitingForSignOff: value.waitingForSignOff === true,
   };
 }
 
@@ -45,6 +50,7 @@ async function fetchRunway(hostId: string, signal?: AbortSignal): Promise<Runway
     tip: typeof raw.tip === 'string' ? raw.tip : null,
     count: count(raw.count),
     taskCount: count(raw.taskCount),
+    ready: count(raw.ready),
     items: Array.isArray(raw.items)
       ? raw.items.map(parseItem).filter((item): item is RunwayItem => item !== null)
       : [],

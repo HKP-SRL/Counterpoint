@@ -14,6 +14,7 @@ import {
   DEFAULT_CEILING,
   Governor,
   governedRunner,
+  LONG_HOLD_MS,
   RESET_MARGIN_MS,
   rateLimitWindows,
   readPause,
@@ -93,6 +94,31 @@ describe('classifySession', () => {
     expect(classifySession([result()])).toEqual({ kind: 'ok' });
   });
 
+  // Counterpoint builds itself, and its own code talks about limits: a builder's summary is not
+  // claude's error message.
+  it.each([
+    'Done: the governor now stops the run when a spend limit is reached.',
+    'Fixed the test for "usage limit reached" and "You\'ve hit your session limit".',
+    'Handled the credit balance is too low message.',
+  ])('is ok for a successful session whatever its summary says: %s', (text) => {
+    expect(classifySession([result({ result: text })])).toEqual({ kind: 'ok' });
+    expect(classifySession([assistantError('rate_limit'), result({ result: text })])).toEqual({
+      kind: 'ok',
+    });
+  });
+
+  it("does not read a subagent's error as the session's", () => {
+    const sub: StreamEvent = {
+      type: 'assistant',
+      error: 'authentication_failed',
+      message: { id: 's' },
+      parent_tool_use_id: 'toolu_fork',
+    };
+    expect(
+      classifySession([sub, result({ subtype: 'error_max_turns', is_error: true })]),
+    ).toMatchObject({ kind: 'failed' });
+  });
+
   it('is a usage limit, with the reset, on a rejected window', () => {
     const outcome = classifySession([
       limitEvent({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1_794_398_400 }),
@@ -119,6 +145,56 @@ describe('classifySession', () => {
     expect(
       classifySession([assistantError(error), result({ is_error: true, result: 'x' })]),
     ).toMatchObject({ kind: 'stop', cause });
+  });
+
+  // Seen live (run 20261113-0940, session 13): three 503 retries, then a Cloudflare page for a
+  // body; the owner was signed in and the next run worked.
+  it('marks a sign-in failure that may be an outage: an HTML body, or after server errors', () => {
+    const retry = (status: number | null): StreamEvent => ({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 500,
+      error_status: status,
+      error: 'server_error',
+    });
+    const cloudflare = 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare';
+    expect(
+      classifySession([
+        retry(503),
+        retry(503),
+        retry(503),
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: cloudflare }),
+      ]),
+    ).toEqual({ kind: 'stop', cause: 'auth', detail: cloudflare, outage: true });
+    expect(
+      classifySession([
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: 'API Error: 403 <!DOCTYPE html><html>...' }),
+      ]),
+    ).toMatchObject({ kind: 'stop', cause: 'auth', outage: true });
+    expect(
+      classifySession([
+        retry(null),
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: 'Failed to authenticate.' }),
+      ]),
+    ).toMatchObject({ outage: true });
+    // A 429 retry is not a server error; a plain sign-in failure is not marked.
+    const plain = classifySession([
+      retry(429),
+      assistantError('authentication_failed'),
+      result({ is_error: true, result: 'Invalid API key' }),
+    ]);
+    expect(plain).toEqual({ kind: 'stop', cause: 'auth', detail: 'Invalid API key' });
+  });
+
+  it("reads claude's not-logged-in error as a sign-in failure", () => {
+    expect(
+      classifySession([result({ is_error: true, result: 'Not logged in · Please run /login' })]),
+    ).toMatchObject({ kind: 'stop', cause: 'auth' });
   });
 
   it('stops on a credits-required rejection instead of pausing', () => {
@@ -163,6 +239,18 @@ describe('classifySession', () => {
     expect(
       classifySession([result({ subtype: 'error_max_turns', is_error: true, result: undefined })]),
     ).toMatchObject({ kind: 'failed', detail: 'error_max_turns' });
+  });
+
+  it("names claude's error code beside its message for a failed session", () => {
+    expect(
+      classifySession([
+        assistantError('model_not_found'),
+        result({ is_error: true, result: "There's an issue with the selected model (opus-9)." }),
+      ]),
+    ).toEqual({
+      kind: 'failed',
+      detail: "There's an issue with the selected model (opus-9). (model_not_found)",
+    });
   });
 
   it('does not fail a session the orchestrator interrupted', () => {
@@ -257,6 +345,71 @@ describe('Governor', () => {
       }),
     );
     expect(g.holdUntil()).toBeNull();
+  });
+
+  describe('a long hold is told', () => {
+    const weekly = (utilization: number, resetsAt: number) =>
+      limitEvent({
+        status: 'allowed_warning',
+        rateLimitType: 'seven_day',
+        utilization,
+        resetsAt: resetsAt / 1000,
+      });
+
+    function telling(db: Store, now: { t: number }) {
+      const told: Array<unknown> = [];
+      const g = new Governor({
+        db,
+        now: () => now.t,
+        sleep: async (ms) => {
+          told.push({ slept: ms });
+          now.t += ms;
+        },
+        onLongHold: (hold) => told.push(hold),
+      });
+      return { g, told };
+    }
+
+    it('names the window and its reset when a wait of 3 hours or more begins, and ends it after', async () => {
+      const db = store();
+      const now = { t: T0 };
+      const { g, told } = telling(db, now);
+      const reset = T0 + 2 * 24 * 3_600_000;
+      g.observe(weekly(0.96, reset));
+      await g.admit({ hostId: 'cena', kind: 'builder' });
+      const until = reset + RESET_MARGIN_MS;
+      expect(told).toEqual([
+        { until, reason: 'seven_day usage at 96%, pacing until it resets', window: 'seven_day' },
+        { slept: until - T0 },
+        null,
+      ]);
+    });
+
+    it('says nothing for a short hold', async () => {
+      const db = store();
+      const now = { t: T0 };
+      const { g, told } = telling(db, now);
+      g.observe(weekly(0.97, T0 + LONG_HOLD_MS - RESET_MARGIN_MS - 60_000));
+      await g.admit({ hostId: 'cena', kind: 'builder' });
+      expect(
+        told.filter((entry) => !(typeof entry === 'object' && entry && 'slept' in entry)),
+      ).toEqual([]);
+    });
+
+    it('ends it when the waiting spawn is stopped', async () => {
+      const db = store();
+      const told: Array<unknown> = [];
+      const g = new Governor({ db, now: () => T0, onLongHold: (hold) => told.push(hold) });
+      g.pause(T0 + 5 * 3_600_000, 'usage limit reached');
+      const controller = new AbortController();
+      const waiting = g.admit({ hostId: 'cena', kind: 'builder', signal: controller.signal });
+      controller.abort();
+      await expect(waiting).rejects.toMatchObject({ kind: 'aborted' });
+      expect(told).toEqual([
+        { until: T0 + 5 * 3_600_000, reason: 'usage limit reached', window: null },
+        null,
+      ]);
+    });
   });
 
   it('stops waiting when aborted', async () => {

@@ -84,6 +84,10 @@ A change whose drafts were started SHALL NOT start building until every one of i
 - **WHEN** a run starts with an approved change whose Home screen is still in low-fi
 - **THEN** the run does not build that change, and Needs You shows a card naming Home with a link to its drafts
 
+#### Scenario: One click leaves a held change out
+- **WHEN** the owner clicks Run while an approved change waits for sign-off
+- **THEN** the run does not include that change and it does not count as ready to build; picked in the run form, it is skipped with the card
+
 #### Scenario: Sign-off not landed yet
 - **WHEN** the owner has signed off every screen but the planning write with the pages has not merged
 - **THEN** the change is still held

@@ -11,6 +11,12 @@
 // control requests, events are delivered as they arrive, and the session runs in its own process
 // group tagged with `CP_AGENT_RUN=<tag>`, so a stop, a timeout or crash recovery can end it and
 // everything it started.
+//
+// When any session ends (builder, calibration, owner step), what is left of its group is killed and
+// the owner's processes are swept for its tag (process-sweep.ts): a database or dev server the
+// session started in a group of its own would otherwise keep a port or the machine-wide test lock,
+// and every later gate would wait on it (first-unattended-run design 3.3). The session counts as
+// ended when claude exits, even if such a process still holds its output (child-end.ts).
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -25,7 +31,9 @@ import {
 } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { execa } from 'execa';
+import { DEFAULT_DRAIN_MS, watchChildEnd } from '../build/child-end.ts';
 import { withoutCounterpoint } from '../build/owner-env.ts';
+import { sweepTagged, type TaggedProcess } from '../build/process-sweep.ts';
 
 /** A stream-json event as printed by claude (`system`, `assistant`, `user`, `result`, ...). */
 export interface KnownStreamEvent {
@@ -71,6 +79,12 @@ export interface AgentRunner {
   start?(request: AgentSessionRequest): Promise<AgentSession>;
   /** The agent CLI's version string, or null when it cannot be read. */
   version?(): Promise<string | null>;
+  /**
+   * Whether the agent CLI holds a sign-in on this machine (a local check, no API call); null when
+   * it cannot tell. Asked before a run says "not signed in" (build-runs: Usage limits pause every
+   * lane), because an outage can fail a session's sign-in too.
+   */
+  signedIn?(): Promise<boolean | null>;
 }
 
 /** The environment variable that tags every process of one agent session (crash sweep). */
@@ -103,6 +117,10 @@ export interface AgentSessionEnd {
   result: StreamEvent | null;
   /** At most the last 64 KiB of stderr. */
   stderr: string;
+  /** Processes carrying the session's tag that outlived it, found and ended by the sweep. */
+  survivors?: TaggedProcess[];
+  /** Why the sweep could not look, when it could not. */
+  sweepError?: string | null;
 }
 
 /** A live `claude -p --input-format stream-json` session. */
@@ -122,6 +140,8 @@ export interface AgentSession {
 }
 
 const STDERR_KEEP = 64 * 1024;
+/** After a kill's SIGKILL and the drain time, how much longer a session may take to end. */
+const GIVE_UP_EXTRA_MS = 1000;
 
 /**
  * The environment a session runs with: the run's (the owner's whole environment, without
@@ -142,7 +162,11 @@ export function killGroup(pgid: number, signal: NodeJS.Signals): void {
   }
 }
 
-function startSession(binary: string, request: AgentSessionRequest): AgentSession {
+function startSession(
+  binary: string,
+  request: AgentSessionRequest,
+  sweep: typeof sweepTagged,
+): AgentSession {
   if (!PROCESS_TAG_RE.test(request.processTag)) throw new Error('Invalid process tag.');
   mkdirSync(dirname(request.rawLogPath), { recursive: true, mode: 0o700 });
   const log = openSync(request.rawLogPath, 'a', 0o600);
@@ -158,6 +182,8 @@ function startSession(binary: string, request: AgentSessionRequest): AgentSessio
     throw new Error('The agent session could not be started.');
   }
   const pid = child.pid;
+  const watch = watchChildEnd(child, DEFAULT_DRAIN_MS);
+  let logClosed = false;
   let inputOpen = true;
   let killed = false;
   let timedOut = false;
@@ -188,6 +214,7 @@ function startSession(binary: string, request: AgentSessionRequest): AgentSessio
 
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
+    if (logClosed) return;
     writeSync(log, chunk);
     pending += chunk;
     let at = pending.indexOf('\n');
@@ -212,6 +239,8 @@ function startSession(binary: string, request: AgentSessionRequest): AgentSessio
     inputOpen = false;
     killGroup(pid, 'SIGTERM');
     setTimeout(() => killGroup(pid, 'SIGKILL'), graceMs).unref();
+    // A process that does not die cannot hold the run: the session ends a little later anyway.
+    setTimeout(() => watch.giveUp(), graceMs + DEFAULT_DRAIN_MS + GIVE_UP_EXTRA_MS).unref();
   };
   const timer = setTimeout(() => {
     timedOut = true;
@@ -219,19 +248,29 @@ function startSession(binary: string, request: AgentSessionRequest): AgentSessio
   }, request.timeoutMs);
   timer.unref();
 
-  const done = new Promise<AgentSessionEnd>((resolveDone) => {
-    child.on('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      if (pending.trim() !== '') emit(parseLine(pending));
-      pending = '';
-      closeSync(log);
-      for (const waiter of waiters.values()) waiter(false);
-      waiters.clear();
-      inputOpen = false;
-      // Children that outlived claude in its group (a backgrounded command) go with it.
-      killGroup(pid, 'SIGKILL');
-      resolveDone({ exitCode, signal, timedOut, killed, result, stderr });
-    });
+  const done = watch.ended.then(async ({ exitCode, signal }): Promise<AgentSessionEnd> => {
+    clearTimeout(timer);
+    if (pending.trim() !== '') emit(parseLine(pending));
+    pending = '';
+    logClosed = true;
+    closeSync(log);
+    for (const waiter of waiters.values()) waiter(false);
+    waiters.clear();
+    inputOpen = false;
+    // Children that outlived claude in its group (a backgrounded command) go with it; then the
+    // tag sweep for what left the group.
+    killGroup(pid, 'SIGKILL');
+    const swept = await sweep(AGENT_TAG_ENV, request.processTag, { graceMs: 1000 });
+    return {
+      exitCode,
+      signal,
+      timedOut,
+      killed,
+      result,
+      stderr,
+      survivors: swept.found,
+      sweepError: swept.error,
+    };
   });
 
   const write = (message: object): void => {
@@ -368,13 +407,45 @@ export async function claudeVersion(
   }
 }
 
+/**
+ * `claude auth status --json` (claude 2.1.325: `{ "loggedIn": true, ... }`, read from the local
+ * login, no API call): its `loggedIn`, or null when it cannot be run or read. Only that field is
+ * read; the rest names the account and is never kept.
+ */
+export async function claudeSignedIn(
+  binary?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean | null> {
+  try {
+    const result = await execa(binary ?? resolveClaudeBinary(env), ['auth', 'status', '--json'], {
+      env: sessionEnv(env),
+      extendEnv: false,
+      stdin: 'ignore',
+      timeout: 15_000,
+      reject: false,
+    });
+    const parsed: unknown = JSON.parse(String(result.stdout ?? ''));
+    const loggedIn =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { loggedIn?: unknown }).loggedIn
+        : undefined;
+    return typeof loggedIn === 'boolean' ? loggedIn : null;
+  } catch {
+    return null;
+  }
+}
+
 export class ClaudeCliRunner implements AgentRunner {
   readonly binary: string;
   /** The environment sessions get when a request names none (the run's). */
   readonly #env: NodeJS.ProcessEnv;
+  readonly #sweep: typeof sweepTagged;
 
-  constructor(options: { binary?: string; env?: NodeJS.ProcessEnv } = {}) {
+  constructor(
+    options: { binary?: string; env?: NodeJS.ProcessEnv; sweep?: typeof sweepTagged } = {},
+  ) {
     this.#env = options.env ?? process.env;
+    this.#sweep = options.sweep ?? sweepTagged;
     // Resolved once, from the run's PATH, to an absolute real path.
     this.binary = options.binary ?? resolveClaudeBinary(this.#env);
     if (!isAbsolute(this.binary)) throw new Error('The claude binary path must be absolute.');
@@ -382,9 +453,11 @@ export class ClaudeCliRunner implements AgentRunner {
 
   async run(request: AgentRunRequest): Promise<AgentRun> {
     mkdirSync(dirname(request.rawLogPath), { recursive: true, mode: 0o700 });
+    // Tagged like a streaming session, so what it started is swept when it ends.
+    const tag = randomBytes(16).toString('hex');
     const result = await execa(this.binary, [...request.argv], {
       cwd: request.cwd,
-      env: sessionEnv(request.env ?? this.#env),
+      env: { ...sessionEnv(request.env ?? this.#env), [AGENT_TAG_ENV]: tag },
       extendEnv: false,
       stdin: 'ignore',
       timeout: request.timeoutMs,
@@ -393,6 +466,7 @@ export class ClaudeCliRunner implements AgentRunner {
       stripFinalNewline: false,
       encoding: 'utf8',
     });
+    await this.#sweep(AGENT_TAG_ENV, tag, { graceMs: 1000 });
     const raw = String(result.stdout ?? '');
     appendFileSync(request.rawLogPath, raw, { mode: 0o600 });
     const events = parseStreamJson(raw);
@@ -408,10 +482,14 @@ export class ClaudeCliRunner implements AgentRunner {
   }
 
   async start(request: AgentSessionRequest): Promise<AgentSession> {
-    return startSession(this.binary, { ...request, env: request.env ?? this.#env });
+    return startSession(this.binary, { ...request, env: request.env ?? this.#env }, this.#sweep);
   }
 
   version(): Promise<string | null> {
     return claudeVersion(this.binary, this.#env);
+  }
+
+  signedIn(): Promise<boolean | null> {
+    return claudeSignedIn(this.binary, this.#env);
   }
 }

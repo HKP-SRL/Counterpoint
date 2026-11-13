@@ -11,6 +11,12 @@
 // A step is named by a hash of its text (`stepId`), so a card and its actions survive the step's
 // task number changing, and a step whose text changes is a new card.
 //
+// A step listed after open build work in the plan ("after the build, use it for a day") is about
+// the built change: it is no card until the change is built. Done and Land it merge to the base,
+// so they need a deliberate pick: Later is the recommended option, and Enter never ticks a step.
+// Do it for me is not offered for a step that names only paths a result may never touch
+// (`.git/`, `.claude/`): the session's work could not land.
+//
 // Do it for me (D-8) runs a Claude Code session as the owner, like a builder, in a fresh detached
 // worktree at the base tip (never the owner's checkout), with the host's `worktree.clone` folders
 // cloned in (D-13). What it changed is kept as text edits (owner-step-results.ts) and the worktree
@@ -36,7 +42,13 @@ import {
   ownerSteps,
   withMerged,
 } from '../core/runway/status.ts';
-import { type CardAction, type CardRow, getCardByKey, type NewCard } from '../core/store/cards.ts';
+import {
+  type CardAction,
+  type CardOption,
+  type CardRow,
+  getCardByKey,
+  type NewCard,
+} from '../core/store/cards.ts';
 import {
   getOwnerStepResult,
   insertOwnerStepResult,
@@ -81,6 +93,31 @@ const clip = (text: string, max: number): string => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
+/** Later on a card that merges to the base: the recommended option, so Enter never merges. */
+const LATER: CardOption = {
+  label: 'Later',
+  consequence: 'Nothing changes; it stays here.',
+  action: { type: 'later' },
+};
+
+/** Paths a result may never touch (writes.ts): a step naming only these can't be done for you. */
+const REFUSED_TOP = new Set(['.git', '.claude']);
+const PATH_SPAN_RE = /`([^`\s]+)`/g;
+
+/**
+ * True when the step names repository paths (in backticks) and every one of them is under `.git/`
+ * or `.claude/`: a Do it for me session could only change files that never land.
+ */
+export function onlyRefusedPaths(step: string): boolean {
+  const paths = [...step.matchAll(PATH_SPAN_RE)]
+    .map((match) => (match[1] ?? '').replace(/^\.\//, ''))
+    .filter((span) => span.includes('/') || span.startsWith('.'));
+  return (
+    paths.length > 0 &&
+    paths.every((path) => REFUSED_TOP.has(path.split('/')[0]?.toLowerCase() ?? ''))
+  );
+}
+
 /** The PR number in a PR URL, or null. */
 function prNumber(prUrl: string): string | null {
   return /\/pull\/(\d+)$/.exec(prUrl)?.[1] ?? null;
@@ -98,6 +135,12 @@ export function ownerStepCard(
 ): NewCard {
   const id = stepId(step);
   const number = merged?.prUrl == null ? null : prNumber(merged.prUrl);
+  const canDo = !onlyRefusedPaths(step);
+  const doIt: CardOption = {
+    label: 'Do it for me',
+    consequence: 'Counterpoint does it in its own worktree and shows you the result first.',
+    action: { type: 'perform-owner-step', change, step: id },
+  };
   return {
     hostId,
     key: ownerStepKey(hostId, change, step),
@@ -115,13 +158,10 @@ export function ownerStepCard(
         consequence: 'Counterpoint ticks it in a small PR and merges it.',
         action: { type: 'tick-owner-step', change, step: id },
       },
-      {
-        label: 'Do it for me',
-        consequence: 'Counterpoint does it in its own worktree and shows you the result first.',
-        action: { type: 'perform-owner-step', change, step: id },
-      },
+      ...(canDo ? [doIt] : []),
+      LATER,
     ],
-    recommended: 0,
+    recommended: canDo ? 2 : 1,
     reversible: true,
     blocking: false,
   };
@@ -129,22 +169,27 @@ export function ownerStepCard(
 
 /**
  * The owner steps that are cards now: those of planned, runway and built changes that are not
- * archived. `mergedPrs` maps a change whose build PR merged to that PR's URL.
+ * archived, except a step listed after open build work, which waits until its change is built
+ * (added to `waiting`, by card key). `mergedPrs` maps a change whose build PR merged to that PR's
+ * URL.
  */
 export function ownerStepCards(
   hostId: string,
   changes: readonly (ChangeFacts & MergedFact)[],
   onRunway: ReadonlySet<string>,
   mergedPrs: ReadonlyMap<string, string> = new Map(),
+  waiting: Set<string> = new Set(),
 ): NewCard[] {
   const cards: NewCard[] = [];
   for (const change of changes) {
     if (change.archived) continue;
     const { status } = deriveChangeStatus(change, onRunway.has(change.id) ? 'on-runway' : null);
-    if (status !== 'ready' && status !== 'on-runway' && status !== 'built') continue;
+    if (status === 'unreadable' || status === 'not-planned') continue;
     const merged = status === 'built' ? { prUrl: mergedPrs.get(change.id) ?? null } : null;
+    const afterBuild = new Set(status === 'built' ? [] : (change.tasks.ownerStepsAfterBuild ?? []));
     for (const step of ownerSteps(change)) {
-      cards.push(ownerStepCard(hostId, change.id, step, merged));
+      if (afterBuild.has(step)) waiting.add(ownerStepKey(hostId, change.id, step));
+      else cards.push(ownerStepCard(hostId, change.id, step, merged));
     }
   }
   return cards;
@@ -192,8 +237,9 @@ export function landCard(result: OwnerStepResultRow): NewCard {
         consequence: 'Nothing lands; the step comes back to do again.',
         action: { type: 'discard-owner-step', resultId: result.id },
       },
+      LATER,
     ],
-    recommended: 0,
+    recommended: 2,
     reversible: true,
     blocking: false,
   };
@@ -256,7 +302,8 @@ async function collectEdits(root: string, worktree: string, base: string): Promi
     throw new ResultRefused(`It changed ${edits.length} files; one PR holds at most ${MAX_FILES}.`);
   }
   if (edits.length > 0) {
-    const refused = checkWrite({ message: 'owner step', edits }, () => true);
+    // The owner lands it from its diff, so it may touch any file but `.git/` and `.claude/`.
+    const refused = checkWrite({ message: 'owner step', edits }, () => true, { code: true });
     if (refused !== null) throw new ResultRefused(refused.detail);
   }
   return edits.sort((a, b) => a.path.localeCompare(b.path));
@@ -335,11 +382,13 @@ export class OwnerSteps {
       [...states].filter(([, state]) => state.state === 'on-runway').map(([id]) => id),
     );
     const changes = withMerged(view.snapshot.changes, this.#o.approvals.merged(hostId));
+    const waiting = new Set<string>();
     const cards = ownerStepCards(
       hostId,
       changes,
       onRunway,
       mergedPullRequests(this.#o.desk.store, hostId),
+      waiting,
     );
     const keep = new Set(cards.map((card) => card.key ?? ''));
     const prefix = keyPrefix(hostId);
@@ -358,8 +407,17 @@ export class OwnerSteps {
         if (existing !== undefined && existing.why !== input.why) {
           this.#o.desk.setWhy(existing, input.why);
         }
+        // A card raised before its options changed (Later recommended) gets the new ones.
+        if (existing !== undefined) this.#o.desk.setOptions(existing, input);
       } catch {
         // a step the card model refuses is left out, never a failed read
+      }
+    }
+    // A step that waits for the build is no card yet; it comes back once the change is built.
+    for (const key of waiting) {
+      const card = getCardByKey(this.#o.desk.store, key);
+      if (card !== undefined && (card.state === 'open' || card.state === 'deferred')) {
+        this.#o.desk.resolve(card, `Comes back once ${card.change ?? 'its change'} is built.`);
       }
     }
     this.#o.desk.resolveMissing(hostId, prefix, keep, 'No longer open in the plan.');
@@ -562,14 +620,11 @@ export class OwnerSteps {
     if (adapter === null) throw new Error('This project has no planning Counterpoint can write.');
     const found = await this.#find(result.hostId, result.change, result.stepId);
     const tasksPath = found === null ? null : adapter.tasksPath(found.change);
-    const edits: PlanningEdit[] = [...result.edits];
-    if (found !== null && tasksPath !== null) {
-      edits.push({ kind: 'tick', path: tasksPath, task: found.text });
-    }
-    const write = {
-      message: `${result.change}: ${clip(result.step.replace(/^Owner:\s*/, ''), 60)}\n\nAn owner step Counterpoint did (Do it for me), landed with Land it.\n\n${result.step}`,
-      edits,
-    };
+    const tick: PlanningEdit | null =
+      found !== null && tasksPath !== null
+        ? { kind: 'tick', path: tasksPath, task: found.text }
+        : null;
+    const message = `${result.change}: ${clip(result.step.replace(/^Owner:\s*/, ''), 60)}\n\nAn owner step Counterpoint did (Do it for me), landed with Land it.\n\n${result.step}`;
     // Nothing lands where the base changed the same files since the result was made.
     const { host } = runtime;
     const env = await this.#o.ownerEnv();
@@ -578,10 +633,13 @@ export class OwnerSteps {
     if (base.tip === null) {
       throw new Error(`Couldn't read ${base.label}: ${fetched.error ?? 'it is not fetched yet'}.`);
     }
-    const composed = await composeWrite(host.root, base.tip, write, {
-      isPlanningPath: () => true,
-      tickTask: adapter.tickTask,
-    });
+    const rules = { isPlanningPath: () => true, tickTask: adapter.tickTask, code: true };
+    const composed = await composeWrite(
+      host.root,
+      base.tip,
+      { message, edits: result.edits },
+      rules,
+    );
     if (!composed.ok) {
       if (composed.reason !== 'conflict') throw new Error(composed.detail);
       this.#fail(
@@ -591,9 +649,17 @@ export class OwnerSteps {
       );
       return `Nothing landed: ${base.label} changed since (${composed.detail}). The step is back to do again.`;
     }
-    this.#o.lane.submit(host.id, write, card.id, { code: true });
+    // The step's tick goes with the result where it still applies. A step whose text no longer
+    // matches is no change to the result's files: the result still lands, without the tick.
+    const ticks =
+      tick !== null &&
+      (await composeWrite(host.root, base.tip, { message, edits: [tick] }, rules)).ok;
+    const edits: PlanningEdit[] = ticks && tick !== null ? [...result.edits, tick] : result.edits;
+    this.#o.lane.submit(host.id, { message, edits }, card.id, { code: true });
     updateOwnerStepResult(this.#o.desk.store, result.id, { state: 'submitted' });
-    return 'Landing as a small PR.';
+    return ticks
+      ? 'Landing as a small PR.'
+      : "Landing as a small PR; the step isn't open in the plan as it was, so it isn't ticked.";
   }
 
   /** Discard: nothing lands; the step card comes back. */

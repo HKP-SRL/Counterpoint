@@ -24,6 +24,10 @@ export const ASK_WAIT_CAP_MS = 10 * 60_000;
 /** The longest one wait request to the daemon holds; `mcp ask` repeats it up to the cap. */
 export const ASK_WAIT_REQUEST_MS = 60_000;
 
+/** What an asking session must know: the card is all the owner sees. */
+export const CARD_ONLY =
+  "The owner sees only this card: never refer to 'above' or the chat; name each thing; one short line per option.";
+
 /** A question as a session asks it. No actions: an agent's card never runs anything (D-2). */
 export const AskInput = z.strictObject({
   question: z
@@ -31,28 +35,40 @@ export const AskInput = z.strictObject({
     .trim()
     .min(1)
     .max(500)
-    .describe('The decision, as a plain question the owner can answer in one step.'),
+    .describe(`The decision, as a plain question the owner can answer in one step. ${CARD_ONLY}`),
   why: z.string().trim().min(1).max(300).describe('One line on why it matters.'),
   options: z
     .array(
       z.strictObject({
-        label: z.string().trim().min(1).max(120).describe('A short answer.'),
-        consequence: z.string().trim().min(1).max(300).describe('What happens if it is picked.'),
+        label: z.string().trim().min(1).max(120).describe('A short answer that names the thing.'),
+        consequence: z
+          .string()
+          .trim()
+          .min(1)
+          .max(300)
+          .describe('What happens if it is picked, in one short line.'),
       }),
     )
     .min(2)
     .max(4)
-    .describe('2 to 4 options.'),
+    .describe(`2 to 4 options. ${CARD_ONLY}`),
   recommended: z.number().int().min(0).max(3).describe('The option you recommend, counted from 0.'),
   reversible: z.boolean().describe('Whether the choice is easy to change later.'),
   wait: z
     .boolean()
     .default(false)
     .describe(
-      'Wait for the answer (at most 10 minutes). Only when you cannot go on without it; otherwise keep working on your recommendation.',
+      'Wait for the answer (at most 10 minutes). Only when you cannot go on without it; otherwise keep working on your recommendation. Builders in a run never wait: they get the recommendation as assumed at once.',
     ),
 });
 export type AskInput = z.input<typeof AskInput>;
+
+/** What an answered session card says until the session that asked reads the answer. */
+export const ASK_NOT_READ = 'Not read yet';
+/** What it says once that session read the answer (it waited, or called check_answer). */
+export const ASK_READ = 'Read by the session';
+/** An interactive session's unanswered card once that session ended: nobody can read an answer. */
+export const ASK_SESSION_ENDED = 'Session ended';
 
 export type AskKind = 'builder' | 'interactive';
 
@@ -187,12 +203,15 @@ export interface AskCardView {
   reversible: boolean;
   answer: { option: number; label: string } | null;
   note: string | null;
+  /** When it was asked (epoch ms). */
+  askedAt: number;
 }
 
 export function askCardView(card: CardRow): AskCardView {
   const label = card.answer === null ? undefined : card.options[card.answer]?.label;
   return {
     card: card.id,
+    askedAt: card.createdAt,
     state: card.state,
     question: card.question,
     options: card.options.map((option) => option.label),

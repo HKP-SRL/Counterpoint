@@ -22,7 +22,10 @@
 //   output, and the run moves on;
 // - the run was stopped: nothing is counted;
 // - the round could not judge the code (the test lock stayed held, the gate could not start): the
-//   change parks at once with the reason, since another builder session would not help.
+//   change parks at once with the reason, since another builder session would not help;
+// - a service the gates need will not start (services.ts: `down`): nothing about the code either,
+//   and every change after it would fail the same way. No attempt is counted, and the run stops
+//   with the service's name and last lines, for the owner to start it and resume.
 import { join, matchesGlob } from 'node:path';
 import { runGit } from '../core/git/run.ts';
 import { CHANGED_PLACEHOLDER, type GateConfig, type HostConfig } from '../core/host/host-config.ts';
@@ -37,7 +40,7 @@ import {
   recordFailedAttempt,
   setGatePid,
 } from '../core/store/runs.ts';
-import { newGateTag, runGate } from './gate-runner.ts';
+import { lastLines, newGateTag, runGate } from './gate-runner.ts';
 import type { GateFailure } from './prompt.ts';
 import type { ServiceSession } from './services.ts';
 import { acquireTestLock, type HeldTestLock, TestLockTimeout } from './test-lock.ts';
@@ -75,13 +78,16 @@ export interface GateRoundEntry {
   gate: string;
   resultId: number;
   end: GateEnd;
+  /** The service the gate needs would not start. */
+  down?: { service: string; detail: string; tail: string };
 }
 
 export type GateRound =
   | { kind: 'pass'; entries: GateRoundEntry[] }
   | { kind: 'fail'; entries: GateRoundEntry[]; failure: GateFailure }
   | { kind: 'stopped'; entries: GateRoundEntry[] }
-  | { kind: 'blocked'; entries: GateRoundEntry[]; detail: string };
+  | { kind: 'blocked'; entries: GateRoundEntry[]; detail: string }
+  | { kind: 'service-down'; entries: GateRoundEntry[]; detail: string };
 
 /** Reasons that say nothing about the code: the round could not judge it. */
 const NOT_A_JUDGEMENT: ReadonlySet<GateFailReason> = new Set(['spawn', 'test-lock']);
@@ -140,6 +146,7 @@ async function runOne(
   const started = Date.now();
   let lock: HeldTestLock | null = null;
   let end: GateEnd;
+  let down: GateRoundEntry['down'];
   try {
     if (gate.testLock) {
       lock = await (input.acquireTestLock ?? acquireTestLock)({
@@ -152,13 +159,17 @@ async function runOne(
     const prep = await input.services.prepare(gate, attemptDir, input.signal);
     if (!prep.ok) {
       // A program that could not be started says nothing about the code: the round is blocked
-      // (the change parks, no attempt spent) instead of going back to the builder.
+      // (the change parks, no attempt spent) instead of going back to the builder. A service that
+      // will not come up says nothing either: the round stops the run (no attempt spent).
       const reason = input.signal?.aborted ? 'stopped' : prep.notStarted ? 'spawn' : 'service';
       end = failedEnd(
         reason,
         [prep.detail, prep.tail].filter((part) => part !== '').join('\n'),
         started,
       );
+      if (prep.down && reason === 'service') {
+        down = { service: prep.service, detail: prep.detail, tail: prep.tail };
+      }
     } else {
       end = await (input.runGate ?? runGate)({
         gate,
@@ -184,7 +195,22 @@ async function runOne(
   const stored: GateEnd = { verdict, reason, exitCode, signal, tail, survivors, durationMs };
   finishGateResult(input.db, resultId, stored);
   input.onGate?.({ gate: gate.name, phase: 'end', end: stored });
-  return { gate: gate.name, resultId, end: stored };
+  return { gate: gate.name, resultId, end: stored, ...(down === undefined ? {} : { down }) };
+}
+
+/** How a run that stopped on a service that would not start begins its stop reason. */
+export const SERVICE_DOWN_PREFIX = 'The host service';
+
+/** The run's stop reason for a service that would not start: which, how, and its last lines. */
+export function describeServiceDown(down: NonNullable<GateRoundEntry['down']>): string {
+  const last = lastLines(down.tail, 3)
+    .replace(/\s*\n\s*/g, ' | ')
+    .trim();
+  return (
+    `${SERVICE_DOWN_PREFIX} "${down.service}" would not start (${down.detail}), so no gate could ` +
+    'judge the change and no attempt was counted. Start it, then resume the run.' +
+    (last === '' ? '' : ` Its last lines: ${last}`)
+  );
 }
 
 /**
@@ -280,6 +306,9 @@ export async function runGateRound(input: GateRoundInput): Promise<GateRound> {
     for (const later of ordered.slice(index + 1)) {
       entries.push(recordWithout(input, later, attemptDir, 'not-run'));
     }
+    if (entry.down !== undefined) {
+      return { kind: 'service-down', entries, detail: describeServiceDown(entry.down) };
+    }
     if (end.reason !== null && NOT_A_JUDGEMENT.has(end.reason)) {
       return {
         kind: 'blocked',
@@ -306,7 +335,9 @@ export type AfterGateRound =
   | { next: 'green' }
   | { next: 'retry'; feedback: GateFailure; attempts: number }
   | { next: 'park'; reason: string; attempts: number }
-  | { next: 'stopped' };
+  | { next: 'stopped' }
+  /** The run cannot go on (a service will not start): it stops with this reason. */
+  | { next: 'stop-run'; reason: string };
 
 /**
  * Records what a round means for the change and says what comes next. A failed round counts one
@@ -323,6 +354,9 @@ export function afterGateRound(
       return { next: 'green' };
     case 'stopped':
       return { next: 'stopped' };
+    case 'service-down':
+      // Nothing about the code: no attempt, no park; the change builds again on resume.
+      return { next: 'stop-run', reason: round.detail };
     case 'blocked': {
       const reason = `Gates could not run: ${round.detail}`;
       parkRunChange(db, runChangeId, reason);

@@ -280,6 +280,29 @@ describe('commitSession', () => {
     expect(status).toBe('M openspec/changes/add-menu/tasks.md');
   });
 
+  it("says so when git config names no owner and the commit falls back to Counterpoint's", async () => {
+    const { root, base, changeDir } = await worktreeWithChange();
+    writeFileIn(root, 'src/app.ts', 'export const menu = 2;\n');
+    let fallbacks = 0;
+    const result = await commitSession({
+      worktree: root,
+      change,
+      adapter: createOpenSpecAdapter(),
+      changeDir,
+      session: 1,
+      runId: 'r1',
+      baseCommit: base,
+      identity: async () => null,
+      onIdentityFallback: () => {
+        fallbacks += 1;
+      },
+    });
+    expect(result.commit).not.toBeNull();
+    expect(fallbacks).toBe(1);
+    const author = (await runGit(root, ['log', '-1', '--format=%ae'])).stdout.trim();
+    expect(author).toBe('counterpoint@localhost');
+  });
+
   it('restores a task list edited beyond ticks, and commits nothing when nothing else changed', async () => {
     const { root, base, changeDir } = await worktreeWithChange();
     writeFileIn(root, 'openspec/changes/add-menu/tasks.md', '- [x] 1.1 Add the table\n');
@@ -455,6 +478,20 @@ describe('builder session budget (fake claude)', () => {
     });
     const result = await session.done;
     expect(pid).toBeGreaterThan(0);
+    expect(result).toMatchObject({ reason: 'finished', outcome: { kind: 'ok' } });
+    expect(result.peakTokens).toBe(1015);
+  });
+
+  it("measures the main thread only: a subagent's larger context neither wraps up nor ends it", async () => {
+    const dir = makeScratchDir('cp-bs');
+    // Main thread at 1015 of 4000 (under 40% = 1600); the subagent at 3000 is past 55% = 2200.
+    const session = await startBuilderSession({
+      ...base(dir),
+      prompt: 'SUBAGENT work',
+      windowTokens: 4000,
+      budgetPercent: 40,
+    });
+    const result = await session.done;
     expect(result).toMatchObject({ reason: 'finished', outcome: { kind: 'ok' } });
     expect(result.peakTokens).toBe(1015);
   });

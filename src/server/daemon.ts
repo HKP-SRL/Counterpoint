@@ -23,8 +23,11 @@ import { ClaudeCliRunner } from '../agent/runner.ts';
 import { createActionRunner } from '../build/actions.ts';
 import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../build/ask-session.ts';
 import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
-import { createDeliver } from '../build/deliver.ts';
+import { createDeliver, pushTarget, remoteBranchHead } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
+import { HoldCards, resolveHoldCards } from '../build/hold-card.ts';
+import { identityFallbackNotice } from '../build/identity-card.ts';
+import { endLiveProcesses } from '../build/live-processes.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { readOwnerEnv } from '../build/owner-env.ts';
@@ -40,16 +43,20 @@ import { BaseFetcher } from '../core/git/base-fetch.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { carryOverApprovals } from '../core/runway/carry-over.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
-import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
+import { deleteExpiredSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { revokeBuilderCapabilities } from '../core/store/ask.ts';
-import { getCard, listWaitingCards } from '../core/store/cards.ts';
+import { getCard, listWaitingCards, type NewCard } from '../core/store/cards.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus, publishEvent } from '../core/store/events.ts';
 import { runningOwnerStepResults } from '../core/store/owner-step-results.ts';
 import type { PlanningWriteRow } from '../core/store/planning-writes.ts';
 import { getRun } from '../core/store/runs.ts';
+import { DraftBrowser } from '../drafts/browser.ts';
+import { prepareReferenceScreens } from '../drafts/reference.ts';
+import { startDraftServer } from '../drafts/server.ts';
+import { Drafts } from '../drafts/service.ts';
 import { createApp, packageRoot, resolveUiDir } from './app.ts';
-import { createApprovalViews } from './approval-views.ts';
+import { createApprovalViews, endedApprovalCard } from './approval-views.ts';
 import { CardDesk } from './cards.ts';
 import { createControlApp, hashToken } from './control.ts';
 import { createHostRuntimes } from './hosts.ts';
@@ -62,6 +69,7 @@ import {
   successorSpawner,
   takeHandover,
 } from './restart.ts';
+import { stopForSignal } from './signal-stop.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
 
 const SQLITE_BUSY = 5;
@@ -231,10 +239,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
-  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes. Only
-  // a planned self-restart, handed over by the previous daemon, keeps the sessions (D-10).
+  // Crash-only reconcile: a (re)started daemon drops expired console sessions and stale codes. The
+  // rest stay signed in, after a crash as after a planned self-restart (D-10): signing in again
+  // needs a terminal, which the owner should not need.
   const planned = takeHandover(paths, options.handover);
-  if (!planned) clearAllSessions(store);
+  deleteExpiredSessions(store);
   deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no
@@ -290,6 +299,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   let lane: PlanningLane | undefined;
   // Build ticks of open and merged build PRs (build-ticks-and-owner-steps D-3), on the same tick.
   let buildTicks: BuildTicks | undefined;
+  // The owner's environment as the minute tick last had it (a run start asks gh with it).
+  let tickEnv: Readonly<Record<string, string>> | undefined;
   // The base fetcher (host-planning: When the base is fetched): every host's base branch from its
   // remote, once a minute and at each run and build start. A change in what the console shows
   // about it (a failed fetch, unpushed local commits) is announced like a new base tip.
@@ -301,6 +312,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     // A merged build PR means built (runway): its change leaves the runway and shows Built.
     afterFetch: async (host, env) => {
+      tickEnv = env;
       const merged = await checkPullRequests({ db: store, host, env, log });
       if (merged.length > 0) {
         publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
@@ -327,8 +339,16 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     log,
   );
-  // One set of approval views: approvals from the store, the runway derived at the tip.
-  const approvals = createApprovalViews({ store });
+  // One set of approval views: approvals from the store, the runway derived at the tip. An approval
+  // whose change is gone from the base branch ends with a card (the desk exists below). A change
+  // its design drafts hold cannot build now (the drafts service exists below).
+  let raiseCard: ((card: NewCard) => void) | null = null;
+  let draftsHeld: ((hostId: string) => ReadonlySet<string>) | null = null;
+  const approvals = createApprovalViews({
+    store,
+    onMissing: (hostId, approval) => raiseCard?.(endedApprovalCard(hostId, approval)),
+    draftsHeld: (hostId) => draftsHeld?.(hostId) ?? new Set<string>(),
+  });
 
   // The build lane. Every agent spawn goes through the one governor (usage-limit pauses).
   // A runner for the claude on the run's PATH (the owner's login shell's); the daemon's own PATH
@@ -351,6 +371,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
   });
   const desk = new CardDesk({ store, bus, log, notify: (card) => notifier.notify(card) });
+  // A commit without the owner's git identity says so in Needs You, once (owner-identity).
+  const identityFallback = identityFallbackNotice(desk, async () => (await readOwnerEnv()).env);
+  raiseCard = (card) => {
+    desk.raise(card);
+  };
   /** What the card that started a planning write says while it lands (D-12). */
   const writeOutcome = (row: PlanningWriteRow): string | null => {
     switch (row.state) {
@@ -379,6 +404,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     ownerEnv: async () => (await readOwnerEnv()).env,
     fetchBase: (host, env) => fetcher.fetch(host, env),
+    onIdentityFallback: () => identityFallback(),
     onChange: (row) => {
       const card = row.cardId === null ? undefined : getCard(store, row.cardId);
       const text = writeOutcome(row);
@@ -415,7 +441,41 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     submit: (hostId, write, cardId) => lane?.submit(hostId, write, cardId),
     log,
   });
-  const governor = new Governor({ db: store });
+  // A long usage hold is told in Needs You (build-runs: A long usage hold is told).
+  const holdCards = new HoldCards(desk);
+  const governor = new Governor({ db: store, onLongHold: (hold) => holdCards.update(hold) });
+  // Design drafts (design-drafts): one headless browser for element maps and the builder's
+  // reference screenshots, the script-free draft server on its own loopback port, and the drafts
+  // service. A round or revision the last daemon was making shows Failed with Try again (D-8).
+  const browser = new DraftBrowser();
+  const draftServer = await startDraftServer({ home: options.home }).catch((error: Error) => {
+    log('draft-server-failed', { message: error.message });
+    return null;
+  });
+  const drafts = new Drafts({
+    db: store,
+    home: options.home,
+    host: (hostId) => runtimes.get(hostId),
+    runner: (hostId, env) =>
+      governedRunner(governor, runnerFactory(env), { hostId, kind: 'draft' }),
+    ownerEnv: async () => (await readOwnerEnv()).env,
+    mapper: browser,
+    publish: (hostId, payload) => {
+      publishEvent(store, bus, { hostId, family: 'drafts', payload });
+    },
+    raise: (card) => {
+      try {
+        desk.raise(card);
+      } catch {
+        // a card the model refuses is left out
+      }
+    },
+    lane,
+    log,
+  });
+  if (drafts.recover() > 0) log('drafts-recovered');
+  draftsHeld = (hostId) =>
+    new Set([...drafts.holds(hostId)].filter(([, hold]) => hold.held).map(([change]) => change));
   // Owner steps are cards (owner-inbox 4.2): recomputed with the run's cards on every read. Do it
   // for me runs a session as the owner, through the same governor as builders (4.3).
   const steps = new OwnerSteps({
@@ -455,11 +515,31 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const orchestrator = new Orchestrator({
     home: options.home,
     db: store,
+    onIdentityFallback: () => identityFallback(),
     host: (hostId) => runtimes.get(hostId),
     approvals,
     governor,
     runnerFactory,
     fetcher,
+    // A PR merged since the last minute tick is known before its change builds again.
+    refreshPullRequests: async (host, env) => {
+      const merged = await checkPullRequests({
+        db: store,
+        host,
+        env: env ?? tickEnv ?? process.env,
+        log,
+      });
+      if (merged.length > 0) {
+        publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
+      }
+    },
+    remoteHead: async (host, branch, env) =>
+      remoteBranchHead({
+        root: host.root,
+        branch,
+        target: await pushTarget(host.root, host.baseBranch),
+        env,
+      }),
     consolePort: bound,
     publish: publish('run'),
     onRunEnd: async (runId) => {
@@ -475,6 +555,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     beforeBuild: (hostId, change) => {
       previews.stop(hostId, change);
     },
+    draftHold: (hostId, change, reader, baseCommit) =>
+      drafts.heldAtBase(hostId, change, reader, baseCommit),
+    referenceScreens: (input) => prepareReferenceScreens({ ...input, shooter: browser }),
     deliver: createDeliver({
       home: options.home,
       consolePort: bound,
@@ -498,6 +581,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log('recovery-failed', { message: error.message });
     return null;
   });
+  // Previews are not in the store: end what a crashed daemon left running, by the home's tag.
+  const sweptPreviews = await previews.sweepLeftovers();
+  if (sweptPreviews.found.length > 0 || sweptPreviews.error !== null) {
+    log('previews-swept', { ended: sweptPreviews.found.length, error: sweptPreviews.error });
+  }
   // A Do it for me session the last daemon was running is gone: its step card comes back.
   await steps.recover().catch((error: Error) => {
     log('owner-steps-recovery-failed', { message: error.message });
@@ -535,7 +623,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
           paths,
           stamp: () => installStamp(root, entry),
           version: () => installedVersion(root),
-          busy: () => orchestrator.running() !== null || runningOwnerStepResults(store).length > 0,
+          busy: () =>
+            orchestrator.running() !== null ||
+            runningOwnerStepResults(store).length > 0 ||
+            drafts.busy(),
           spawnSuccessor: successorSpawner({
             paths,
             entry,
@@ -553,6 +644,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       orchestrator,
       ownerEnv: () => readOwnerEnv(),
       ownerSteps: (action, card, note) => steps.act(action, card, note),
+      dropDrafts: (hostId, change) => drafts.drop(hostId, change),
       ...(restarter === undefined ? {} : { restart: (when) => restarter.request(when) }),
       ...(askServer === undefined
         ? {}
@@ -572,6 +664,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   if (askServer !== undefined) raiseAskSetupCard(desk, options.home);
   // This daemon runs the newest install: a restart card an earlier daemon raised is moot.
   resolveRestartCards(store, desk, 'Counterpoint restarted.');
+  resolveHoldCards(store, desk, 'Counterpoint restarted; a session still waiting raises it again.');
   if (planned) {
     desk.doneForYou(
       null,
@@ -603,6 +696,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       },
       previews,
     },
+    drafts: { drafts, draftOrigin: () => draftServer?.origin ?? null },
   });
 
   stop = async (reason: string) => {
@@ -614,6 +708,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     notifier.stop();
     restarter?.stop();
     await previews.stopAll();
+    await draftServer?.close();
+    await browser.close().catch(() => undefined);
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
     rmSync(paths.daemonJson, { force: true });
@@ -666,7 +762,24 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 
-  process.once('SIGTERM', () => void stop('SIGTERM'));
-  process.once('SIGINT', () => void stop('SIGINT'));
+  // A signal stops like the owner's stop: the run's clean point and its report first, within a
+  // time limit (signal-stop.ts). A second signal stops at once.
+  let signalled = false;
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (signalled) {
+      void stop(`${signal} again`);
+      return;
+    }
+    signalled = true;
+    void stopForSignal({
+      signal,
+      orchestrator,
+      endProcesses: () => endLiveProcesses(store),
+      stop,
+      log,
+    });
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
   log('started', { pid: process.pid, port: bound });
 }

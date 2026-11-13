@@ -3,7 +3,8 @@
 // A build PR may merge without its ticks (they land after it when they would conflict, and PRs
 // delivered before build ticks carry none), so a merged PR is a fact of its own. On each per-host
 // fetch tick the daemon asks `gh` for the state of every
-// change's latest PR not yet known merged or closed, and records it on its run change row. The
+// change's latest PR not yet known merged, and records it on its run change row. A closed PR is
+// asked about too: the owner may reopen and merge it. The
 // runway and the change statuses read it from there. Not the branch being an ancestor of the
 // remote base: a squash merge breaks that.
 import { programOnPath } from '../core/git/remote.ts';
@@ -38,13 +39,13 @@ function stateOf(stdout: string): PullRequestState | null {
 }
 
 /**
- * Asks `gh` for the state of each change's latest PR that is not known merged or closed, and
- * records it. Returns the changes whose PR was found merged now. A failed call is tried again at
- * the next tick; nothing is recorded for it.
+ * Asks `gh` for the state of each change's latest PR that is not known merged (a closed one may be
+ * reopened), and records it. Returns the changes whose PR was found merged now. A failed call is
+ * tried again at the next tick; nothing is recorded for it.
  */
 export async function checkPullRequests(input: CheckPullRequestsInput): Promise<string[]> {
   const pending = latestPullRequests(input.db, input.host.id).filter(
-    (pr) => pr.prState === null || pr.prState === 'open',
+    (pr) => pr.prState !== 'merged',
   );
   if (pending.length === 0) return [];
   let gh = input.gh;

@@ -94,7 +94,13 @@ describe('snapshot of the synthetic host', () => {
       created: '2026-10-03',
       dependsOn: [SYNTHETIC.built],
       artifacts: { proposal: true, design: true, tasks: true, specs: ['menu'] },
-      tasks: { total: 4, done: 1, ownerSteps: ['Owner: create the Supabase project'] },
+      tasks: {
+        total: 4,
+        done: 1,
+        ownerSteps: ['Owner: create the Supabase project'],
+        // Listed after the open 1.1: it waits for the build.
+        ownerStepsAfterBuild: ['Owner: create the Supabase project'],
+      },
       unreadable: null,
     });
   });

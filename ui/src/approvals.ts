@@ -9,6 +9,8 @@ import { apiPostAnswer, queryKeys } from './api';
 export interface ApprovalActions {
   approve(changeId: string): Promise<void>;
   withdraw(changeId: string): Promise<void>;
+  /** Builds a parked or held change again in the next run. */
+  retry(changeId: string): Promise<void>;
   approveAll(): Promise<void>;
   /** The change id (or `all`) a click is in flight for, or null. */
   pending: string | null;
@@ -35,9 +37,12 @@ export function useApprovalActions(hostId: string): ApprovalActions {
           );
         }
         await Promise.all(
-          [queryKeys.changes(hostId), queryKeys.change(hostId), queryKeys.runway(hostId)].map(
-            (queryKey) => queryClient.invalidateQueries({ queryKey }),
-          ),
+          [
+            queryKeys.changes(hostId),
+            queryKeys.change(hostId),
+            queryKeys.runway(hostId),
+            queryKeys.run(hostId),
+          ].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
         );
       } catch {
         setError("Counterpoint's daemon didn't answer.");
@@ -53,6 +58,7 @@ export function useApprovalActions(hostId: string): ApprovalActions {
     approve: (changeId) => act(changeId, `${base}/changes/${encodeURIComponent(changeId)}/approve`),
     withdraw: (changeId) =>
       act(changeId, `${base}/changes/${encodeURIComponent(changeId)}/withdraw`),
+    retry: (changeId) => act(changeId, `${base}/changes/${encodeURIComponent(changeId)}/retry`),
     approveAll: () => act('all', `${base}/approve-all`),
     pending,
     error,

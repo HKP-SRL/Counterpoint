@@ -3,7 +3,7 @@
 // store.
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRunner } from '../../src/agent/runner.ts';
 import { builderSessionKey, onBuilderAnswer } from '../../src/build/ask-session.ts';
@@ -14,7 +14,7 @@ import type {
   startBuilderSession,
 } from '../../src/build/builder-session.ts';
 import { createDeliver } from '../../src/build/deliver.ts';
-import type { GateRound, runGateRound } from '../../src/build/gates.ts';
+import { describeServiceDown, type GateRound, type runGateRound } from '../../src/build/gates.ts';
 import { Governor, type SessionOutcome } from '../../src/build/governor.ts';
 import { DEFAULT_HOST_SETTINGS, writeHostSettings } from '../../src/build/host-settings.ts';
 import {
@@ -28,6 +28,7 @@ import { recoverRuns } from '../../src/build/recovery.ts';
 import { runCards } from '../../src/build/run-cards.ts';
 import { buildRunReport, reportMarkdown } from '../../src/build/run-report.ts';
 import { missingRunTools } from '../../src/build/tools.ts';
+import { CalibrationError } from '../../src/build/windows.ts';
 import { BaseFetcher } from '../../src/core/git/base-fetch.ts';
 import { createBaseResolver } from '../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
@@ -37,17 +38,21 @@ import { runNeedsYou } from '../../src/core/runway/run-items.ts';
 import { approveChange, withdrawApproval } from '../../src/core/store/approvals.ts';
 import { findAskGrant } from '../../src/core/store/ask.ts';
 import { getCard, insertCard, listWaitingCards } from '../../src/core/store/cards.ts';
+import { decideParked } from '../../src/core/store/change-lane.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
 import {
   activeRun,
+  endRun,
   getRun,
   insertRun,
   insertRunChange,
   latestRun,
   listGateResults,
   listRunChanges,
+  parkRunChange,
   runChangeTicks,
+  setPullRequestState,
   updateRunChange,
 } from '../../src/core/store/runs.ts';
 import { insertAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
@@ -76,7 +81,7 @@ const tasks = '# Tasks\n\n- [ ] 1.1 Do it\n- [ ] 1.2 Test it\n';
 async function host(extra: Record<string, string> = {}, approved = ['a-thing', 'b-thing']) {
   const repo = await materializeOpenSpecHost({
     'openspec/config.yaml': 'schema: spec-driven\n',
-    'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\nx-depends-on: [a-thing]\n',
+    'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\n',
     'openspec/changes/b-thing/proposal.md': proposal('B thing'),
     'openspec/changes/b-thing/tasks.md': tasks,
     'openspec/changes/a-thing/.openspec.yaml': 'schema: spec-driven\n',
@@ -269,6 +274,56 @@ describe('starting a run', () => {
     o.stop('cena');
     await o.idle();
   });
+
+  it('names the other project when its run is going', async () => {
+    const ctx = await host();
+    upsertHost(ctx.db, {
+      id: 'kitchen-1',
+      root: '/x/kitchen',
+      gitCommonDir: '/x/kitchen/.git',
+      baseBranch: 'main',
+      adapter: 'openspec',
+    });
+    insertRun(ctx.db, { id: 'run-k', hostId: 'kitchen-1', settings: {}, stopAt: null });
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    expect(await o.start('cena', SETTINGS)).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringMatching(/^A run is already going in kitchen-1: one run at a time/),
+    });
+  });
+
+  it('builds by default only what can build now, and never a held change', async () => {
+    const ctx = await host();
+    // a-thing parked in an earlier run; the owner left it parked. b-thing can build.
+    insertRun(ctx.db, { id: 'r0', hostId: 'cena', settings: {}, stopAt: null }, 1);
+    const parked = insertRunChange(ctx.db, { runId: 'r0', change: 'a-thing', position: 0 });
+    parkRunChange(ctx.db, parked, 'Gate failed.');
+    endRun(ctx.db, 'r0', { reason: 'finished' }, 2);
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    decideParked(ctx.db, {
+      hostId: 'cena',
+      change: 'a-thing',
+      runChangeId: parked,
+      hold: true,
+      reason: 'left-parked',
+    });
+    expect(await o.start('cena', { ...SETTINGS, changes: ['a-thing'] })).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringMatching(/^Not built now: a-thing \(on hold: you left it parked\)/),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, started.runId).map((c) => c.change)).toEqual(['b-thing']);
+  });
 });
 
 describe('a run', () => {
@@ -351,6 +406,14 @@ describe('a run', () => {
     // A setting saved later applies to the next run only; a CLI flag overrides for one run.
     writeHostSettings(ctx.db, 'cena', { ...DEFAULT_HOST_SETTINGS, effort: 'low' });
     expect(getRun(ctx.db, started.runId)?.settings).toMatchObject({ effort: 'max' });
+    // Built from scratch again (a branch with every task done would go straight to its gates).
+    await gitIn(ctx.repo.root, [
+      'worktree',
+      'remove',
+      '--force',
+      `${ctx.repo.root}-worktrees/a-thing`,
+    ]);
+    await gitIn(ctx.repo.root, ['branch', '-D', 'cp/a-thing']);
     const next = await o.start('cena', { changes: ['a-thing'], stopAt: null, effort: 'medium' });
     if (!next.ok) throw new Error(next.error);
     await o.idle();
@@ -431,6 +494,45 @@ describe('a run', () => {
         /^Not built: The builder stopped with 2 build tasks still open and made no progress in session 2 \(next: 1\.1 Do it\)\. Its handoff says why\. The branch cp\/a-thing keeps the work so far\.$/,
       ),
     });
+  });
+
+  it("parks a change with claude's error after two failed sessions in a row that moved nothing", async () => {
+    const ctx = await host();
+    const badModel: SessionOutcome = {
+      kind: 'failed',
+      detail:
+        "There's an issue with the selected model (opus-9). It may not exist (model_not_found)",
+    };
+    // Session 1 fails but commits work; sessions 2 and 3 fail with nothing to show.
+    const sessions = fakeSessions((n) => ({
+      reason: 'error',
+      outcome: badModel,
+      tick: false,
+      idle: n > 1,
+    }));
+    const g = gates([]);
+    const { o } = orchestrator(ctx, { startBuilderSession: sessions.start, runGateRound: g.round });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(3);
+    expect(g.calls).toEqual([]);
+    const change = listRunChanges(ctx.db, started.runId)[0];
+    expect(change).toMatchObject({
+      state: 'parked',
+      reason:
+        "Not built: 2 sessions in a row ended on an error from claude without a commit. The last one said: There's an issue with the selected model (opus-9). It may not exist (model_not_found). The branch cp/a-thing keeps the work so far.",
+    });
+    // Each session's error is kept with it, not only its kind.
+    const usage = ctx.db
+      .prepare('SELECT usage FROM agent_sessions WHERE run_change_id = ? ORDER BY id')
+      .all(change?.id ?? -1)
+      .map((row) => JSON.parse(String(row.usage)));
+    expect(usage).toEqual([
+      { outcome: 'failed', detail: badModel.detail },
+      { outcome: 'failed', detail: badModel.detail },
+      { outcome: 'failed', detail: badModel.detail },
+    ]);
   });
 
   it("parks a change with tasks still open when the attempt's sessions are used up", async () => {
@@ -566,7 +668,7 @@ describe('a run', () => {
     });
   });
 
-  it('stops the run on an authentication error and says so in Needs You', async () => {
+  it('stops the run on an authentication error when claude holds no login, and says so in Needs You', async () => {
     const ctx = await host();
     const sessions = fakeSessions(() => ({
       reason: 'error',
@@ -575,10 +677,12 @@ describe('a run', () => {
     const { o } = orchestrator(ctx, {
       startBuilderSession: sessions.start,
       runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => false }),
     });
     const started = await o.start('cena', SETTINGS);
     if (!started.ok) throw new Error(started.error);
     await o.idle();
+    expect(sessions.count()).toBe(1);
     expect(getRun(ctx.db, started.runId)).toMatchObject({
       endReason: 'error',
       endDetail: expect.stringMatching(/not signed in/),
@@ -588,9 +692,71 @@ describe('a run', () => {
       'stopped',
     ]);
     expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
+    expect(runCards(ctx.db, 'cena')[0]?.question).toMatch(/not logged in/);
     // The session's work was still committed.
     const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
     expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+  });
+
+  // Seen live (run 20261113-0940, session 13): 503 retries, then a Cloudflare 403 for a sign-in;
+  // the owner was signed in, and the next run worked.
+  const CLOUDFLARE: SessionOutcome = {
+    kind: 'stop',
+    cause: 'auth',
+    detail: 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare',
+    outage: true,
+  };
+
+  it('tries a sign-in failure again while claude holds a login, and goes on once it passes', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions((n) => (n === 1 ? { reason: 'error', outcome: CLOUDFLARE } : {}));
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => true }),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(2);
+    expect(slept).toEqual([60_000]);
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({ state: 'green' });
+  });
+
+  it('stops as a possible outage when the sign-in keeps failing, with a card to resume', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions(() => ({ reason: 'error', outcome: CLOUDFLARE }));
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => true }),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(4);
+    expect(slept).toEqual([60_000, 120_000, 240_000]);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^Sign-in failed, maybe an outage\. It failed 4 times/),
+    });
+    const card = runCards(ctx.db, 'cena')[0];
+    expect(card).toMatchObject({
+      kind: 'run-stopped',
+      question: 'Sign-in failed, maybe an outage. Resume?',
+      recommended: 0,
+    });
+    expect(card?.options[0]?.action).toEqual({ type: 'resume-run', runId: started.runId });
+    expect(card?.why).not.toMatch(/terminal|\/login/);
   });
 
   // Seen live: the daemon's PATH predated the owner's Supabase install, and three builder
@@ -619,6 +785,52 @@ describe('a run', () => {
       ['stopped', 0],
     ]);
     expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
+  });
+
+  // gates: A service that will not start stops the run. Seen live: Docker was not running, so
+  // `supabase start` failed, and three builder sessions were spent before the change parked.
+  it('stops the run with a resume card, spending no attempt, when a service will not start', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions();
+    let rounds = 0;
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: async () => {
+        rounds += 1;
+        return {
+          kind: 'service-down',
+          entries: [],
+          detail: describeServiceDown({
+            service: 'supabase',
+            detail: 'service supabase start exited 1',
+            tail: 'Cannot connect to the Docker daemon. Is the docker daemon running?',
+          }),
+        };
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(1);
+    expect(rounds).toBe(1);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^The host service "supabase" would not start/),
+    });
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.state, c.attempts])).toEqual([
+      ['stopped', 0],
+      ['stopped', 0],
+    ]);
+    const [card] = runCards(ctx.db, 'cena');
+    expect(card).toMatchObject({
+      kind: 'run-stopped',
+      question: "The supabase service won't start. Resume once it's running?",
+      why: expect.stringContaining('Cannot connect to the Docker daemon'),
+      recommended: 0,
+    });
+    expect(card?.options[0]).toMatchObject({
+      action: { type: 'resume-run', runId: started.runId },
+    });
   });
 
   it('parks on an ask-first question and shows it in Needs You with its options', async () => {
@@ -726,7 +938,9 @@ describe('a run', () => {
   });
 
   it('goes on after a park: builds the two others and skips the one that depends on it', async () => {
-    const extra: Record<string, string> = {};
+    const extra: Record<string, string> = {
+      'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\nx-depends-on: [a-thing]\n',
+    };
     for (const id of ['c-thing', 'd-thing']) {
       extra[`openspec/changes/${id}/.openspec.yaml`] = 'schema: spec-driven\n';
       extra[`openspec/changes/${id}/proposal.md`] = proposal(id);
@@ -743,7 +957,11 @@ describe('a run', () => {
       startBuilderSession: sessions.start,
       runGateRound: gates([]).round,
     });
-    const started = await o.start('cena', SETTINGS);
+    // b-thing waits on a-thing: Run leaves it out; the owner picks it anyway.
+    const started = await o.start('cena', {
+      ...SETTINGS,
+      changes: ['a-thing', 'b-thing', 'c-thing', 'd-thing'],
+    });
     if (!started.ok) throw new Error(started.error);
     await o.idle();
     const states = Object.fromEntries(
@@ -752,7 +970,7 @@ describe('a run', () => {
     expect(states['a-thing']?.[0]).toBe('parked');
     expect(states['b-thing']).toEqual([
       'skipped',
-      'Waits on a-thing, which did not get built in this run.',
+      'Waits on a-thing, which is not built yet (merged, or every task checked).',
     ]);
     expect(states['c-thing']?.[0]).toBe('green');
     expect(states['d-thing']?.[0]).toBe('green');
@@ -776,7 +994,7 @@ describe('a run', () => {
     await o.idle();
     expect(listRunChanges(ctx.db, started.runId).map((c) => [c.change, c.state])).toEqual([
       ['a-thing', 'parked'],
-      ['b-thing', 'skipped'],
+      ['b-thing', 'green'],
     ]);
     expect(listRunChanges(ctx.db, started.runId)[0]?.reason).toMatch(/disk full/);
     expect(getRun(ctx.db, started.runId)).toMatchObject({ endReason: 'finished' });
@@ -826,6 +1044,43 @@ describe('a run', () => {
     expect(changes[1]?.reason).toMatch(/Not built/);
     const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
     expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+  });
+
+  // build-runs: Stop time honoured. The stop time passes while a session works: the session hands
+  // off, no new session starts, and the rest is recorded as not built.
+  it('stops at a clean point when the stop time passes mid-session (fake clock)', async () => {
+    const ctx = await host();
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const sessions = fakeSessions(() => ({ wait: true }));
+      const { o } = orchestrator(ctx, {
+        startBuilderSession: sessions.start,
+        runGateRound: gates([]).round,
+      });
+      const twoHours = 2 * 60 * 60 * 1000;
+      const started = await o.start('cena', { ...SETTINGS, stopAt: Date.now() + twoHours });
+      if (!started.ok) throw new Error(started.error);
+      while (sessions.count() === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(o.running()).not.toBeNull();
+      expect(getRun(ctx.db, started.runId)?.state).toBe('running');
+      // The clock reaches the stop time while the session is still working.
+      vi.advanceTimersByTime(twoHours);
+      await o.idle();
+      expect(sessions.count()).toBe(1);
+      expect(getRun(ctx.db, started.runId)).toMatchObject({
+        state: 'ended',
+        endReason: 'stop-time',
+        endDetail: 'The stop time was reached.',
+      });
+      const changes = listRunChanges(ctx.db, started.runId);
+      expect(changes.map((c) => c.state)).toEqual(['stopped', 'stopped']);
+      expect(changes[0]?.reason).toMatch(/clean point/);
+      expect(changes[1]?.reason).toMatch(/Not built: the run ended \(stop-time\)/);
+      const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
+      expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('builds a change whose plan was revised after approval, from the base-branch tip', async () => {
@@ -897,6 +1152,120 @@ describe('a run', () => {
       ['b-thing', 'skipped'],
     ]);
     expect(sessions.count()).toBe(1);
+  });
+});
+
+describe('learning the window and finding claude (calibration runs after every claude update)', () => {
+  const failing = (outcomes: SessionOutcome[]) => {
+    let calls = 0;
+    const calibrate: OrchestratorOptions['calibrateWindow'] = async () => {
+      const outcome = outcomes[calls];
+      calls += 1;
+      if (outcome === undefined) return 1_000_000;
+      throw new CalibrationError(`The calibration session for opus failed: ${calls}`, outcome);
+    };
+    return { calibrate, calls: () => calls };
+  };
+
+  it('waits out a usage limit and tries API errors again, then builds', async () => {
+    const ctx = await host();
+    const cal = failing([
+      { kind: 'transient', detail: 'API Error: 529 overloaded' },
+      { kind: 'usage-limit', resetsAt: null, detail: 'usage limit reached' },
+      { kind: 'transient', detail: 'API Error: 503' },
+    ]);
+    const slept: number[] = [];
+    const governor = new Governor({ db: ctx.db });
+    const { o } = orchestrator(ctx, {
+      governor,
+      calibrateWindow: cal.calibrate,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(4);
+    expect(slept).toEqual([60_000, 120_000]);
+    // The usage limit paused every lane: the next calibration's spawn waited for it.
+    expect(governor.holdUntil()?.reason).toBe('usage limit reached');
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+  });
+
+  it('ends the run when API errors outlast three retries, or what failed is no outage', async () => {
+    const ctx = await host();
+    const transient: SessionOutcome = { kind: 'transient', detail: 'API Error: 503' };
+    const cal = failing([transient, transient, transient, transient]);
+    const { o } = orchestrator(ctx, { calibrateWindow: cal.calibrate });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(4);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^The model's context window could not be learned/),
+    });
+
+    const bad = failing([{ kind: 'failed', detail: 'model_not_found' }]);
+    const second = orchestrator(ctx, { calibrateWindow: bad.calibrate }).o;
+    const again = await second.start('cena', SETTINGS);
+    if (!again.ok) throw new Error(again.error);
+    await second.idle();
+    expect(bad.calls()).toBe(1);
+    expect(getRun(ctx.db, again.runId)?.endReason).toBe('error');
+  });
+
+  it('says "not signed in" for a calibration only when claude holds no login', async () => {
+    const ctx = await host();
+    const cal = failing([{ kind: 'stop', cause: 'auth', detail: 'Not logged in' }]);
+    const { o } = orchestrator(ctx, {
+      calibrateWindow: cal.calibrate,
+      runnerFactory: () => ({ ...runner, signedIn: async () => false }),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(1);
+    expect(getRun(ctx.db, started.runId)?.endDetail).toMatch(/^claude is not signed in/);
+  });
+
+  it('asks claude for its version again before ending the run', async () => {
+    const ctx = await host();
+    let asked = 0;
+    const flaky: AgentRunner = {
+      ...runner,
+      version: async () => {
+        asked += 1;
+        return asked <= 2 ? null : VERSION;
+      },
+    };
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      runnerFactory: () => flaky,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(slept.slice(0, 2)).toEqual([10_000, 20_000]);
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+
+    const broken = orchestrator(ctx, {
+      runnerFactory: () => ({ ...runner, version: async () => null }),
+    }).o;
+    const again = await broken.start('cena', { ...SETTINGS, changes: ['b-thing'] });
+    if (!again.ok) throw new Error(again.error);
+    await broken.idle();
+    expect(getRun(ctx.db, again.runId)?.endDetail).toBe(
+      'claude could not be run (claude --version failed 3 times).',
+    );
   });
 });
 
@@ -1208,14 +1577,20 @@ describe('a merged build PR', () => {
     expect(await tick()).toEqual([]);
     expect(asked).toEqual(['https://github.com/x/y/pull/2']);
 
-    // A run of the merged change is refused; a run of the whole runway builds only the other.
+    // A run of the merged change is refused. Run leaves out b-thing too: its PR is open, so a
+    // one-click rebuild never replaces a green PR. The owner can still pick it.
     const second = orchestrator(ctx, {
       startBuilderSession: fakeSessions().start,
       runGateRound: gates([]).round,
     });
     const refused = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
     expect(refused).toMatchObject({ ok: false });
-    const again = await second.o.start('cena', SETTINGS);
+    expect(await second.o.start('cena', SETTINGS)).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Nothing on the runway can build now: b-thing (its PR is open).',
+    });
+    const again = await second.o.start('cena', { ...SETTINGS, changes: ['b-thing'] });
     if (!again.ok) throw new Error(again.error);
     await second.o.idle();
     expect(listRunChanges(ctx.db, again.runId).map((c) => [c.change, c.state])).toEqual([
@@ -1391,6 +1766,251 @@ describe('build ticks at delivery (build-ticks-and-owner-steps D-2, D-3)', () =>
   });
 });
 
+describe('a change built again (build-runs: One worktree and branch per change)', () => {
+  /** The base moves on: a commit on master, as a merged PR would make it. */
+  const moveBase = async (ctx: Awaited<ReturnType<typeof host>>, files: Record<string, string>) => {
+    for (const [path, content] of Object.entries(files)) writeFileIn(ctx.repo.root, path, content);
+    return commitAll(ctx.repo.root, 'merged elsewhere');
+  };
+
+  it('merges the moved base into its branch and continues from the previous run', async () => {
+    const ctx = await host({}, ['a-thing']);
+    // Run 1: the gate fails on both attempts, so the change parks.
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates(['fail', 'fail']).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    expect(listRunChanges(ctx.db, one.runId)[0]).toMatchObject({
+      state: 'parked',
+      gateFailure: { gate: 'unit', attempt: 2, tail: 'FAIL menu.test.ts' },
+    });
+    const moved = await moveBase(ctx, { 'src/later.ts': 'export const later = 1;\n' });
+
+    // Run 2: the base is merged in; the session gets the last handoff and the failing gate.
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    // The owner picks it again (a parked change is a retry, an open PR a rebuild): Run alone
+    // builds only what can build now (runway: Changes that can build now).
+    const two = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    const row = listRunChanges(ctx.db, two.runId)[0];
+    expect(row).toMatchObject({ state: 'green', baseCommit: moved, gateFailure: null });
+    expect(sessions.count()).toBe(1);
+    expect(sessions.prompts[0]).toContain('Session 2 handoff.');
+    expect(sessions.prompts[0]).toMatch(/The gate "unit" failed on attempt 2/);
+    expect(sessions.prompts[0]).toContain('FAIL menu.test.ts');
+    const log = (await gitIn(ctx.repo.root, ['log', '--format=%s', 'cp/a-thing'])).split('\n');
+    expect(log).toContain(`cp: a-thing merge base ${moved.slice(0, 12)}`);
+    expect(log).toContain('cp: a-thing session 2');
+  });
+
+  it('goes straight to the gates when no build task is open', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const sessions = fakeSessions();
+    const g = gates([]);
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    // The owner picks it again (a parked change is a retry, an open PR a rebuild): Run alone
+    // builds only what can build now (runway: Changes that can build now).
+    const two = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(sessions.count()).toBe(0);
+    expect(g.calls).toEqual([1]);
+    expect(second.delivered).toEqual(['a-thing']);
+    const row = listRunChanges(ctx.db, two.runId)[0];
+    expect(row?.state).toBe('green');
+    expect(runChangeTicks(ctx.db, row?.id as number)).toEqual(['1.1 Do it', '1.2 Test it']);
+  });
+
+  it('has one session resolve a conflict with the moved base, then builds on', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions((_, cwd) => {
+        writeFileSync(join(cwd, 'src', 'app.ts'), 'export const app = "branch";\n');
+        return {};
+      }).start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const moved = await moveBase(ctx, { 'src/app.ts': 'export const app = "base";\n' });
+
+    const sessions = fakeSessions((_, cwd) => {
+      expect(readFileSync(join(cwd, 'src', 'app.ts'), 'utf8')).toContain('<<<<<<<');
+      writeFileSync(join(cwd, 'src', 'app.ts'), 'export const app = "both";\n');
+      return { idle: true, tick: false };
+    });
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    // The owner picks it again (a parked change is a retry, an open PR a rebuild): Run alone
+    // builds only what can build now (runway: Changes that can build now).
+    const two = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({ state: 'green' });
+    // Only the session that resolved the conflict: no build task was open after it.
+    expect(sessions.count()).toBe(1);
+    expect(sessions.prompts[0]).toContain('These files conflict:\n- src/app.ts');
+    const head = await gitIn(ctx.repo.root, ['show', 'cp/a-thing:src/app.ts']);
+    expect(head).toBe('export const app = "both";');
+    await gitIn(ctx.repo.root, ['merge-base', '--is-ancestor', moved, 'cp/a-thing']);
+  });
+
+  it('starts fresh after its PR was closed, keeps the old branch, and replaces the stale remote one', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const old = (await gitIn(ctx.repo.root, ['rev-parse', 'cp/a-thing'])).trim();
+    setPullRequestState(ctx.db, listRunChanges(ctx.db, one.runId)[0]?.id as number, 'closed');
+
+    const leases: Array<string | null | undefined> = [];
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      remoteHead: async () => old,
+      deliver: async (c) => {
+        leases.push(c.lease);
+        return { prUrl: 'https://github.com/x/y/pull/2', previewUrl: null };
+      },
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({ state: 'green' });
+    expect(sessions.count()).toBe(1);
+    expect(leases).toEqual([old]);
+    const backups = await gitIn(ctx.repo.root, [
+      'branch',
+      '--list',
+      'cp-backup/*',
+      '--format=%(objectname)',
+    ]);
+    expect(backups.trim()).toBe(old);
+    // The new branch starts from the base, not from the old one.
+    const fresh = await runGit(ctx.repo.root, ['merge-base', '--is-ancestor', old, 'cp/a-thing'], {
+      allowExitCodes: [0, 1],
+    });
+    expect(fresh.exitCode).toBe(1);
+  });
+
+  it('parks before any session when the remote branch of an open PR has commits it did not push', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    updateRunChange(ctx.db, listRunChanges(ctx.db, one.runId)[0]?.id as number, {
+      headCommit: 'a'.repeat(40),
+    });
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      remoteHead: async () => 'b'.repeat(40),
+    });
+    // The owner picks it again (a parked change is a retry, an open PR a rebuild): Run alone
+    // builds only what can build now (runway: Changes that can build now).
+    const two = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(sessions.count()).toBe(0);
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({
+      state: 'parked',
+      reason: expect.stringMatching(
+        /cp\/a-thing on the remote has commits Counterpoint did not push/,
+      ),
+    });
+  });
+
+  it('asks for PR states at run start and before each change, so a PR merged meanwhile is not built again', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const prRow = listRunChanges(ctx.db, one.runId)[0]?.id as number;
+    // The PR merges between the run's start and the change's build start.
+    let asked = 0;
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      refreshPullRequests: async () => {
+        asked += 1;
+        if (asked === 2) setPullRequestState(ctx.db, prRow, 'merged');
+      },
+    });
+    // The owner picks it again (a parked change is a retry, an open PR a rebuild): Run alone
+    // builds only what can build now (runway: Changes that can build now).
+    const two = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(asked).toBe(2);
+    expect(sessions.count()).toBe(0);
+    expect(second.delivered).toEqual([]);
+    expect(listRunChanges(ctx.db, two.runId)[0]?.state).toBe('skipped');
+    // The next start sees it merged at once: nothing is left to build.
+    expect(await second.o.start('cena', SETTINGS)).toMatchObject({
+      ok: false,
+      error: 'The runway is empty.',
+    });
+  });
+
+  it('stops a change withdrawn during its last session before its gates and delivery', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const sessions = fakeSessions((n) => {
+      if (n === 1) withdrawApproval(ctx.db, 'cena', 'a-thing');
+      return {};
+    });
+    const g = gates([]);
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(g.calls).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({
+      state: 'skipped',
+      reason: expect.stringMatching(/approval was withdrawn.*cp\/a-thing keeps the work/),
+    });
+  });
+});
+
 describe('questions nobody answered (owner-inbox D-6)', () => {
   /** A builder of the running run asks the owner through the ask tool, without waiting. */
   const ask = (ctx: Awaited<ReturnType<typeof host>>, cwd: string, reversible: boolean) =>
@@ -1535,5 +2155,207 @@ describe("a builder's ask tool (owner-inbox D-5)", () => {
     );
     expect(sessions.prompts[2]).toContain("The owner's note: Show both later.");
     expect(getCard(ctx.db, cardId)?.outcome).toBe('The next session on a-thing gets this answer.');
+  });
+});
+
+describe('design drafts hold the build (design-drafts 6.2-6.4)', () => {
+  const PAGE = 'openspec/changes/a-thing/drafts/home/main.html';
+  const RULES = '.counterpoint/design-rules.md';
+
+  /** A run with a-thing's drafts in `stage`; its sign-off write in `write`. */
+  async function run(
+    stage: 'none' | 'low' | 'signed' | 'dropped',
+    write: 'none' | 'open' | 'merged',
+    landed: boolean,
+  ) {
+    const ctx = await host({
+      ...INDEPENDENT,
+      [RULES]: 'Forms group related fields.\n',
+      ...(landed
+        ? {
+            [PAGE]: '<link rel="stylesheet" href="../styles.css"><p data-cp-id="x">Home</p>',
+            'openspec/changes/a-thing/drafts/styles.css': 'p { margin: 0 }',
+          }
+        : {}),
+    });
+    const { Drafts } = await import('../../src/drafts/service.ts');
+    const store = await import('../../src/core/store/drafts.ts');
+    const writes = await import('../../src/core/store/planning-writes.ts');
+    const drafts = new Drafts({
+      db: ctx.db,
+      home: ctx.home,
+      host: () => ctx.runtime,
+      runner: () => runner,
+      ownerEnv: async () => OWNER_ENV,
+      mapper: { maps: async () => ({}) },
+      publish: () => {},
+    });
+    if (stage !== 'none') {
+      store.startDraftChange(ctx.db, 'cena', 'a-thing');
+      store.setDraftChangeState(ctx.db, 'cena', 'a-thing', 'ready');
+      const [home] = store.replaceScreens(ctx.db, 'cena', 'a-thing', [
+        { screen: 'home', name: 'Home', purpose: 'p', states: ['main'], directions: [] },
+      ]);
+      if (write !== 'none') {
+        const row = writes.insertPlanningWrite(ctx.db, {
+          hostId: 'cena',
+          cardId: null,
+          message: 'sign off',
+          edits: [{ kind: 'text', path: PAGE, before: null, after: 'x' }],
+        });
+        if (write === 'merged') writes.updatePlanningWrite(ctx.db, row.id, { state: 'merged' });
+        store.updateScreen(ctx.db, home?.id as number, { stage: 'signed', signoffWrite: row.id });
+      }
+      if (stage === 'dropped') await drafts.drop('cena', 'a-thing');
+    }
+    const sessions = fakeSessions();
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      draftHold: (hostId, change, reader, base) => drafts.heldAtBase(hostId, change, reader, base),
+      referenceScreens: async (input) => {
+        const { prepareReferenceScreens } = await import('../../src/drafts/reference.ts');
+        return prepareReferenceScreens({ ...input, shooter: null });
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    const rows = listRunChanges(ctx.db, started.runId);
+    return { ctx, rows, prompts: sessions.prompts, runId: started.runId };
+  }
+
+  it('skips a held change with a card naming its screens; the others build', async () => {
+    const { ctx, rows, runId } = await run('low', 'none', false);
+    expect(rows.map((r) => [r.change, r.state, r.reason])).toEqual([
+      ['a-thing', 'skipped', 'Waiting for sign-off: Home.'],
+      ['b-thing', 'green', null],
+    ]);
+    const card = runCards(ctx.db, 'cena').find((c) => c.kind === 'drafts-hold');
+    expect(card).toMatchObject({
+      key: `drafts-hold:${runId}:a-thing`,
+      question: 'Sign off Home to build a-thing',
+      blocking: false,
+    });
+    expect(card?.options.map((option) => option.label)).toEqual(['Open drafts', 'Drop drafts']);
+  });
+
+  it('holds a change signed off but not merged, or merged but not on the base', async () => {
+    for (const [write, landed] of [
+      ['open', true],
+      ['merged', false],
+    ] as const) {
+      const { rows } = await run('signed', write, landed);
+      expect(rows[0]).toMatchObject({ change: 'a-thing', state: 'skipped' });
+    }
+  });
+
+  it('builds a signed-off, landed change with its reference screens and the design rules', async () => {
+    const { ctx, rows, prompts } = await run('signed', 'merged', true);
+    expect(rows.map((r) => [r.state, r.reason])).toEqual([
+      ['green', null],
+      ['green', null],
+    ]);
+    const prompt = prompts[0] ?? '';
+    expect(prompt).toContain('Forms group related fields.');
+    expect(prompt).toContain('Reference screens');
+    expect(prompt).toContain('- home, main: HTML .cp-drafts/home/main.html');
+    const tree = await runGit(ctx.repo.root, ['ls-tree', '-r', '--name-only', 'cp/a-thing']);
+    expect(tree.stdout).not.toContain('.cp-drafts');
+    expect(tree.stdout).toContain('src/session-1.ts');
+  });
+
+  it('Run leaves out a change its drafts hold and one left parked; picked, the drafts-held one is skipped with its card', async () => {
+    const ctx = await host(
+      {
+        ...INDEPENDENT,
+        'openspec/changes/c-thing/.openspec.yaml': 'schema: spec-driven\n',
+        'openspec/changes/c-thing/proposal.md': proposal('C thing'),
+        'openspec/changes/c-thing/tasks.md': tasks,
+      },
+      ['a-thing', 'b-thing', 'c-thing'],
+    );
+    const { Drafts } = await import('../../src/drafts/service.ts');
+    const store = await import('../../src/core/store/drafts.ts');
+    const drafts = new Drafts({
+      db: ctx.db,
+      home: ctx.home,
+      host: () => ctx.runtime,
+      runner: () => runner,
+      ownerEnv: async () => OWNER_ENV,
+      mapper: { maps: async () => ({}) },
+      publish: () => {},
+    });
+    // a-thing: its Home screen is still in low-fi (design-drafts D-12).
+    store.startDraftChange(ctx.db, 'cena', 'a-thing');
+    store.setDraftChangeState(ctx.db, 'cena', 'a-thing', 'ready');
+    store.replaceScreens(ctx.db, 'cena', 'a-thing', [
+      { screen: 'home', name: 'Home', purpose: 'p', states: ['main'], directions: [] },
+    ]);
+    // b-thing: parked in an earlier run, and the owner left it parked (runway: on hold).
+    insertRun(ctx.db, { id: 'r0', hostId: 'cena', settings: {}, stopAt: null }, 1);
+    const parked = insertRunChange(ctx.db, { runId: 'r0', change: 'b-thing', position: 0 });
+    parkRunChange(ctx.db, parked, 'Gate failed.');
+    endRun(ctx.db, 'r0', { reason: 'finished' }, 2);
+    decideParked(ctx.db, {
+      hostId: 'cena',
+      change: 'b-thing',
+      runChangeId: parked,
+      hold: true,
+      reason: 'left-parked',
+    });
+    // As the daemon wires it: the changes whose drafts hold the build cannot build now.
+    const approvals = createApprovalViews({
+      store: ctx.db,
+      draftsHeld: (hostId) =>
+        new Set([...drafts.holds(hostId)].filter(([, hold]) => hold.held).map(([c]) => c)),
+    });
+    const runway = await approvals.runway(ctx.runtime);
+    expect(
+      runway.onRunway
+        .map((entry) => [entry.changeId, entry.canBuild, entry.canPick])
+        .sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+    ).toEqual([
+      ['a-thing', false, true],
+      ['b-thing', false, false],
+      ['c-thing', true, true],
+    ]);
+    expect(runway.ready).toBe(1);
+
+    const { o } = orchestrator(ctx, {
+      approvals,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      draftHold: (hostId, change, reader, base) => drafts.heldAtBase(hostId, change, reader, base),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.change, c.state])).toEqual([
+      ['c-thing', 'green'],
+    ]);
+
+    // Picked by the owner: the change left parked is refused; the drafts-held one is skipped.
+    expect(await o.start('cena', { ...SETTINGS, changes: ['b-thing'] })).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+    const picked = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!picked.ok) throw new Error(picked.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, picked.runId).map((c) => [c.change, c.state, c.reason])).toEqual([
+      ['a-thing', 'skipped', 'Waiting for sign-off: Home.'],
+    ]);
+    expect(runCards(ctx.db, 'cena').find((c) => c.kind === 'drafts-hold')).toMatchObject({
+      key: `drafts-hold:${picked.runId}:a-thing`,
+    });
+  });
+
+  it('builds a change whose drafts were dropped, or never started, as before', async () => {
+    for (const stage of ['dropped', 'none'] as const) {
+      const { rows, prompts } = await run(stage, 'none', false);
+      expect(rows.map((r) => r.state)).toEqual(['green', 'green']);
+      expect(prompts[0]).not.toContain('Reference screens');
+    }
   });
 });

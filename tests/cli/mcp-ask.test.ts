@@ -31,6 +31,11 @@ function grant(sessionId: string): AskGrant {
   return { sessionId, kind: 'builder', hostId: 'h1', runId: 'run-1', change: 'add-menu' };
 }
 
+/** The owner's own interactive session (as `POST /control/ask/session` opens one). */
+function interactive(sessionId: string): AskGrant {
+  return { sessionId, kind: 'interactive', hostId: 'h1', runId: null, change: null };
+}
+
 function transportFor(bearer: string) {
   return async (method: 'GET' | 'POST', path: string, body?: unknown) => {
     const res = await control.request(`http://counterpoint.control${path}`, {
@@ -45,7 +50,10 @@ function transportFor(bearer: string) {
   };
 }
 
-function mcpFor(bearer: string, extra: { waitCapMs?: number; waitRequestMs?: number } = {}) {
+function mcpFor(
+  bearer: string,
+  extra: { waitCapMs?: number; waitRequestMs?: number; interactive?: boolean } = {},
+) {
   return createAskMcp({ transport: transportFor(bearer), version: 'test', ...extra });
 }
 
@@ -102,6 +110,22 @@ afterAll(() => {
 });
 
 describe('mcp ask: protocol', () => {
+  it("tells an interactive session to also ask in the chat, as the project's CLAUDE.md says", async () => {
+    const init = await mcpFor('unused', { interactive: true }).handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't' } },
+    });
+    expect(init).toMatchObject({
+      result: {
+        instructions: expect.stringContaining(
+          'also put the question in your reply as numbered options, with the recommended one marked',
+        ),
+      },
+    });
+  });
+
   it('initializes and lists both tools with object input schemas', async () => {
     const mcp = mcpFor('unused');
     const init = (await mcp.handle({
@@ -112,6 +136,9 @@ describe('mcp ask: protocol', () => {
     })) as { result: { protocolVersion: string; capabilities: unknown } };
     expect(init.result.protocolVersion).toBe('2025-06-18');
     expect(init.result.capabilities).toEqual({ tools: {} });
+    expect(init).toMatchObject({
+      result: { instructions: expect.stringContaining('never in your reply') },
+    });
     const list = (await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })) as {
       result: { tools: { name: string; inputSchema: { type: string; required: string[] } }[] };
     };
@@ -171,25 +198,94 @@ describe('mcp ask: posting and waiting', () => {
   });
 
   it('waits for the answer and returns it with the note', async () => {
-    const capability = mintAskCapability(db, grant('s-wait'));
-    const pending = call(mcpFor(capability), 'ask_owner', { ...QUESTION, wait: true });
+    const capability = mintAskCapability(db, interactive('s-wait'));
+    const mcp = mcpFor(capability, { interactive: true });
+    const pending = call(mcp, 'ask_owner', { ...QUESTION, wait: true });
     let card = listSessionCards(db, 's-wait')[0];
     for (let i = 0; card === undefined && i < 50; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
       card = listSessionCards(db, 's-wait')[0];
     }
     expect(card?.blocking).toBe(true);
-    await desk.answer(card?.id ?? '', { option: 2, note: 'Keep it short' });
+    const answered = await desk.answer(card?.id ?? '', { option: 2, note: 'Keep it short' });
+    expect(answered.outcome).toBe('Not read yet');
     const { text } = await pending;
     expect(text).toContain('"Relative"');
     expect(text).toContain('Their note: Keep it short');
-    const later = await call(mcpFor(capability), 'check_answer', { card: card?.id });
+    // Answered: no need to repeat it in the chat.
+    expect(text).not.toContain('reading the chat');
+    expect(getCard(db, card?.id ?? '')?.outcome).toBe('Read by the session');
+    const later = await call(mcp, 'check_answer', { card: card?.id });
     expect(later.text).toContain('"Relative"');
+  });
+
+  it('never makes a builder wait: its recommendation is assumed at once', async () => {
+    const capability = mintAskCapability(db, grant('s-builder-wait'));
+    const started = Date.now();
+    const { text } = await call(mcpFor(capability), 'ask_owner', { ...QUESTION, wait: true });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(text).toContain('Go on with your recommendation, "Local"');
+    expect(text).not.toContain('reading the chat');
+    // Reversible and nobody waits on it: it blocks nothing, so it does not notify.
+    expect(getCard(db, cardIdIn(text))).toMatchObject({ state: 'open', blocking: false });
+    // Its wait route answers at once too.
+    const res = await transportFor(capability)(
+      'POST',
+      `/control/ask/cards/${cardIdIn(text)}/wait`,
+      { ms: 60_000 },
+    );
+    expect(res.body).toMatchObject({ waits: false, card: { state: 'open' } });
+  });
+
+  it("notifies for an interactive session's question and tells it to ask in the chat too", async () => {
+    const capability = mintAskCapability(db, interactive('s-chat'));
+    const { text } = await call(mcpFor(capability, { interactive: true }), 'ask_owner', QUESTION);
+    expect(text).toContain('Go on with your recommendation');
+    expect(text).toContain(
+      'The owner may be reading the chat: also put this question in your reply as numbered options, with the recommended one marked. The card stays.',
+    );
+    expect(getCard(db, cardIdIn(text))).toMatchObject({ blocking: true, runId: null });
+  });
+
+  it('says "Not read yet" until check_answer reads the answer', async () => {
+    const capability = mintAskCapability(db, grant('s-read'));
+    const { text } = await call(mcpFor(capability), 'ask_owner', QUESTION);
+    const id = cardIdIn(text);
+    expect((await desk.answer(id, { option: 0 })).outcome).toBe('Not read yet');
+    await call(mcpFor(capability), 'check_answer', {});
+    expect(getCard(db, id)?.outcome).toBe('Read by the session');
+  });
+
+  it("closes an interactive session's unanswered cards as Session ended when its input ends", async () => {
+    const capability = mintAskCapability(db, interactive('s-ends'));
+    const mcp = mcpFor(capability, { interactive: true });
+    const first = cardIdIn((await call(mcp, 'ask_owner', QUESTION)).text);
+    const second = cardIdIn((await call(mcp, 'ask_owner', QUESTION)).text);
+    await desk.answer(second, { option: 0 });
+    const input = new PassThrough();
+    const served = serveAskMcp(input, new PassThrough(), () => mcp);
+    input.end();
+    await served;
+    expect(getCard(db, first)).toMatchObject({ state: 'resolved', outcome: 'Session ended' });
+    expect(getCard(db, second)).toMatchObject({ state: 'answered', outcome: 'Not read yet' });
+    // Its capability ended with it.
+    expect((await call(mcp, 'check_answer', {})).isError).toBe(true);
+  });
+
+  it("keeps a builder's unanswered cards answerable when its input ends", async () => {
+    const capability = mintAskCapability(db, grant('s-builder-ends'));
+    const mcp = mcpFor(capability);
+    const id = cardIdIn((await call(mcp, 'ask_owner', QUESTION)).text);
+    const input = new PassThrough();
+    const served = serveAskMcp(input, new PassThrough(), () => mcp);
+    input.end();
+    await served;
+    expect(getCard(db, id)?.state).toBe('open');
   });
 
   it('stops waiting at the cap and says the card is still open', async () => {
     expect(ASK_WAIT_CAP_MS).toBe(10 * 60_000);
-    const capability = mintAskCapability(db, grant('s-timeout'));
+    const capability = mintAskCapability(db, interactive('s-timeout'));
     const mcp = mcpFor(capability, { waitCapMs: 60, waitRequestMs: 20 });
     const started = Date.now();
     const reversible = await call(mcp, 'ask_owner', { ...QUESTION, wait: true });

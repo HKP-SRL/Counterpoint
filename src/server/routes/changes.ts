@@ -12,15 +12,16 @@
 // remote).
 //
 // Approvals come from Counterpoint's store (src/server/approval-views.ts): a change the owner
-// approved shows On runway while it is readable and not built.
+// approved shows On runway while it is readable and not built, with where it stands in the build
+// lane (`stage`: building, parked, on hold, PR open or closed, waiting on a dependency), whether
+// Run builds it (`canBuild`), its latest build PR and, for a Built change, why it is built.
 import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { type ChangeFacts, findChange } from '../../core/framework/port.ts';
 import type { BaseFetchState } from '../../core/git/base-fetch.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
-import type { ApprovalState } from '../../core/runway/runway.ts';
 import { deriveChangeStatus, ownerSteps } from '../../core/runway/status.ts';
-import type { ApprovalViews } from '../approval-views.ts';
+import type { ApprovalViews, BoardEntry } from '../approval-views.ts';
 import type { HostRuntime, HostRuntimes, HostView } from '../hosts.ts';
 
 export interface ChangeRoutesOptions {
@@ -29,6 +30,14 @@ export interface ChangeRoutesOptions {
   approvals?: ApprovalViews;
   /** The base fetcher's state for a host; without it nothing is said about fetching. */
   baseFetch?: (hostId: string) => BaseFetchState | null;
+  /** Changes whose design drafts were started, and which screens still wait (design-drafts D-12). */
+  draftHolds?: (hostId: string) => ReadonlyMap<string, DraftHold>;
+}
+
+/** A change's design drafts as listings show them. */
+export interface DraftHold {
+  held: boolean;
+  waiting: string[];
 }
 
 /** Which base the view was read from, and how its fetch went. */
@@ -44,14 +53,14 @@ function baseFacts(view: HostView, fetched: BaseFetchState | null) {
   };
 }
 
-/** Approval states by change id; an empty map when they cannot be computed. */
-async function approvalStates(
+/** The board's entries by change id; an empty map when they cannot be computed. */
+async function boardEntries(
   approvals: ApprovalViews | undefined,
   runtime: HostRuntime,
-): Promise<Map<string, ApprovalState>> {
+): Promise<Map<string, BoardEntry>> {
   if (approvals === undefined) return new Map();
   try {
-    return await approvals.states(runtime);
+    return (await approvals.board(runtime)).entries;
   } catch {
     return new Map();
   }
@@ -59,16 +68,13 @@ async function approvalStates(
 
 function changeRow(
   change: ChangeFacts,
-  approval: ApprovalState | undefined,
-  merged: ReadonlySet<string>,
+  entry: BoardEntry | undefined,
+  hold: DraftHold | undefined,
 ) {
-  // An archived change is done; an approval of the same name belongs to the active one, if any.
-  const own = change.archived ? undefined : approval;
-  const onRunway = own?.state === 'on-runway' ? own : null;
-  const { status, notReadyReason } = deriveChangeStatus(
-    { ...change, merged: !change.archived && merged.has(change.id) },
-    onRunway === null ? null : 'on-runway',
-  );
+  // An archived change is done; an entry of the same name belongs to the active one, if any.
+  const own = change.archived ? undefined : entry;
+  const derived = own ?? deriveChangeStatus(change);
+  const onRunway = own?.approval.state === 'on-runway' ? own.approval : null;
   return {
     id: change.id,
     title: change.title,
@@ -76,19 +82,26 @@ function changeRow(
     archivedOn: change.archivedOn,
     created: change.created,
     dependsOn: change.dependsOn,
-    status,
-    notReadyReason,
+    status: derived.status,
+    notReadyReason: derived.notReadyReason,
     artifacts: change.artifacts,
     tasks: { total: change.tasks.total, done: change.tasks.done },
     ownerStepCount: ownerSteps(change).length,
     unreadable: change.unreadable,
     approval: onRunway === null ? null : { state: 'on-runway', approvedAt: onRunway.approvedAt },
+    stage: own?.stage ?? null,
+    canBuild: own?.canBuild ?? false,
+    builtBy: change.archived ? 'archived' : (own?.builtBy ?? null),
+    pr: own?.pr ?? null,
+    // Waiting for sign-off (D-12): drafts were started and a screen is not signed off and landed.
+    drafts: change.archived || hold === undefined ? null : hold,
   };
 }
 
 export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void {
   const { runtimes, approvals } = options;
   const fetchState = (hostId: string) => options.baseFetch?.(hostId) ?? null;
+  const holds = (hostId: string) => options.draftHolds?.(hostId) ?? new Map<string, DraftHold>();
 
   app.get('/api/hosts/:hostId/changes', async (c) => {
     const hostId = c.req.param('hostId');
@@ -98,8 +111,7 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
 
     const view = await runtime.view();
     const changes = view.snapshot?.changes ?? [];
-    const states = await approvalStates(approvals, runtime);
-    const merged = approvals?.merged(runtime.host.id) ?? new Set<string>();
+    const entries = await boardEntries(approvals, runtime);
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
@@ -107,7 +119,9 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
       tip: view.tip,
       base: baseFacts(view, fetchState(hostId)),
       unreadable: view.snapshot?.unreadable ?? null,
-      changes: changes.map((change) => changeRow(change, states.get(change.id), merged)),
+      changes: changes.map((change) =>
+        changeRow(change, entries.get(change.id), holds(hostId).get(change.id)),
+      ),
     });
   });
 
@@ -124,14 +138,13 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
     if (change === undefined || view.tip === null || runtime.adapter === null) {
       return c.json({ error: 'not found' }, 404);
     }
-    const states = await approvalStates(approvals, runtime);
-    const merged = approvals?.merged(runtime.host.id) ?? new Set<string>();
+    const entries = await boardEntries(approvals, runtime);
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
-      ...changeRow(change, states.get(change.id), merged),
+      ...changeRow(change, entries.get(change.id), holds(hostId).get(change.id)),
       why: change.why,
       ownerSteps: ownerSteps(change),
     });

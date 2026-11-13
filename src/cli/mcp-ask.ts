@@ -1,12 +1,15 @@
 // `counterpoint mcp ask` (owner-inbox D-5; ask-the-owner): a stdio MCP server with two tools,
 // `ask_owner` and `check_answer`, that turn a Claude Code session's questions into cards in Needs
 // You. It talks to the daemon over the control socket with its session's ask capability, which
-// allows only the four `/control/ask/` calls: post a card, wait on it, read it, list the session's
-// cards.
+// allows only the `/control/ask/` calls: post a card, wait on it, read it, list the session's
+// cards, and say the session ended (when its input ends: an interactive session's unanswered cards
+// then close as "Session ended").
 //
 // The protocol is MCP over stdio: one JSON-RPC 2.0 message per line. Calls run concurrently, so a
 // waiting `ask_owner` never blocks a ping or another call. One `ask_owner` waits at most 10
-// minutes, then returns "still open" with the card id.
+// minutes, then returns "still open" with the card id. A builder never waits: the daemon returns
+// its card at once and the recommendation is assumed. An interactive session is also told to put
+// a waiting question in its reply, since the owner may be reading the chat.
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { z } from 'zod';
@@ -15,15 +18,19 @@ import {
   ASK_WAIT_REQUEST_MS,
   type AskCardView,
   AskInput,
+  CARD_ONLY,
 } from '../core/store/ask.ts';
 import type { ControlResponse } from './control-client.ts';
 
-/** One request to the daemon's `/control/ask/` routes, carrying the session's capability. */
+/**
+ * One request to the daemon's `/control/ask/` routes, carrying the session's capability.
+ * `onlyIfOpen`: an interactive session that never opened sends nothing (answers 204).
+ */
 export type AskTransport = (
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
-  options?: { timeoutMs?: number; signal?: AbortSignal },
+  options?: { timeoutMs?: number; signal?: AbortSignal; onlyIfOpen?: boolean },
 ) => Promise<ControlResponse>;
 
 /** What a session reads when the interactive setup key no longer works. */
@@ -40,6 +47,7 @@ export function sessionTransport(
 ): AskTransport {
   let session: Promise<AskTransport | ControlResponse> | undefined;
   return async (method, path, body, options) => {
+    if (options?.onlyIfOpen === true && session === undefined) return { status: 204, body: null };
     session ??= open().then((res) => {
       const capability = isRecord(res.body) ? res.body.capability : undefined;
       if (res.status === 201 && typeof capability === 'string') return withCapability(capability);
@@ -60,6 +68,8 @@ export function sessionTransport(
 export interface AskMcpOptions {
   transport: AskTransport;
   version: string;
+  /** The owner's own interactive session (not a builder): the owner may be reading the chat. */
+  interactive?: boolean;
   /** The longest one `ask_owner` waits (default 10 minutes). */
   waitCapMs?: number;
   /** The longest one wait request to the daemon holds (default 60 s). */
@@ -88,8 +98,7 @@ function inputSchema(schema: z.ZodType): Record<string, unknown> {
 const TOOLS = [
   {
     name: 'ask_owner',
-    description:
-      "Ask the owner a decision only they can make. It appears as a card in their inbox. Ask only what changes the outcome. Give 2 to 4 options, each with its consequence, and recommend one. If the choice is reversible, keep working on your recommendation: it is noted as assumed. Set wait only when you can't go on without the answer; a wait ends after at most 10 minutes.",
+    description: `Ask the owner a decision only they can make. It appears as a card in their inbox. ${CARD_ONLY} Ask only what changes the outcome. Give 2 to 4 options, each with its consequence, and recommend one. If the choice is reversible, keep working on your recommendation: it is noted as assumed. Set wait only when you can't go on without the answer; a wait ends after at most 10 minutes.`,
     inputSchema: inputSchema(AskInput),
   },
   {
@@ -132,6 +141,10 @@ function cardOf(res: ControlResponse): AskCardView | undefined {
 
 const waiting = (card: AskCardView) => card.state === 'open' || card.state === 'deferred';
 
+/** What an interactive session is told while its question waits. */
+export const IN_CHAT_TOO =
+  'The owner may be reading the chat: also put this question in your reply as numbered options, with the recommended one marked. The card stays.';
+
 /** What the session reads about one card. */
 export function describeCard(card: AskCardView): string {
   if (card.answer !== null) {
@@ -173,6 +186,8 @@ export function createAskMcp(options: AskMcpOptions) {
       const next = res.status === 200 ? cardOf(res) : undefined;
       if (next === undefined) break;
       current = next;
+      // A builder's wait returns at once: it never waits (the daemon says so).
+      if (isRecord(res.body) && res.body.waits === false) break;
       if (isId(progressToken) && waiting(current)) {
         options.notify?.({
           jsonrpc: '2.0',
@@ -196,9 +211,18 @@ export function createAskMcp(options: AskMcpOptions) {
     const res = await options.transport('POST', '/control/ask/cards', parsed.data);
     const card = res.status === 201 ? cardOf(res) : undefined;
     if (card === undefined) return text(errorOf(res, "Couldn't post the question."), true);
-    if (!parsed.data.wait) return text(describeCard(card));
+    // The owner may be at the terminal of their own session: an open question goes in the chat too.
+    const reply = (current: AskCardView) =>
+      text(
+        options.interactive === true && waiting(current)
+          ? `${describeCard(current)}\n${IN_CHAT_TOO}`
+          : describeCard(current),
+      );
+    // Builders never wait: the daemon answers `waits: false` and the recommendation is assumed.
+    const waits = parsed.data.wait && !(isRecord(res.body) && res.body.waits === false);
+    if (!waits) return reply(card);
     try {
-      return text(describeCard(await waitFor(card, signal, progressToken)));
+      return reply(await waitFor(card, signal, progressToken));
     } catch {
       return text(
         `Card ${card.card} is posted, but Counterpoint stopped answering while you waited. Check later with check_answer.`,
@@ -270,8 +294,12 @@ export function createAskMcp(options: AskMcpOptions) {
             protocolVersion,
             capabilities: { tools: {} },
             serverInfo: { name: 'counterpoint', version: options.version },
+            // The same rule as the project's CLAUDE.md ("Asking the owner"): in a chat the owner
+            // is in, the question also goes in the reply; an unattended session asks only here.
             instructions:
-              'Ask the owner through ask_owner, never in your reply text. Ask only what changes the outcome.',
+              options.interactive === true
+                ? 'Ask the owner through ask_owner. The owner may be in the chat: also put the question in your reply as numbered options, with the recommended one marked; the card stays. Ask only what changes the outcome.'
+                : 'Ask the owner through ask_owner, never in your reply text. Ask only what changes the outcome.',
           },
         };
       }
@@ -291,7 +319,17 @@ export function createAskMcp(options: AskMcpOptions) {
     for (const controller of inFlight.values()) controller.abort();
   }
 
-  return { handle, abortAll };
+  /**
+   * Tells the daemon the session ended (its client went away): an interactive session's unanswered
+   * cards close as "Session ended". Never opens a session that asked nothing.
+   */
+  async function end(): Promise<void> {
+    await options
+      .transport('POST', '/control/ask/end', {}, { timeoutMs: 5_000, onlyIfOpen: true })
+      .catch(() => undefined);
+  }
+
+  return { handle, abortAll, end };
 }
 
 /** Serves the MCP over a line stream until the input ends. */
@@ -326,4 +364,5 @@ export async function serveAskMcp(
   }
   mcp.abortAll();
   await Promise.allSettled(pending);
+  await mcp.end();
 }

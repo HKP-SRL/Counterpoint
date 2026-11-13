@@ -18,8 +18,10 @@ export const HostSettings = z.strictObject({
   maxTurns: z.number().int().min(10).max(2000),
   /** Estimated cost one builder session may reach, in USD (`--max-budget-usd`). */
   maxBudgetUsd: z.number().int().min(1).max(500),
-  /** Builder sessions per attempt before the gates run anyway. */
+  /** Builder sessions per attempt; with build tasks still open after that many, the change parks. */
   sessionsPerAttempt: z.number().int().min(1).max(20),
+  /** The model design-draft sessions use (design-drafts D-2), at low effort. */
+  draftModel: z.string().regex(MODEL_RE, 'Not a model name.').default('sonnet'),
 });
 export type HostSettings = z.infer<typeof HostSettings>;
 
@@ -30,6 +32,7 @@ export const DEFAULT_HOST_SETTINGS: HostSettings = {
   maxTurns: 400,
   maxBudgetUsd: 50,
   sessionsPerAttempt: 8,
+  draftModel: 'sonnet',
 };
 
 /**
@@ -64,7 +67,7 @@ export function readHostSettings(
 export function writeHostSettings(
   db: Store,
   hostId: string,
-  settings: HostSettings,
+  settings: z.input<typeof HostSettings>,
   now: number = Date.now(),
 ): void {
   db.prepare(

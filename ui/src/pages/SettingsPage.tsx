@@ -45,7 +45,8 @@ function sameSettings(a: HostSettings, b: HostSettings): boolean {
     a.budgetPercent === b.budgetPercent &&
     a.maxTurns === b.maxTurns &&
     a.maxBudgetUsd === b.maxBudgetUsd &&
-    a.sessionsPerAttempt === b.sessionsPerAttempt
+    a.sessionsPerAttempt === b.sessionsPerAttempt &&
+    a.draftModel === b.draftModel
   );
 }
 
@@ -173,7 +174,7 @@ function SettingsForm({ hostId, answer }: { hostId: string; answer: SettingsAnsw
             />
             <NumberInput
               label="Sessions per attempt"
-              description="After this many sessions on one attempt, the gates run anyway."
+              description="After this many sessions with build tasks still open, the change parks."
               value={draft.sessionsPerAttempt}
               min={1}
               max={20}
@@ -181,6 +182,22 @@ function SettingsForm({ hostId, answer }: { hostId: string; answer: SettingsAnsw
               onChange={(value) => set('sessionsPerAttempt', value)}
             />
           </HStack>
+        </VStack>
+      </Card>
+      <Card padding={5} elevation="none" aria-label="Design drafts">
+        <VStack gap={4}>
+          <Text type="label" weight="semibold">
+            Design drafts
+          </Text>
+          <Selector
+            label="Draft model"
+            options={withCurrent(MODELS, { value: draft.draftModel, label: draft.draftModel })}
+            value={draft.draftModel}
+            onChange={(value) => set('draftModel', value)}
+          />
+          <Text type="supporting" color="secondary">
+            Draft sessions run at low effort with few turns, so a round stays fast.
+          </Text>
         </VStack>
       </Card>
       <HStack gap={3} vAlign="center" wrap="wrap">

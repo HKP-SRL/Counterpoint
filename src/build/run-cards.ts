@@ -1,21 +1,37 @@
-// What the host's latest run left for the owner, as question cards (owner-inbox 2.4; needs-you:
+// What the host's runs left for the owner, as question cards (owner-inbox 2.4; needs-you:
 // Every item can be answered; Options for a parked change).
 //
 // - A change parked on a gate or a stuck builder: retry with the failure as a note (recommended),
-//   re-plan it, or leave it parked.
+//   re-plan it, or leave it parked. Re-plan and Leave it parked hold the change: no run builds it
+//   until the owner retries it (from its page). The card belongs to the change's parked build, not
+//   to the latest run: it stays until the change builds again, is retried or leaves the runway.
 // - A change parked on the builder's ask-first questions: one card per question, the builder's
 //   options and recommendation; any answer retries the change with the answer as a note.
 // - A run that stopped on something only the owner can fix: named by its root cause ("not logged
 //   in", not the "no context window" it led to), with Counterpoint's fix where the catalog has one
-//   (re-read the environment and resume) and otherwise the one step only the owner can take.
-// - A note the run left (its login shell could not be read): re-read the environment.
+//   (re-read the environment and resume) and otherwise the one step only the owner can take. A
+//   sign-in that kept failing while claude holds a login may be an outage: resume, nothing more.
+// - A note the run left (its login shell could not be read): re-read the environment. Any other
+//   note is a "Done for you" line, since no answer would change anything.
 //
 // The cards are recomputed from the store: each has a key, so raising it again finds the same card,
-// and a card whose cause is gone (a later run replaced it) resolves itself.
-import type { CardOption, NewCard } from '../core/store/cards.ts';
+// and a card whose cause is gone (a later run replaced a stopped run, a parked change built again)
+// resolves itself.
+import { ASKED_PARK, parkedOnAsk } from '../core/runway/lane.ts';
+import { listApprovals } from '../core/store/approvals.ts';
+import { type CardOption, getCardByKey, type NewCard } from '../core/store/cards.ts';
+import { latestBuilds, parkDecisions } from '../core/store/change-lane.ts';
 import type { Store } from '../core/store/db.ts';
-import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
+import {
+  type ChangeQuestion,
+  getRunChange,
+  latestRun,
+  listRunChanges,
+} from '../core/store/runs.ts';
+import { HOLD_REASON, holdCard } from '../drafts/hold.ts';
 import type { CardDesk } from '../server/cards.ts';
+import { OUTAGE_PREFIX } from './auth-failures.ts';
+import { SERVICE_DOWN_PREFIX } from './gates.ts';
 
 const clip = (text: string, max = 300): string => {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -24,7 +40,9 @@ const clip = (text: string, max = 300): string => {
 
 /** Why a run stopped, by root cause. */
 export type StopCause =
+  | { kind: 'sign-in-outage' }
   | { kind: 'not-logged-in' }
+  | { kind: 'service-down'; service: string }
   | { kind: 'missing-program'; programs: string[] }
   | { kind: 'account'; what: string }
   | { kind: 'config' }
@@ -35,6 +53,15 @@ export type StopCause =
  * when it surfaced as a failed context-window calibration.
  */
 export function stopCause(detail: string): StopCause {
+  // First: its last output lines may say anything (gates.ts describeServiceDown).
+  const service = new RegExp(`^${SERVICE_DOWN_PREFIX} "([^"]{1,100})" would not start`).exec(
+    detail,
+  );
+  if (service !== null) return { kind: 'service-down', service: service[1] as string };
+  // A sign-in that kept failing while claude holds a login (auth-failures.ts): also before the
+  // phrase checks, since its detail quotes the failure ("authentication_failed", "Failed to
+  // authenticate").
+  if (detail.startsWith(OUTAGE_PREFIX)) return { kind: 'sign-in-outage' };
   if (
     /not logged in|please run \/login|not signed in|authentication[_ ]failed|oauth/i.test(detail)
   ) {
@@ -76,6 +103,13 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
     blocking: true,
   };
   switch (cause.kind) {
+    case 'sign-in-outage':
+      return {
+        ...base,
+        question: 'Sign-in failed, maybe an outage. Resume?',
+        why: clip(detail.slice(OUTAGE_PREFIX.length)),
+        options: [resume('Resume the run'), LEAVE_STOPPED],
+      };
     case 'not-logged-in':
       return {
         ...base,
@@ -101,6 +135,13 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
         ],
       };
     }
+    case 'service-down':
+      return {
+        ...base,
+        question: `The ${cause.service} service won't start. Resume once it's running?`,
+        why: clip(detail),
+        options: [resume("It's running: resume the run"), LEAVE_STOPPED],
+      };
     case 'account':
       return {
         ...base,
@@ -130,14 +171,10 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
  * parked reason (after "Not built: "). The question's own card is what the owner answers, so no
  * parked card is raised for it; the answer reaches the change's next session.
  */
-export const ASKED_PARK = 'Waits on your answer to ';
+export { ASKED_PARK };
 
 export function askParkWhy(count: number): string {
   return `${ASKED_PARK}${count === 1 ? 'a question' : `${count} questions`} its builder asked in Needs You.`;
-}
-
-function parkedOnAsk(reason: string | null): boolean {
-  return (reason ?? '').replace(/^Not built: /, '').startsWith(ASKED_PARK);
 }
 
 function parkedCard(hostId: string, runId: string, change: string, reason: string): NewCard {
@@ -159,9 +196,15 @@ function parkedCard(hostId: string, runId: string, change: string, reason: strin
       },
       {
         label: 'Re-plan it',
-        consequence: 'It stays parked; open the change and revise its plan.',
+        consequence:
+          'No run builds it until you retry it from its page. Open the change and revise its plan.',
+        action: { type: 'hold-parked', runId, change, why: 'replan' },
       },
-      { label: 'Leave it parked', consequence: 'Nothing happens until you retry it.' },
+      {
+        label: 'Leave it parked',
+        consequence: 'No run builds it until you retry it from its page.',
+        action: { type: 'hold-parked', runId, change, why: 'left-parked' },
+      },
     ],
     recommended: 0,
     reversible: true,
@@ -204,40 +247,49 @@ function questionCard(
   };
 }
 
-function noticeCard(hostId: string, runId: string, notice: string, index: number): NewCard {
-  const shell = /login shell/i.test(notice);
+/**
+ * A run notice is a card only when the owner can act on it (the login shell: re-read it). Any other
+ * notice changes nothing whatever the owner answers, so it is a "Done for you" line instead.
+ */
+function noticeCard(hostId: string, runId: string, notice: string, index: number): NewCard | null {
+  if (!/login shell/i.test(notice)) return null;
   return {
     hostId,
     key: `notice:${runId}:${index}`,
     kind: 'notice',
     source: 'run',
     runId,
-    question: shell
-      ? "Your login shell couldn't be read. Re-read it now?"
-      : clip(`${notice} Look into it?`, 500),
-    why: shell
-      ? clip(`${notice} Tools your shell adds may be missing.`)
-      : 'Nothing stopped; it may matter for the next run.',
-    options: shell
-      ? [
-          {
-            label: 'Re-read my environment',
-            consequence: 'Counterpoint reads your login shell again and resumes if the run ended.',
-            action: { type: 'refresh-environment-and-resume', runId },
-          },
-          { label: 'Ignore it', consequence: 'The next run reads your login shell again anyway.' },
-        ]
-      : [
-          { label: 'Got it', consequence: 'Nothing changes.' },
-          { label: 'Ignore it', consequence: 'Nothing changes.' },
-        ],
+    question: "Your login shell couldn't be read. Re-read it now?",
+    why: clip(`${notice} Tools your shell adds may be missing.`),
+    options: [
+      {
+        label: 'Re-read my environment',
+        consequence: 'Counterpoint reads your login shell again and resumes if the run ended.',
+        action: { type: 'refresh-environment-and-resume', runId },
+      },
+      { label: 'Ignore it', consequence: 'The next run reads your login shell again anyway.' },
+    ],
     recommended: 0,
     reversible: true,
     blocking: false,
   };
 }
 
-/** The cards the host's latest run calls for now. */
+/** The latest run's notices that are no card: one "Done for you" line each, with its card key. */
+export function runNoticeLines(db: Store, hostId: string): { key: string; text: string }[] {
+  const run = latestRun(db, hostId);
+  if (run === undefined) return [];
+  return run.notices.flatMap((notice, index) =>
+    noticeCard(hostId, run.id, notice, index) === null
+      ? [{ key: `notice:${run.id}:${index}`, text: clip(`Run ${run.id}: ${notice}`) }]
+      : [],
+  );
+}
+
+/**
+ * The cards the host's runs call for now: the latest run's stop, notes and drafts holds, and each
+ * change whose latest build parked, while it is approved and the owner has not retried it.
+ */
 export function runCards(db: Store, hostId: string): NewCard[] {
   const run = latestRun(db, hostId);
   if (run === undefined) return [];
@@ -246,26 +298,41 @@ export function runCards(db: Store, hostId: string): NewCard[] {
     cards.push(stoppedCard(hostId, run.id, run.endDetail ?? 'The run stopped on an error.'));
   }
   run.notices.forEach((notice, index) => {
-    cards.push(noticeCard(hostId, run.id, notice, index));
+    const card = noticeCard(hostId, run.id, notice, index);
+    if (card !== null) cards.push(card);
   });
+  // A change its design drafts held in the latest run (design-drafts D-12): one card per change
+  // and run.
   for (const change of listRunChanges(db, run.id)) {
-    if (change.state !== 'parked') continue;
-    const asked = change.questions
-      .map((question, index) => questionCard(hostId, run.id, change.change, question, index))
+    if (change.state === 'skipped' && (change.reason ?? '').startsWith(HOLD_REASON)) {
+      cards.push(holdCard(hostId, run.id, change.change, change.reason ?? ''));
+    }
+  }
+  const approved = new Set(listApprovals(db, hostId).map((row) => row.change));
+  const decisions = parkDecisions(db, hostId);
+  for (const build of latestBuilds(db, hostId).values()) {
+    if (build.state !== 'parked' || !approved.has(build.change)) continue;
+    const decision = decisions.get(build.change);
+    if (decision?.runChangeId === build.runChangeId && decision.state === 'released') continue;
+    const questions = getRunChange(db, build.runChangeId)?.questions ?? [];
+    const asked = questions
+      .map((question, index) => questionCard(hostId, build.runId, build.change, question, index))
       .filter((card): card is NewCard => card !== null);
     if (asked.length > 0) cards.push(...asked);
-    else if (!parkedOnAsk(change.reason)) {
-      cards.push(parkedCard(hostId, run.id, change.change, change.reason ?? 'Parked.'));
+    else if (!parkedOnAsk(build.reason)) {
+      cards.push(parkedCard(hostId, build.runId, build.change, build.reason ?? 'Parked.'));
     }
   }
   return cards;
 }
 
-const RUN_PREFIXES = ['run-stopped:', 'parked:', 'question:', 'notice:'] as const;
+const RUN_PREFIXES = ['run-stopped:', 'notice:', 'drafts-hold:'] as const;
+const CHANGE_PREFIXES = ['parked:', 'question:'] as const;
 
 /**
- * Raises the cards the latest run calls for and resolves the ones it no longer does (a later run
- * replaced them). Cheap enough to run on every read of Needs You and every run event.
+ * Raises the cards the runs call for and resolves the ones they no longer do (a later run replaced
+ * a stop or a note; a parked change built again, was retried or left the runway). Cheap enough to
+ * run on every read of Needs You and every run event.
  */
 export function syncRunCards(desk: CardDesk, hostId: string): void {
   const cards = runCards(desk.store, hostId);
@@ -277,7 +344,24 @@ export function syncRunCards(desk: CardDesk, hostId: string): void {
       // a card the model refuses (text too long, say) is left out, never a failed read
     }
   }
+  // Notices nobody can act on are lines under "Done for you"; a card an earlier version raised for
+  // one closes, pointing there.
+  for (const line of runNoticeLines(desk.store, hostId)) {
+    desk.doneForYouOnce(hostId, line.text);
+    const card = getCardByKey(desk.store, line.key);
+    if (card !== undefined && (card.state === 'open' || card.state === 'deferred')) {
+      desk.resolve(card, 'Noted under Done for you.');
+    }
+  }
   for (const prefix of RUN_PREFIXES) {
     desk.resolveMissing(hostId, prefix, keep, 'A later run replaced it.');
+  }
+  for (const prefix of CHANGE_PREFIXES) {
+    desk.resolveMissing(
+      hostId,
+      prefix,
+      keep,
+      'It is no longer parked: it built again, was retried or left the runway.',
+    );
   }
 }

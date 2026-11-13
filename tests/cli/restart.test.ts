@@ -154,11 +154,11 @@ describe('self-restart into a new install', () => {
     expect(texts).toContain('Restarted into the new install (Counterpoint 0.1.1).');
   }, 90_000);
 
-  it('a crash restart still signs the console out', async () => {
+  it('a crash restart keeps the console signed in', async () => {
     const pid = daemonPid() as number;
     process.kill(pid, 'SIGKILL');
     await until(() => (alive(pid) ? null : true), 10_000);
     expect((await cli(['--port', String(port), '--no-open'])).exitCode).toBe(0);
-    expect((await get(port, '/api/hosts', cookie)).status).toBe(401);
+    expect((await get(port, '/api/hosts', cookie)).status).toBe(200);
   }, 60_000);
 });

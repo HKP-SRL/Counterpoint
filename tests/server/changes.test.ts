@@ -1,7 +1,7 @@
-// The changes API (host-planning: Live refresh from the base branch): per-host runtimes read the
-// OpenSpec snapshot at the base branch tip through compose.ts, core derives status and owner steps,
-// and the base-tip watcher pushes a `planning` event within seconds of a commit to the base branch.
-// Also the read-only doctor report route behind the Trust page (doctor: Trust page).
+// The changes API (host-planning: Change statuses; Change detail; Live refresh from the base
+// branch): per-host runtimes read the OpenSpec snapshot at the base branch tip through compose.ts,
+// core derives status and owner steps, and the base-tip watcher pushes a `planning` event within
+// seconds of a commit to the base branch.
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectFramework } from '../../src/compose.ts';

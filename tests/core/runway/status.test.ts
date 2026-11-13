@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ChangeFacts } from '../../../src/core/framework/port.ts';
-import { deriveChangeStatus, isBuilt, ownerSteps } from '../../../src/core/runway/status.ts';
+import {
+  deriveChangeStatus,
+  isBuilt,
+  nothingToBuild,
+  openBuildTasks,
+  ownerSteps,
+} from '../../../src/core/runway/status.ts';
 
 function change(overrides: Partial<ChangeFacts> = {}): ChangeFacts {
   return {
@@ -90,6 +96,34 @@ describe('deriveChangeStatus', () => {
       status: 'not-planned',
       notReadyReason: 'no-tasks',
     });
+  });
+});
+
+describe('only owner steps left', () => {
+  const ownerOnly = change({
+    tasks: { total: 4, done: 2, ownerSteps: ['Owner: audit the UI', 'Owner: tell the team'] },
+  });
+
+  it('is its own status, not approvable and not on the runway, over the approval overlay', () => {
+    expect(openBuildTasks(ownerOnly)).toBe(0);
+    expect(deriveChangeStatus(ownerOnly)).toEqual({ status: 'owner-steps', notReadyReason: null });
+    expect(deriveChangeStatus(ownerOnly, 'on-runway').status).toBe('owner-steps');
+    expect(nothingToBuild(ownerOnly)).toBe(true);
+    expect(isBuilt(ownerOnly)).toBe(false);
+  });
+
+  it('is ready while a build task is open beside the owner steps', () => {
+    const mixed = change({ tasks: { total: 4, done: 1, ownerSteps: ['Owner: audit the UI'] } });
+    expect(openBuildTasks(mixed)).toBe(2);
+    expect(deriveChangeStatus(mixed).status).toBe('ready');
+    expect(nothingToBuild(mixed)).toBe(false);
+  });
+
+  it('is Built once every task is ticked, and Built wins when its build PR merged', () => {
+    expect(
+      deriveChangeStatus(change({ tasks: { total: 4, done: 4, ownerSteps: [] } })).status,
+    ).toBe('built');
+    expect(deriveChangeStatus({ ...ownerOnly, merged: true }).status).toBe('built');
   });
 });
 
