@@ -180,8 +180,14 @@ describe('approve and withdraw', () => {
       1000,
     );
     const body = await runway();
-    expect(body).toMatchObject({ count: 1, taskCount: 4 });
-    expect(body.items[0]).toMatchObject({ changeId: READY, title: 'Ready thing', taskCount: 4 });
+    expect(body).toMatchObject({ count: 1, taskCount: 4, ready: 1 });
+    expect(body.items[0]).toMatchObject({
+      changeId: READY,
+      title: 'Ready thing',
+      taskCount: 4,
+      stage: null,
+      canBuild: true,
+    });
     const row = await changeRow(READY);
     expect(row.status).toBe('on-runway');
     expect(row.approval).toMatchObject({ state: 'on-runway' });
@@ -189,7 +195,9 @@ describe('approve and withdraw', () => {
       string,
       unknown
     >;
-    expect(detail.status).toBe('on-runway');
+    expect(detail).toMatchObject({ status: 'on-runway', stage: null, canBuild: true, pr: null });
+    // Nothing parked: there is nothing to retry.
+    expect((await post(`/api/hosts/${hostId}/changes/${READY}/retry`)).status).toBe(409);
     // The covered-files list is gone: an approval belongs to the change, not to its files.
     expect(detail.inputs).toBeUndefined();
   });

@@ -12,6 +12,7 @@ import { canRun, describeMissingPrograms } from '../../src/build/services.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
+import { approveChange } from '../../src/core/store/approvals.ts';
 import { askKeyPath, findAskGrant, isInteractiveKey } from '../../src/core/store/ask.ts';
 import {
   type CardRow,
@@ -19,6 +20,7 @@ import {
   listWaitingCards,
   waitingChangeNotes,
 } from '../../src/core/store/cards.ts';
+import { latestBuilds, parkDecisions } from '../../src/core/store/change-lane.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
 import {
@@ -99,8 +101,11 @@ function endedRun(
   Object.entries(changes).forEach(([change, state], position) => {
     insertRunChange(db, { runId: id, change, position });
     const row = listRunChanges(db, id).find((c) => c.change === change);
-    if (state === 'parked') parkRunChange(db, row?.id ?? 0, 'Gate unit failed 3 times.');
-    else if (state !== 'queued') updateRunChange(db, row?.id ?? 0, { state });
+    if (state === 'parked') {
+      // A change that ran was approved.
+      approveChange(db, { hostId, change, baseCommit: null });
+      parkRunChange(db, row?.id ?? 0, 'Gate unit failed 3 times.');
+    } else if (state !== 'queued') updateRunChange(db, row?.id ?? 0, { state });
   });
   endRun(db, id, end, runSeq * 1000 + 500);
   return id;
@@ -255,6 +260,27 @@ describe('replays of what stopped runs', () => {
       ownerNotes: notes,
     } as never);
     expect(prompt).toContain('Use the seeded menu fixture.');
+  });
+
+  it('a parked change: its card outlives later runs without it, and Leave it parked holds it', async () => {
+    const first = endedRun({ reason: 'finished', detail: null }, { 'fix-cart': 'parked' });
+    // A later run builds something else: the parked card is still there.
+    endedRun({ reason: 'finished', detail: null }, { 'other-thing': 'green' });
+    const card = (await needsYou()).cards.find((c) => c.change === 'fix-cart') as CardRow;
+    expect(card).toMatchObject({ kind: 'parked', runId: first, state: 'open' });
+    expect(card.options.map((option) => option.label)).toEqual([
+      'Retry with this note',
+      'Re-plan it',
+      'Leave it parked',
+    ]);
+    const held = await answer(card.id, 2);
+    expect(held.outcome).toBe('On hold: no run builds it until you retry it from its page.');
+    expect(parkDecisions(db, hostId).get('fix-cart')).toMatchObject({
+      state: 'held',
+      reason: 'left-parked',
+      runChangeId: latestBuilds(db, hostId).get('fix-cart')?.runChangeId,
+    });
+    expect((await needsYou()).cards.some((c) => c.change === 'fix-cart')).toBe(false);
   });
 
   it("a builder's ask-first question: the picked option goes to the change's next session", async () => {

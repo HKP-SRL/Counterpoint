@@ -2,7 +2,12 @@
 // console; daemon-lifecycle: Stop Counterpoint from the console). Every write here is a guarded
 // POST: the session cookie plus the Origin, Fetch Metadata and JSON checks of the guard chain.
 //
-//   GET  /api/hosts/:hostId/run                  { run, runway, claudeVersion }
+//   GET  /api/hosts/:hostId/run                  { run, runway, claudeVersion, elsewhere }:
+//                                                `elsewhere` is a run going in another project
+//                                                (one run at a time on this computer); the runway
+//                                                changes the owner may pick, each with
+//                                                `canBuild` (Run builds it; the form picks it)
+//                                                and why not
 //   GET  /api/hosts/:hostId/run/budget?model=&percent=   { window, label }
 //   POST /api/hosts/:hostId/run                  start: { changes, stopAt (ISO or null) } → 202
 //                                                { runId } or the refusal; the run uses the
@@ -18,6 +23,7 @@
 //   POST /api/hosts/:hostId/run/stop             stop at the next clean point
 //   POST /api/stop                               stop Counterpoint (a run first stops at its next
 //                                                clean point)
+import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { EFFORT_LEVELS } from '../../agent/claude-argv.ts';
 import {
@@ -31,8 +37,9 @@ import type { Orchestrator } from '../../build/orchestrator.ts';
 import { buildRunReport, factsFromRuntime } from '../../build/run-report.ts';
 import { formatBudget, knownWindow, normalizeClaudeVersion } from '../../build/windows.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
+import { stageText } from '../../core/runway/lane.ts';
 import { getHost, type Store } from '../../core/store/db.ts';
-import { getRun } from '../../core/store/runs.ts';
+import { activeRun, getRun } from '../../core/store/runs.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { HostRuntimes } from '../hosts.ts';
 
@@ -71,14 +78,28 @@ export function mountRunRoutes(app: Hono, options: RunRoutesOptions): void {
     const runtime = hostOf(c.req.param('hostId'));
     if (runtime === null) return c.json({ error: 'not found' }, 404);
     const runway = await options.approvals.runway(runtime).catch(() => null);
+    const going = activeRun(store);
+    const other = going === undefined || going.hostId === runtime.host.id ? undefined : going;
     return c.json({
       run: orchestrator.view(runtime.host.id),
+      elsewhere:
+        other === undefined
+          ? null
+          : {
+              hostId: other.hostId,
+              hostName: basename(getHost(store, other.hostId)?.root ?? other.hostId),
+              runId: other.id,
+            },
       runway:
-        runway?.onRunway.map(({ changeId, title, taskCount }) => ({
-          changeId,
-          title,
-          taskCount,
-        })) ?? [],
+        runway?.onRunway
+          .filter((entry) => entry.canPick)
+          .map(({ changeId, title, taskCount, canBuild, stage }) => ({
+            changeId,
+            title,
+            taskCount,
+            canBuild,
+            why: stage === null || canBuild ? null : stageText(stage),
+          })) ?? [],
       claudeVersion: await options.claudeVersion(),
     });
   });

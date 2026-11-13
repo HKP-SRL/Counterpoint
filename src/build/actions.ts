@@ -6,7 +6,9 @@
 // - refresh-environment-and-resume: read the owner's login shell again; if what the run missed is
 //   now found, resume (else say what is still missing and leave the card open to pick again).
 // - retry-parked: leave the failure, the card's answer and the owner's note for the change's next
-//   builder session. The change is still on the runway, so the next run builds it.
+//   builder session, and release its parked build: the next run builds it.
+// - hold-parked: Leave it parked, Re-plan it: hold the parked change; no run builds it until the
+//   owner retries it.
 // - resume-run: start a run of the changes the stopped run did not build.
 // - set-git-identity: the owner's name and email in their global git config.
 // - restart-into-install: hand over to the daemon's restarter (D-10).
@@ -18,6 +20,7 @@
 import { execa } from 'execa';
 import { gitBinary } from '../core/git/run.ts';
 import { addChangeNote, type CardAction, type CardRow, reopenCard } from '../core/store/cards.ts';
+import { decideParked, retryParked } from '../core/store/change-lane.ts';
 import type { Store } from '../core/store/db.ts';
 import { getRun, listRunChanges } from '../core/store/runs.ts';
 import type { ActionRunner, CardDesk } from '../server/cards.ts';
@@ -63,8 +66,13 @@ async function resumeRun(context: ActionContext, runId: string): Promise<string>
     changes: changes.length > 0 ? changes : null,
     stopAt,
   });
-  // A change that left the runway since: build what is on it now.
-  if (!result.ok && result.status === 409 && changes.length > 0 && /runway/.test(result.error)) {
+  // A change that left the runway, or is on hold, since: build what can build now.
+  if (
+    !result.ok &&
+    result.status === 409 &&
+    changes.length > 0 &&
+    /runway|Retry a held change/.test(result.error)
+  ) {
     result = await context.orchestrator.start(run.hostId, { changes: null, stopAt });
   }
   if (!result.ok) throw new Error(result.error);
@@ -125,15 +133,45 @@ export function createActionRunner(context: ActionContext): ActionRunner {
         const row = listRunChanges(context.db, action.runId).find(
           (change) => change.change === action.change,
         );
-        addChangeNote(context.db, {
-          hostId: card.hostId,
-          change: action.change,
-          text: retryNote(card, note, row?.reason ?? null),
-          cardId: card.id,
-        });
+        const text = retryNote(card, note, row?.reason ?? null);
+        // Released when this parked build is still its latest; the note waits for its next session.
+        if (
+          !retryParked(context.db, {
+            hostId: card.hostId,
+            change: action.change,
+            note: text,
+            cardId: card.id,
+          })
+        ) {
+          addChangeNote(context.db, {
+            hostId: card.hostId,
+            change: action.change,
+            text,
+            cardId: card.id,
+          });
+        }
         return context.orchestrator.running() === null
           ? 'Queued for the next run with your answer.'
           : 'Queued: the next run that builds it gets your answer.';
+      }
+      case 'hold-parked': {
+        if (card.hostId === null) throw new Error('This card has no project.');
+        const row = listRunChanges(context.db, action.runId).find(
+          (change) => change.change === action.change,
+        );
+        if (row === undefined || row.state !== 'parked') {
+          throw new Error(`${action.change} is not parked in that run.`);
+        }
+        decideParked(context.db, {
+          hostId: card.hostId,
+          change: action.change,
+          runChangeId: row.id,
+          hold: true,
+          reason: action.why,
+        });
+        return action.why === 'replan'
+          ? 'On hold: revise its plan, then retry it from its page.'
+          : 'On hold: no run builds it until you retry it from its page.';
       }
       case 'set-git-identity': {
         for (const [key, value] of [

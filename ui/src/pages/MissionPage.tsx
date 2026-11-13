@@ -63,7 +63,7 @@ function RunwayFigure({ hostId, runway }: { hostId: string; runway: RunwaySnapsh
           </Text>
         ) : (
           <Text type="supporting" color="secondary" hasTabularNumbers>
-            {`${changesText(runway.count)} on the runway · ${tasksCountText(runway.taskCount)} approved and ready ahead of the builder`}
+            {`${changesText(runway.count)} on the runway · ${runway.ready} ready to build · ${tasksCountText(runway.taskCount)} approved`}
           </Text>
         )}
       </VStack>

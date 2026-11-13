@@ -35,11 +35,15 @@ Counterpoint SHALL list each directory under `openspec/changes/` other than `arc
 - **THEN** the change is titled with its directory name
 
 ### Requirement: Dependencies between changes
-The adapter SHALL read a change's dependencies from `x-depends-on: [...]` in its `.openspec.yaml`, parsed as data, and show them on the change.
+The adapter SHALL read a change's dependencies from `x-depends-on: [...]` in its `.openspec.yaml`, parsed as data, and show them on the change. A change that depends on a change that is neither archived nor built SHALL show Waits on that change instead of Ready to approve or On runway, and SHALL still be approvable.
 
 #### Scenario: Dependency listed
 - **WHEN** `.openspec.yaml` of `table-ordering` holds `x-depends-on: [qr-menu-browsing]`
 - **THEN** `table-ordering` shows that it depends on `qr-menu-browsing`
+
+#### Scenario: Dependency not built yet
+- **WHEN** `qr-menu-browsing` is not built
+- **THEN** `table-ordering` shows Waits on qr-menu-browsing and still offers Approve
 
 ### Requirement: Archived changes are done
 A change archived under `openspec/changes/archive/<date>-<name>/` SHALL show as Built (done), listed after the active changes with the newest first, and SHALL NOT be offered for approval.
@@ -63,7 +67,7 @@ A change whose files cannot be read or parsed SHALL show as unreadable with the 
 - **THEN** the change shows as unreadable with that reason
 
 ### Requirement: Change statuses
-Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, every task checked, or its latest build PR merged); On runway (the owner approved it); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve changes SHALL offer approval, and only On runway changes SHALL offer withdrawing it.
+Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, every task checked, or its latest build PR merged); Owner steps left; On runway (the owner approved it); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve changes SHALL offer approval, and only On runway changes SHALL offer withdrawing it.
 
 #### Scenario: Missing tasks
 - **WHEN** a change has a proposal but no tasks.md
@@ -77,6 +81,13 @@ Each change SHALL show one status derived at read time, in this precedence: Unre
 - **WHEN** an On runway change's proposal is edited on the base branch
 - **THEN** it still shows On runway
 
+### Requirement: Only owner steps left
+A change with a proposal whose every unchecked task is an owner step SHALL show Owner steps left: there is nothing to build. It SHALL NOT be offered for approval or be on the runway, its owner steps SHALL still be shown, and it SHALL show Built once every task is checked.
+
+#### Scenario: Built outside Counterpoint with owner steps open
+- **WHEN** every task of a change is checked on the base branch except two `Owner:` steps
+- **THEN** it shows Owner steps left, is not offered for approval and is not on the runway, and its owner steps are still listed
+
 ### Requirement: Change detail
 The console SHALL show a change's detail page with its title, why, dependencies, artifacts, task progress, owner steps (unchecked tasks whose text starts with `Owner:`), base-branch tip and approval state.
 
@@ -87,6 +98,10 @@ The console SHALL show a change's detail page with its title, why, dependencies,
 #### Scenario: Owner step present
 - **WHEN** a ready change has an unchecked task `Owner: create the Supabase project`
 - **THEN** the detail page shows it prominently, and the change can still be approved
+
+#### Scenario: Built by its merged PR with owner steps open
+- **WHEN** the owner opens a change that is Built because its build PR merged, with two owner steps unchecked
+- **THEN** the page says its build PR merged, links the PR, and still shows both owner steps
 
 ### Requirement: Live refresh from the base branch
 When the base-branch tip on the remote moves, the change list, statuses and runway SHALL refresh in the console within about a minute without a reload, and within a few seconds of Counterpoint fetching it.

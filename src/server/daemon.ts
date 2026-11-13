@@ -42,14 +42,14 @@ import { carryOverApprovals } from '../core/runway/carry-over.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { revokeBuilderCapabilities } from '../core/store/ask.ts';
-import { getCard, listWaitingCards } from '../core/store/cards.ts';
+import { getCard, listWaitingCards, type NewCard } from '../core/store/cards.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus, publishEvent } from '../core/store/events.ts';
 import { runningOwnerStepResults } from '../core/store/owner-step-results.ts';
 import type { PlanningWriteRow } from '../core/store/planning-writes.ts';
 import { getRun } from '../core/store/runs.ts';
 import { createApp, packageRoot, resolveUiDir } from './app.ts';
-import { createApprovalViews } from './approval-views.ts';
+import { createApprovalViews, endedApprovalCard } from './approval-views.ts';
 import { CardDesk } from './cards.ts';
 import { createControlApp, hashToken } from './control.ts';
 import { createHostRuntimes } from './hosts.ts';
@@ -327,8 +327,13 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     log,
   );
-  // One set of approval views: approvals from the store, the runway derived at the tip.
-  const approvals = createApprovalViews({ store });
+  // One set of approval views: approvals from the store, the runway derived at the tip. An approval
+  // whose change is gone from the base branch ends with a card (the desk exists below).
+  let raiseCard: ((card: NewCard) => void) | null = null;
+  const approvals = createApprovalViews({
+    store,
+    onMissing: (hostId, approval) => raiseCard?.(endedApprovalCard(hostId, approval)),
+  });
 
   // The build lane. Every agent spawn goes through the one governor (usage-limit pauses).
   // A runner for the claude on the run's PATH (the owner's login shell's); the daemon's own PATH
@@ -351,6 +356,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
   });
   const desk = new CardDesk({ store, bus, log, notify: (card) => notifier.notify(card) });
+  raiseCard = (card) => {
+    desk.raise(card);
+  };
   /** What the card that started a planning write says while it lands (D-12). */
   const writeOutcome = (row: PlanningWriteRow): string | null => {
     switch (row.state) {
