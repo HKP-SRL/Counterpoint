@@ -143,7 +143,7 @@ const waiting = (card: AskCardView) => card.state === 'open' || card.state === '
 
 /** What an interactive session is told while its question waits. */
 export const IN_CHAT_TOO =
-  'The owner may be reading the chat: also put this question in your reply in one line, with numbered options.';
+  'The owner may be reading the chat: also put this question in your reply as numbered options, with the recommended one marked. The card stays.';
 
 /** What the session reads about one card. */
 export function describeCard(card: AskCardView): string {
@@ -294,9 +294,11 @@ export function createAskMcp(options: AskMcpOptions) {
             protocolVersion,
             capabilities: { tools: {} },
             serverInfo: { name: 'counterpoint', version: options.version },
+            // The same rule as the project's CLAUDE.md ("Asking the owner"): in a chat the owner
+            // is in, the question also goes in the reply; an unattended session asks only here.
             instructions:
               options.interactive === true
-                ? 'Ask the owner through ask_owner, and also put the question in your reply in one line with numbered options. Ask only what changes the outcome.'
+                ? 'Ask the owner through ask_owner. The owner may be in the chat: also put the question in your reply as numbered options, with the recommended one marked; the card stays. Ask only what changes the outcome.'
                 : 'Ask the owner through ask_owner, never in your reply text. Ask only what changes the outcome.',
           },
         };

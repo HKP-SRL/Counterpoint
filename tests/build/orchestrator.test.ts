@@ -2265,6 +2265,92 @@ describe('design drafts hold the build (design-drafts 6.2-6.4)', () => {
     expect(tree.stdout).toContain('src/session-1.ts');
   });
 
+  it('Run leaves out a change its drafts hold and one left parked; picked, the drafts-held one is skipped with its card', async () => {
+    const ctx = await host(
+      {
+        ...INDEPENDENT,
+        'openspec/changes/c-thing/.openspec.yaml': 'schema: spec-driven\n',
+        'openspec/changes/c-thing/proposal.md': proposal('C thing'),
+        'openspec/changes/c-thing/tasks.md': tasks,
+      },
+      ['a-thing', 'b-thing', 'c-thing'],
+    );
+    const { Drafts } = await import('../../src/drafts/service.ts');
+    const store = await import('../../src/core/store/drafts.ts');
+    const drafts = new Drafts({
+      db: ctx.db,
+      home: ctx.home,
+      host: () => ctx.runtime,
+      runner: () => runner,
+      ownerEnv: async () => OWNER_ENV,
+      mapper: { maps: async () => ({}) },
+      publish: () => {},
+    });
+    // a-thing: its Home screen is still in low-fi (design-drafts D-12).
+    store.startDraftChange(ctx.db, 'cena', 'a-thing');
+    store.setDraftChangeState(ctx.db, 'cena', 'a-thing', 'ready');
+    store.replaceScreens(ctx.db, 'cena', 'a-thing', [
+      { screen: 'home', name: 'Home', purpose: 'p', states: ['main'], directions: [] },
+    ]);
+    // b-thing: parked in an earlier run, and the owner left it parked (runway: on hold).
+    insertRun(ctx.db, { id: 'r0', hostId: 'cena', settings: {}, stopAt: null }, 1);
+    const parked = insertRunChange(ctx.db, { runId: 'r0', change: 'b-thing', position: 0 });
+    parkRunChange(ctx.db, parked, 'Gate failed.');
+    endRun(ctx.db, 'r0', { reason: 'finished' }, 2);
+    decideParked(ctx.db, {
+      hostId: 'cena',
+      change: 'b-thing',
+      runChangeId: parked,
+      hold: true,
+      reason: 'left-parked',
+    });
+    // As the daemon wires it: the changes whose drafts hold the build cannot build now.
+    const approvals = createApprovalViews({
+      store: ctx.db,
+      draftsHeld: (hostId) =>
+        new Set([...drafts.holds(hostId)].filter(([, hold]) => hold.held).map(([c]) => c)),
+    });
+    const runway = await approvals.runway(ctx.runtime);
+    expect(
+      runway.onRunway
+        .map((entry) => [entry.changeId, entry.canBuild, entry.canPick])
+        .sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+    ).toEqual([
+      ['a-thing', false, true],
+      ['b-thing', false, false],
+      ['c-thing', true, true],
+    ]);
+    expect(runway.ready).toBe(1);
+
+    const { o } = orchestrator(ctx, {
+      approvals,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      draftHold: (hostId, change, reader, base) => drafts.heldAtBase(hostId, change, reader, base),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.change, c.state])).toEqual([
+      ['c-thing', 'green'],
+    ]);
+
+    // Picked by the owner: the change left parked is refused; the drafts-held one is skipped.
+    expect(await o.start('cena', { ...SETTINGS, changes: ['b-thing'] })).toMatchObject({
+      ok: false,
+      status: 409,
+    });
+    const picked = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!picked.ok) throw new Error(picked.error);
+    await o.idle();
+    expect(listRunChanges(ctx.db, picked.runId).map((c) => [c.change, c.state, c.reason])).toEqual([
+      ['a-thing', 'skipped', 'Waiting for sign-off: Home.'],
+    ]);
+    expect(runCards(ctx.db, 'cena').find((c) => c.kind === 'drafts-hold')).toMatchObject({
+      key: `drafts-hold:${picked.runId}:a-thing`,
+    });
+  });
+
   it('builds a change whose drafts were dropped, or never started, as before', async () => {
     for (const stage of ['dropped', 'none'] as const) {
       const { rows, prompts } = await run(stage, 'none', false);

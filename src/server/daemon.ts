@@ -340,11 +340,14 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log,
   );
   // One set of approval views: approvals from the store, the runway derived at the tip. An approval
-  // whose change is gone from the base branch ends with a card (the desk exists below).
+  // whose change is gone from the base branch ends with a card (the desk exists below). A change
+  // its design drafts hold cannot build now (the drafts service exists below).
   let raiseCard: ((card: NewCard) => void) | null = null;
+  let draftsHeld: ((hostId: string) => ReadonlySet<string>) | null = null;
   const approvals = createApprovalViews({
     store,
     onMissing: (hostId, approval) => raiseCard?.(endedApprovalCard(hostId, approval)),
+    draftsHeld: (hostId) => draftsHeld?.(hostId) ?? new Set<string>(),
   });
 
   // The build lane. Every agent spawn goes through the one governor (usage-limit pauses).
@@ -471,6 +474,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log,
   });
   if (drafts.recover() > 0) log('drafts-recovered');
+  draftsHeld = (hostId) =>
+    new Set([...drafts.holds(hostId)].filter(([, hold]) => hold.held).map(([change]) => change));
   // Owner steps are cards (owner-inbox 4.2): recomputed with the run's cards on every read. Do it
   // for me runs a session as the owner, through the same governor as builders (4.3).
   const steps = new OwnerSteps({

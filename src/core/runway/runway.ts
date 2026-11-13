@@ -68,13 +68,16 @@ export function approvalStateOf(
 
 /**
  * The runway: the approved changes that are readable and not built, in the snapshot's order, each
- * with its stage in the build lane (`stageOf`; none without it).
+ * with its stage in the build lane (`stageOf`; none without it). A change `heldBack` (its design
+ * drafts wait for sign-off) stays on the runway and may be picked, but Run does not build it and it
+ * is not counted ready.
  */
 export function computeRunway(
   approvals: readonly ApprovalRow[],
   changes: readonly ChangeFacts[] | null,
   tip: string | null,
   stageOf: (changeId: string) => BuildStage | null = () => null,
+  heldBack: (changeId: string) => boolean = () => false,
 ): Runway {
   const runway: Runway = { tip, count: 0, taskCount: 0, ready: 0, onRunway: [] };
   if (changes === null) return runway;
@@ -84,17 +87,18 @@ export function computeRunway(
     const state = approvalStateOf(approved.get(change.id), change);
     if (state.state !== 'on-runway') continue;
     const stage = stageOf(change.id);
+    const canBuild = canBuildNow(stage) && !heldBack(change.id);
     runway.onRunway.push({
       changeId: change.id,
       title: change.title,
       taskCount: change.tasks.total,
       approvedAt: state.approvedAt,
       stage,
-      canBuild: canBuildNow(stage),
+      canBuild,
       canPick: canPick(stage),
     });
     runway.count += 1;
-    if (canBuildNow(stage)) runway.ready += 1;
+    if (canBuild) runway.ready += 1;
     runway.taskCount += change.tasks.total;
   }
   return runway;

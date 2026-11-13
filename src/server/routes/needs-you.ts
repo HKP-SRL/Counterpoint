@@ -131,6 +131,8 @@ export function cardView(card: CardRow, store?: Store) {
       consequence: option.consequence,
       acts: option.action !== undefined,
       merges: option.action !== undefined && MERGING_ACTIONS.has(option.action.type),
+      /** Picking it defers the card (the `later` action), so the console shows no Later of its own. */
+      later: option.action?.type === 'later',
     })),
     recommended: card.recommended,
     reversible: card.reversible,
@@ -144,6 +146,8 @@ export function cardView(card: CardRow, store?: Store) {
     diff: store === undefined ? null : diffView(store, card),
     prUrl: store === undefined ? null : prView(store, card),
     createdAt: card.createdAt,
+    /** When the question was asked: a card is raised when it is asked (as the ask tool says). */
+    askedAt: card.createdAt,
   };
 }
 

@@ -110,6 +110,22 @@ afterAll(() => {
 });
 
 describe('mcp ask: protocol', () => {
+  it("tells an interactive session to also ask in the chat, as the project's CLAUDE.md says", async () => {
+    const init = await mcpFor('unused', { interactive: true }).handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't' } },
+    });
+    expect(init).toMatchObject({
+      result: {
+        instructions: expect.stringContaining(
+          'also put the question in your reply as numbered options, with the recommended one marked',
+        ),
+      },
+    });
+  });
+
   it('initializes and lists both tools with object input schemas', async () => {
     const mcp = mcpFor('unused');
     const init = (await mcp.handle({
@@ -120,6 +136,9 @@ describe('mcp ask: protocol', () => {
     })) as { result: { protocolVersion: string; capabilities: unknown } };
     expect(init.result.protocolVersion).toBe('2025-06-18');
     expect(init.result.capabilities).toEqual({ tools: {} });
+    expect(init).toMatchObject({
+      result: { instructions: expect.stringContaining('never in your reply') },
+    });
     const list = (await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })) as {
       result: { tools: { name: string; inputSchema: { type: string; required: string[] } }[] };
     };
@@ -223,7 +242,7 @@ describe('mcp ask: posting and waiting', () => {
     const { text } = await call(mcpFor(capability, { interactive: true }), 'ask_owner', QUESTION);
     expect(text).toContain('Go on with your recommendation');
     expect(text).toContain(
-      'The owner may be reading the chat: also put this question in your reply in one line, with numbered options.',
+      'The owner may be reading the chat: also put this question in your reply as numbered options, with the recommended one marked. The card stays.',
     );
     expect(getCard(db, cardIdIn(text))).toMatchObject({ blocking: true, runId: null });
   });

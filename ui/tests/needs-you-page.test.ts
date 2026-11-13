@@ -14,11 +14,12 @@ import {
   type QuestionCard,
 } from '../src/pages/NeedsYouPage';
 
-const option = (label: string, merges = false) => ({
+const option = (label: string, merges = false, later = false) => ({
   label,
   consequence: `${label}.`,
-  acts: merges,
+  acts: merges || later,
   merges,
+  later,
 });
 
 function card(overrides: Partial<QuestionCard> = {}): QuestionCard {
@@ -175,5 +176,40 @@ describe('where a card came from', () => {
       }),
     );
     expect(html).toContain(`Your Claude Code session · cena · folder web · asked ${time}`);
+  });
+});
+
+describe('Later', () => {
+  const render = (c: QuestionCard) =>
+    renderToStaticMarkup(
+      createElement(CardBlock, {
+        hostId: 'cena',
+        project: 'cena',
+        card: c,
+        detail: undefined,
+        isFocused: true,
+        isBusy: false,
+        isNoteOpen: false,
+        note: '',
+        onFocus: () => undefined,
+        onNote: () => undefined,
+        onOpenNote: () => undefined,
+        onAnswer: () => undefined,
+        onNoteEnter: () => undefined,
+        onLater: () => undefined,
+      }),
+    );
+  const laterButtons = (html: string) => html.match(/>Later</g)?.length ?? 0;
+
+  it('a card shows its own Later button', () => {
+    expect(laterButtons(render(card()))).toBe(1);
+  });
+
+  it('a card whose options include Later shows no second Later button', () => {
+    const step = card({
+      kind: 'owner-step',
+      options: [option('Done', true), option('Later', false, true), option('Do it for me')],
+    });
+    expect(laterButtons(render(step))).toBe(1);
   });
 });

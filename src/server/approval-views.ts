@@ -162,6 +162,11 @@ export interface ApprovalViewsOptions {
   store: Store;
   /** Told of each approval ended because its change is gone from the base branch. */
   onMissing?: (hostId: string, approval: ApprovalRow) => void;
+  /**
+   * The changes whose design drafts hold the build (design-drafts D-12). They stay on the runway
+   * and may be picked (the run then skips them with the hold card), but they cannot build now.
+   */
+  draftsHeld?: (hostId: string) => ReadonlySet<string>;
 }
 
 export function createApprovalViews(options: ApprovalViewsOptions): ApprovalViews {
@@ -270,6 +275,7 @@ export function createApprovalViews(options: ApprovalViewsOptions): ApprovalView
     const prs = new Map(latestPullRequests(db, hostId).map((pr) => [pr.change, pr]));
     const decisions = parkDecisions(db, hostId);
     const questions = openIrreversibleQuestions(db, hostId);
+    const heldByDrafts = options.draftsHeld?.(hostId) ?? new Set<string>();
     for (const change of changes) {
       if (change.archived) continue;
       const approval = approvalStateOf(approvals.get(change.id), change);
@@ -297,7 +303,7 @@ export function createApprovalViews(options: ApprovalViewsOptions): ApprovalView
         notReadyReason,
         approval,
         stage,
-        canBuild: onRunway && canBuildNow(stage),
+        canBuild: onRunway && canBuildNow(stage) && !heldByDrafts.has(change.id),
         builtBy: status !== 'built' ? null : change.merged === true ? 'merged' : 'tasks',
         pr: pr === undefined ? null : { url: pr.prUrl, state: pr.prState },
         waitsOn,
@@ -335,11 +341,13 @@ export function createApprovalViews(options: ApprovalViewsOptions): ApprovalView
 
     async runway(runtime) {
       const { tip, changes, entries } = await boardOf(runtime);
+      const heldByDrafts = options.draftsHeld?.(runtime.host.id) ?? new Set<string>();
       return computeRunway(
         listApprovals(db, runtime.host.id),
         changes,
         tip,
         (id) => entries.get(id)?.stage ?? null,
+        (id) => heldByDrafts.has(id),
       );
     },
 

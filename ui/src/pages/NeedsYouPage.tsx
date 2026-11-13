@@ -90,7 +90,14 @@ export type RunItem = {
  * One option on a card: its label, its consequence, whether Counterpoint acts on it, and whether
  * picking it merges into the base branch (never picked with Enter).
  */
-export type CardOption = { label: string; consequence: string; acts: boolean; merges: boolean };
+export type CardOption = {
+  label: string;
+  consequence: string;
+  acts: boolean;
+  merges: boolean;
+  /** Picking it defers the card (an owner step's Later): the card then has no Later button. */
+  later: boolean;
+};
 
 /** The planning write an answer started, while it lands as a small PR (D-12). */
 export type CardWrite = {
@@ -190,6 +197,7 @@ function parseCard(value: unknown): QuestionCard | null {
         consequence: str(o.consequence),
         acts: o.acts === true,
         merges: o.merges === true,
+        later: o.later === true,
       }))
     : [];
   if (options.length < 2) return null;
@@ -514,7 +522,7 @@ export function CardBlock(props: {
             ))}
           </VStack>
           <HStack gap={2} vAlign="center">
-            {card.state === 'deferred' ? null : (
+            {card.state === 'deferred' || card.options.some((option) => option.later) ? null : (
               <Button
                 label="Later"
                 size="sm"

@@ -200,11 +200,19 @@ describe('question cards through the API', () => {
       question: 'Which shell?',
     });
     const listed = (await (await needsYou()).json()) as {
-      cards: Array<{ id: string; hostId: string | null; session: string; createdAt: number }>;
+      cards: Array<{
+        id: string;
+        hostId: string | null;
+        session: string;
+        createdAt: number;
+        askedAt: number;
+      }>;
     };
     const view = (id: string) => listed.cards.find((c) => c.id === id);
     expect(view(mine.id)).toMatchObject({ hostId, session: 'your Claude Code session' });
     expect(view(mine.id)?.createdAt).toBe(mine.createdAt);
+    // Sent under the name the console reads for "asked …".
+    expect(view(mine.id)?.askedAt).toBe(mine.createdAt);
     expect(view(anywhere.id)).toMatchObject({ hostId: null, session: 'your Claude Code session' });
   });
 
@@ -252,18 +260,25 @@ describe('question cards through the API', () => {
           consequence: 'Nothing lands.',
           action: { type: 'discard-owner-step', resultId: 'r-0123456789abcdef' },
         },
+        { label: 'Later', consequence: 'It waits in Later.', action: { type: 'later' } },
       ],
       recommended: 0,
       reversible: true,
       blocking: false,
     });
     const listed = (await (await needsYou()).json()) as {
-      cards: Array<{ id: string; options: Array<{ merges: boolean }> }>;
+      cards: Array<{ id: string; options: Array<{ merges: boolean; later: boolean }> }>;
     };
     const merges = (id: string) =>
       listed.cards.find((c) => c.id === id)?.options.map((o) => o.merges);
     expect(merges(step.id)).toEqual([true, false]);
-    expect(merges(land.id)).toEqual([true, false]);
+    expect(merges(land.id)).toEqual([true, false, false]);
+    // The Later option is marked, so the console shows no Later button of its own.
+    expect(listed.cards.find((c) => c.id === land.id)?.options.map((o) => o.later)).toEqual([
+      false,
+      false,
+      true,
+    ]);
   });
 });
 

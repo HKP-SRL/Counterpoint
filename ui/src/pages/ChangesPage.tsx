@@ -34,11 +34,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { apiGet, queryKeys } from '../api';
 import { useApprovalActions } from '../approvals';
-import {
-  ChangeBadge,
-  type ChangeStatus,
-  isChangeStatus,
-} from '../components/StatusBadge';
+import { ChangeBadge, type ChangeStatus, isChangeStatus } from '../components/StatusBadge';
 import { isChangeId } from '../ids';
 import { type ChangeStage, parseStage } from '../stage';
 
