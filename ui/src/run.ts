@@ -71,6 +71,10 @@ export interface RunwayPick {
   changeId: string;
   title: string | null;
   taskCount: number;
+  /** Run builds it: the form picks it by default. */
+  canBuild: boolean;
+  /** Why Run leaves it out (parked, its PR is open, waits on a change), or null. */
+  why: string | null;
 }
 
 export interface RunAnswer {
@@ -88,7 +92,13 @@ async function fetchRun(hostId: string, signal?: AbortSignal): Promise<RunAnswer
   return {
     hostId,
     run: body.run ?? null,
-    runway: Array.isArray(body.runway) ? body.runway : [],
+    runway: Array.isArray(body.runway)
+      ? body.runway.map((pick) => ({
+          ...pick,
+          canBuild: pick.canBuild !== false,
+          why: typeof pick.why === 'string' ? pick.why : null,
+        }))
+      : [],
     claudeVersion: typeof body.claudeVersion === 'string' ? body.claudeVersion : null,
   };
 }

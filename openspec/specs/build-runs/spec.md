@@ -145,7 +145,7 @@ The builder SHALL NOT take an action that cannot be undone outside its worktree:
 - **THEN** the builder does it without asking
 
 ### Requirement: A run ends only when it cannot go on
-A run SHALL end only when every chosen change is built, parked or skipped; when the owner stops it; at its stop time; or when no session can run at all (an authentication, credit or spend-limit error, a missing program, or a host config that cannot be read). A parked change SHALL never end the run. A change that depends on a parked change SHALL be skipped with that reason.
+A run SHALL end only when every chosen change is built, parked or skipped; when the owner stops it; at its stop time; or when no session can run at all (an authentication, credit or spend-limit error, a missing program, or a host config that cannot be read). A parked change SHALL never end the run. A change that depends on a change that is not built SHALL be skipped with that reason.
 
 #### Scenario: One change parks
 - **WHEN** the first of three chosen changes parks and the other two do not depend on it
@@ -154,6 +154,17 @@ A run SHALL end only when every chosen change is built, parked or skipped; when 
 #### Scenario: Dependent of a parked change
 - **WHEN** a chosen change depends on a change that parked in the same run
 - **THEN** it is skipped, and the run report says which change it waits on
+
+### Requirement: Dependencies are built first
+A change SHALL build only once each change it depends on (`x-depends-on`) that is not archived is built: its build PR merged, or every task checked. Until then Run SHALL leave it out, and a run the owner picks it for SHALL skip it with "Waits on" and the change it waits on, so its branch never starts from a base without its dependency's code.
+
+#### Scenario: Dependency green but not merged
+- **WHEN** change B depends on change A, and A's build is green with its PR open
+- **THEN** Run does not build B, and B shows Waits on A
+
+#### Scenario: Dependency merged
+- **WHEN** A's PR merges
+- **THEN** B can build, and its branch starts from the base with A's code
 
 ### Requirement: Tools checked before the first session
 Before its first session a run SHALL check that `claude`, `git` and `gh` can be run from the run's environment. If one cannot, the run SHALL end before any session and Needs You SHALL name the program.

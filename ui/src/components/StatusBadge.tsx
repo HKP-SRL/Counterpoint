@@ -9,6 +9,7 @@
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import type { IconName } from '@astryxdesign/core/Icon';
 import { Icon } from '@astryxdesign/core/Icon';
+import { type ChangeStage, stageLook } from '../stage';
 
 export type ChangeStatus =
   | 'unreadable'
@@ -41,5 +42,34 @@ export function StatusBadge({ status }: { status: ChangeStatus }) {
   const look = CHANGE_STATUS[status];
   return (
     <Badge variant={look.variant} label={look.label} icon={<Icon icon={look.icon} size="xsm" />} />
+  );
+}
+
+const STAGE_ICON: Readonly<Record<ChangeStage['kind'], IconName>> = {
+  queued: 'clock',
+  building: 'wrench',
+  held: 'warning',
+  parked: 'warning',
+  'pr-open': 'externalLink',
+  'pr-closed': 'externalLink',
+  waits: 'clock',
+};
+
+/** The change's build-lane stage when it has one (runway: Where each runway change stands), else its status. */
+export function ChangeBadge({
+  status,
+  stage,
+}: {
+  status: ChangeStatus;
+  stage: ChangeStage | null;
+}) {
+  if (stage === null) return <StatusBadge status={status} />;
+  const look = stageLook(stage);
+  return (
+    <Badge
+      variant={look.variant}
+      label={look.label}
+      icon={<Icon icon={STAGE_ICON[stage.kind]} size="xsm" />}
+    />
   );
 }

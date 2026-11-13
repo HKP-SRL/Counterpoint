@@ -6,7 +6,8 @@
 // decision: the run stops at its next clean point). Holding on a usage limit is described as
 // normal, never as a warning.
 // Otherwise: the last run's outcome (parked changes and stopped runs in the dark-cockpit colors)
-// and the launch form: the runway changes to build (all by default, in build order) and an
+// and the launch form: the runway changes to build (those that can build now by default, in build
+// order; a parked change, one whose PR is open or one that waits can be picked, with why) and an
 // optional stop time. The model, effort and context budget come from the project's Settings page;
 // the form shows them in one line (budget as tokens once the model's window is known: "40% of 1M =
 // 400k tokens") with a link there. Start is a guarded POST; a refusal (a change
@@ -245,7 +246,7 @@ function LastRun({ hostId, run }: { hostId: string; run: RunView }) {
 function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
   const toast = useToast();
   const client = useQueryClient();
-  const ids = answer.runway.map((entry) => entry.changeId);
+  const ids = answer.runway.filter((entry) => entry.canBuild).map((entry) => entry.changeId);
   const [chosen, setChosen] = useState<string[]>(ids);
   const [stopAt, setStopAt] = useState<string | undefined>(undefined);
   const [starting, setStarting] = useState(false);
@@ -257,7 +258,7 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
   });
   const idsKey = ids.join(',');
 
-  // A change that joins or leaves the runway joins or leaves the choice.
+  // A change that joins or leaves what can build now joins or leaves the choice.
   useEffect(() => {
     setChosen(idsKey === '' ? [] : idsKey.split(','));
   }, [idsKey]);
@@ -275,7 +276,9 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
     setRefusal(null);
     try {
       const result = await startRun(hostId, {
-        changes: chosen.length === ids.length ? null : chosen,
+        // Null: Run's own choice (what can build now); any other pick is sent as picked.
+        changes:
+          chosen.length === ids.length && chosen.every((id) => ids.includes(id)) ? null : chosen,
         stopAt: stopAt === undefined ? null : nextOccurrence(stopAt),
       });
       if (!result.ok) {
@@ -314,7 +317,7 @@ function Launch({ hostId, answer }: { hostId: string; answer: RunAnswer }) {
             key={entry.changeId}
             value={entry.changeId}
             label={entry.title ?? entry.changeId}
-            description={`${entry.changeId} · ${entry.taskCount} ${entry.taskCount === 1 ? 'task' : 'tasks'}`}
+            description={`${entry.changeId} · ${entry.taskCount} ${entry.taskCount === 1 ? 'task' : 'tasks'}${entry.why === null ? '' : ` · ${entry.why}`}`}
           />
         ))}
       </CheckboxList>

@@ -35,11 +35,15 @@ Counterpoint SHALL list each directory under `openspec/changes/` other than `arc
 - **THEN** the change is titled with its directory name
 
 ### Requirement: Dependencies between changes
-The adapter SHALL read a change's dependencies from `x-depends-on: [...]` in its `.openspec.yaml`, parsed as data, and show them on the change.
+The adapter SHALL read a change's dependencies from `x-depends-on: [...]` in its `.openspec.yaml`, parsed as data, and show them on the change. A change that depends on a change that is neither archived nor built SHALL show Waits on that change instead of Ready to approve or On runway, and SHALL still be approvable.
 
 #### Scenario: Dependency listed
 - **WHEN** `.openspec.yaml` of `table-ordering` holds `x-depends-on: [qr-menu-browsing]`
 - **THEN** `table-ordering` shows that it depends on `qr-menu-browsing`
+
+#### Scenario: Dependency not built yet
+- **WHEN** `qr-menu-browsing` is not built
+- **THEN** `table-ordering` shows Waits on qr-menu-browsing and still offers Approve
 
 ### Requirement: Archived changes are done
 A change archived under `openspec/changes/archive/<date>-<name>/` SHALL show as Built (done), listed after the active changes with the newest first, and SHALL NOT be offered for approval.
