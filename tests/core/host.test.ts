@@ -199,7 +199,7 @@ describe('requireHome', () => {
     const missing = join(scratch, 'gone', 'Counterpoint');
     expect(() => requireHome({ COUNTERPOINT_HOME: missing })).toThrow(HomeMissingError);
     expect(() => requireHome({ COUNTERPOINT_HOME: missing })).toThrow(
-      `Counterpoint home "${missing}" does not exist. If it is on the Dock volume, is it mounted? Nothing was created.`,
+      `Counterpoint home "${missing}" does not exist. If it is on an external volume, is it mounted? Nothing was created.`,
     );
     expect(existsSync(missing)).toBe(false);
     expect(existsSync(join(scratch, 'gone'))).toBe(false);
@@ -209,7 +209,7 @@ describe('requireHome', () => {
     const fakeUserHome = makeScratchDir('hd');
     const expected = join(fakeUserHome, 'Library', 'Application Support', 'Counterpoint');
     expect(() => requireHome({ HOME: fakeUserHome }, 'darwin')).toThrow(
-      `Counterpoint home "${expected}" does not exist. If it is on the Dock volume, is it mounted? Nothing was created.`,
+      `Counterpoint home "${expected}" does not exist. If it is on an external volume, is it mounted? Nothing was created.`,
     );
     expect(existsSync(join(fakeUserHome, 'Library'))).toBe(false);
   });

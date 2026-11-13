@@ -18,7 +18,7 @@ export const HostSettings = z.strictObject({
   maxTurns: z.number().int().min(10).max(2000),
   /** Estimated cost one builder session may reach, in USD (`--max-budget-usd`). */
   maxBudgetUsd: z.number().int().min(1).max(500),
-  /** Builder sessions per attempt before the gates run anyway. */
+  /** Builder sessions per attempt; with build tasks still open after that many, the change parks. */
   sessionsPerAttempt: z.number().int().min(1).max(20),
 });
 export type HostSettings = z.infer<typeof HostSettings>;

@@ -20,7 +20,7 @@ Every request SHALL carry the exact Host `127.0.0.1:{port}`. Any other Host, inc
 - **THEN** the server answers 403 and runs no route
 
 ### Requirement: Origin and content checks on writes
-Every non-GET request SHALL carry the exact console Origin, a same-origin fetch-metadata header and a JSON body. A cross-site or form-encoded post SHALL be refused.
+Every non-GET request SHALL carry the exact console Origin and a JSON body. A fetch-metadata header, when the request carries one, SHALL say same-origin. A cross-site or form-encoded post SHALL be refused.
 
 #### Scenario: Cross-site post
 - **WHEN** a page on another origin posts to a console API route
