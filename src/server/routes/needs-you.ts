@@ -2,6 +2,7 @@
 // session guard like every /api route; writes also pass the Origin and JSON checks.
 //
 //   GET  /api/hosts/:hostId/needs-you                  { cards, answered, doneForYou, runItems }
+//   GET  /api/needs-you/counts                         { total, machine, hosts, blocking }
 //   POST /api/hosts/:hostId/cards/:cardId/answer       { option, note? } → { card }
 //   POST /api/hosts/:hostId/cards/:cardId/later        → { card }
 //   POST /api/hosts/:hostId/writes/:writeId/retry      → { card }  (a blocked planning write)
@@ -13,12 +14,19 @@
 // what happened next, `doneForYou` the decisions
 // Counterpoint took without asking (D-7). `runItems` are the details behind the run's cards (the
 // failing gate's last lines, every attempt), from the host's latest run in the store.
+//
+// `counts` is what waits across every project, for the badge, the tab title, the project switcher
+// and browser notifications: `hosts[].count` is a project's own waiting items (open cards and
+// blocked planning writes), `machine` the open cards of the machine (shown in every project's
+// inbox, counted once), `total` their sum, and `blocking` the open cards that block work.
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { builderSessionOf } from '../../build/ask-session.ts';
 import { HOST_ID_RE } from '../../core/ids.ts';
 import { runNeedsYou } from '../../core/runway/run-items.ts';
+import { INTERACTIVE_KEY_SESSION } from '../../core/store/ask.ts';
 import {
+  type CardActionType,
   CardRefusal,
   type CardRow,
   getCard,
@@ -61,6 +69,10 @@ const Answer = z.strictObject({
 /** The session that asked, in words ("builder session 2"), or null for a card no session raised. */
 function sessionName(store: Store, card: CardRow): string | null {
   if (card.source !== 'session') return null;
+  // An interactive session's id is `interactive-<hex>` (openInteractiveSession).
+  if (card.sessionId?.startsWith(`${INTERACTIVE_KEY_SESSION}-`) === true) {
+    return 'your Claude Code session';
+  }
   const id = builderSessionOf(card.sessionId);
   if (id === null) return 'a Claude Code session';
   const session = getAgentSession(store, id);
@@ -75,6 +87,15 @@ function writeView(store: Store, card: CardRow) {
 }
 
 const LANDING = new Set(['pending', 'landing', 'waiting', 'blocked']);
+
+/**
+ * Actions that merge into the host's base branch (an owner step ticked, a Land it diff). The
+ * console never picks these with Enter: they need their digit or a click.
+ */
+const MERGING_ACTIONS: ReadonlySet<CardActionType> = new Set([
+  'tick-owner-step',
+  'land-owner-step',
+]);
 
 /** The diff a waiting Land it card shows (owner-inbox D-8); null for every other card. */
 function diffView(store: Store, card: CardRow): string | null {
@@ -96,6 +117,8 @@ function prView(store: Store, card: CardRow): string | null {
 export function cardView(card: CardRow, store?: Store) {
   return {
     id: card.id,
+    /** The project the card is in; null for a card in every project's inbox (the machine's). */
+    hostId: card.hostId,
     kind: card.kind,
     source: card.source,
     runId: card.runId,
@@ -107,6 +130,7 @@ export function cardView(card: CardRow, store?: Store) {
       label: option.label,
       consequence: option.consequence,
       acts: option.action !== undefined,
+      merges: option.action !== undefined && MERGING_ACTIONS.has(option.action.type),
     })),
     recommended: card.recommended,
     reversible: card.reversible,
@@ -123,6 +147,16 @@ export function cardView(card: CardRow, store?: Store) {
   };
 }
 
+/** What waits on the owner in one project's inbox, as needsYouCount counts it in the console. */
+function hostCounts(store: Store, hostId: string) {
+  const waiting = listWaitingCards(store, hostId).filter((card) => card.state === 'open');
+  const blockedWrites = listAnsweredCards(store, hostId).filter(
+    (card) => card.hostId !== null && cardPlanningWrite(store, card.id)?.state === 'blocked',
+  ).length;
+  const own = waiting.filter((card) => card.hostId !== null);
+  return { own, machine: waiting.filter((card) => card.hostId === null), blockedWrites };
+}
+
 async function jsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {
   try {
     return await c.req.json();
@@ -133,6 +167,31 @@ async function jsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unkno
 
 export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): void {
   const { store, cards } = options;
+
+  app.get('/api/needs-you/counts', async (c) => {
+    const runtimes = options.runtimes.list();
+    await Promise.allSettled(runtimes.map((runtime) => options.syncCards?.(runtime.host.id)));
+    const machine = new Map<string, CardRow>();
+    const blocking: { id: string; hostId: string | null; question: string }[] = [];
+    const hosts = runtimes.map((runtime) => {
+      const counts = hostCounts(store, runtime.host.id);
+      for (const card of counts.machine) machine.set(card.id, card);
+      for (const card of counts.own) {
+        if (card.blocking)
+          blocking.push({ id: card.id, hostId: card.hostId, question: card.question });
+      }
+      return { hostId: runtime.host.id, count: counts.own.length + counts.blockedWrites };
+    });
+    for (const card of machine.values()) {
+      if (card.blocking) blocking.push({ id: card.id, hostId: null, question: card.question });
+    }
+    return c.json({
+      total: machine.size + hosts.reduce((sum, host) => sum + host.count, 0),
+      machine: machine.size,
+      hosts,
+      blocking,
+    });
+  });
 
   app.get('/api/hosts/:hostId/needs-you', async (c) => {
     const hostId = c.req.param('hostId');
