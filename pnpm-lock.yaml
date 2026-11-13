@@ -181,6 +181,12 @@ importers:
       hono:
         specifier: 4.13.17
         version: 4.13.17
+      parse5:
+        specifier: 8.1.1
+        version: 8.1.1
+      playwright-core:
+        specifier: 1.65.0
+        version: 1.65.0
       remark-frontmatter:
         specifier: 5.0.0
         version: 5.0.0
@@ -230,9 +236,6 @@ importers:
       '@vitejs/plugin-react':
         specifier: 6.3.0
         version: 6.3.0(vite@8.3.7(@types/node@24.19.2)(yaml@2.9.1))
-      playwright-core:
-        specifier: 1.65.0
-        version: 1.65.0
       react:
         specifier: 19.3.1
         version: 19.3.1
@@ -920,6 +923,10 @@ packages:
     resolution: {integrity: sha512-AnfC1ATldl49/cvZdLPDjBfrRNwbDO05aibiOtzQu3qtlbJtomNLhF30HEtn/7iBz50dlMECqATo3fG0LrdEgw==}
     engines: {node: '>=14'}
 
+  entities@9.0.0:
+    resolution: {integrity: sha512-oJFNDJg3kTPwAD1cNn2+WmUq4wFoo09npc3Ydf1D7ED4smRiWrsKnaLxykrTWgyGEcusc87P5dxlAleol9kpkg==}
+    engines: {node: '>=20.19.0'}
+
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
 
@@ -1206,6 +1213,9 @@ packages:
   parse-ms@4.0.0:
     resolution: {integrity: sha512-TXfryirbmq34y8QBwgqCVLi+8oA3oWx2eAnSn62ITyEhEYaWRlVZ2DvMM9eZbMs/RfxPu/PK/aBLyGj4IrqMHw==}
     engines: {node: '>=18'}
+
+  parse5@8.1.1:
+    resolution: {integrity: sha512-EcR/6WDcU7b2N3vQSxKALCk9lXGtUMQxXio008OEMBE0kavu/7JLfBEeFPzi43nMqVDSbEn3QCK+BMCc9zO//w==}
 
   path-key@4.0.0:
     resolution: {integrity: sha512-haREypq7xkM7ErfgIyA0z+Bj4AGKlMSdlQE2jvJo6huWD1EdkKYV+G/T4nq0YEF2vgTT8kqMFKo1uHn950r4SQ==}
@@ -1962,6 +1972,8 @@ snapshots:
 
   empathic@2.1.0: {}
 
+  entities@9.0.0: {}
+
   es-module-lexer@2.3.2: {}
 
   escape-string-regexp@5.0.0: {}
@@ -2314,6 +2326,10 @@ snapshots:
   obug@3.0.0: {}
 
   parse-ms@4.0.0: {}
+
+  parse5@8.1.1:
+    dependencies:
+      entities: 9.0.0
 
   path-key@4.0.0: {}
 

@@ -91,8 +91,9 @@ afterAll(async () => {
 
 describe('counterpoint init', () => {
   it('refuses when the parent folder is missing and creates nothing', async () => {
-    const parent = join(makeScratchDir('init'), 'no-such-parent');
-    const home = join(parent, 'home');
+    // Short names: the socket path under the home must fit macOS's 103 bytes in a deep checkout.
+    const parent = join(makeScratchDir('i'), 'np');
+    const home = join(parent, 'h');
     const result = await cli(['init'], home, REPO_ROOT);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain(

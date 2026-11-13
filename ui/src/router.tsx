@@ -2,6 +2,7 @@
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
 //   /h/$hostId/changes[/$changeId] → Changes and Change detail
+//   /h/$hostId/changes/$changeId/drafts → the change's design drafts
 //   /h/$hostId/needs-you → Needs You
 //   /h/$hostId/trust → the Mission page (an old link: the Trust page is gone)
 //   /h/$hostId/settings → Settings (the project's run settings)
@@ -26,6 +27,7 @@ import { hostsQuery } from './api';
 import { HOST_ID_RE, isChangeId } from './ids';
 import { ChangeDetailPage } from './pages/ChangeDetailPage';
 import { ChangesPage } from './pages/ChangesPage';
+import { DraftsPage } from './pages/DraftsPage';
 import { MissionPage } from './pages/MissionPage';
 import { NeedsYouPage } from './pages/NeedsYouPage';
 import { PreviewPage } from './pages/PreviewPage';
@@ -159,6 +161,26 @@ function ChangeRoute() {
   return <ChangeDetailPage key={`${hostId}/${changeId}`} hostId={hostId} changeId={changeId} />;
 }
 
+const draftsRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/changes/$changeId/drafts',
+  beforeLoad: ({ params }) => {
+    if (!isChangeId(params.changeId)) {
+      throw redirect({
+        to: '/h/$hostId/changes',
+        params: { hostId: params.hostId },
+        replace: true,
+      });
+    }
+  },
+  component: DraftsRoute,
+});
+
+function DraftsRoute() {
+  const { hostId, changeId } = draftsRoute.useParams();
+  return <DraftsPage key={`${hostId}/${changeId}`} hostId={hostId} changeId={changeId} />;
+}
+
 const needsYouRoute = createRoute({
   getParentRoute: () => hostRoute,
   path: '/needs-you',
@@ -242,6 +264,7 @@ const routeTree = rootRoute.addChildren([
     missionRoute,
     changesRoute,
     changeRoute,
+    draftsRoute,
     needsYouRoute,
     trustRoute,
     settingsRoute,

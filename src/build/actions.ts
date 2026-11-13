@@ -10,6 +10,7 @@
 // - resume-run: start a run of the changes the stopped run did not build.
 // - set-git-identity: the owner's name and email in their global git config.
 // - restart-into-install: hand over to the daemon's restarter (D-10).
+// - drop-drafts: delete a change's design drafts, which ends its hold (design-drafts D-12).
 // - add-ask-tool: the one-time setup of the ask tool for the owner's interactive sessions.
 // - tick-owner-step, perform-owner-step, land-owner-step, discard-owner-step: owner steps
 //   (owner-steps.ts): Done ticks the step through a planning write, Do it for me runs it in a
@@ -37,6 +38,8 @@ export interface ActionContext {
   restart?: (when: 'after-run' | 'now') => Promise<string>;
   /** Sets up the ask tool for interactive sessions (ask-session.ts). */
   addAskTool?: (card: CardRow) => Promise<string>;
+  /** Drop a change's design drafts (design-drafts D-12): its hold ends. */
+  dropDrafts?: (hostId: string, change: string) => Promise<boolean>;
   /** Owner steps (group 4). */
   ownerSteps?: (action: CardAction, card: CardRow, note: string | null) => Promise<string>;
   now?: () => number;
@@ -158,6 +161,14 @@ export function createActionRunner(context: ActionContext): ActionRunner {
       case 'add-ask-tool':
         if (context.addAskTool === undefined) throw new Error('Setting up is not available.');
         return context.addAskTool(card);
+      case 'drop-drafts': {
+        if (card.hostId === null) throw new Error('This card has no project.');
+        if (context.dropDrafts === undefined) throw new Error('Drafts are not available.');
+        const dropped = await context.dropDrafts(card.hostId, action.change);
+        return dropped
+          ? `Dropped the drafts of ${action.change}; the next run builds it without them.`
+          : `${action.change} has no drafts now; the next run builds it.`;
+      }
       case 'tick-owner-step':
       case 'perform-owner-step':
       case 'land-owner-step':

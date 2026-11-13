@@ -11,6 +11,7 @@
 //
 // Every string here comes from the host's planning files (agent-written, untrusted) and renders
 // as React text only.
+import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -57,6 +58,8 @@ export type ChangeRow = {
   ownerStepCount: number;
   unreadable: UnreadableFile | null;
   approval: ApprovalFacts | null;
+  /** The change's design drafts, when started (design-drafts D-12). */
+  drafts: { held: boolean; waiting: string[] } | null;
 };
 
 /** Which base the changes were read from, and how its fetch went (host API `base`). */
@@ -193,7 +196,28 @@ export function parseChangeRow(value: unknown): ChangeRow | null {
     ownerStepCount: count(value.ownerStepCount),
     unreadable: parseUnreadable(value.unreadable),
     approval: parseApproval(value.approval),
+    drafts: parseDrafts(value.drafts),
   };
+}
+
+function parseDrafts(value: unknown): ChangeRow['drafts'] {
+  if (!isRecord(value)) return null;
+  return {
+    held: value.held === true,
+    waiting: Array.isArray(value.waiting)
+      ? value.waiting.filter((name): name is string => typeof name === 'string')
+      : [],
+  };
+}
+
+/** A change's status, with "Waiting for sign-off" when its design drafts hold it. */
+export function ChangeStatusBadges({ row }: { row: Pick<ChangeRow, 'status' | 'drafts'> }) {
+  return (
+    <HStack gap={2} vAlign="center" wrap="wrap">
+      <StatusBadge status={row.status} />
+      {row.drafts?.held === true ? <Badge variant="warning" label="Waiting for sign-off" /> : null}
+    </HStack>
+  );
 }
 
 async function fetchChanges(hostId: string, signal?: AbortSignal): Promise<ChangesSnapshot> {
@@ -313,7 +337,7 @@ function DoneList({ hostId, rows }: { hostId: string; rows: ChangeRow[] }) {
                 {row.archivedOn === null ? 'Archived' : `Archived ${row.archivedOn}`}
               </Text>
             }
-            endContent={<StatusBadge status={row.status} />}
+            endContent={<ChangeStatusBadges row={row} />}
           />
         ))}
       </List>
@@ -377,7 +401,7 @@ export function ChangesPage({ hostId }: { hostId: string }) {
     {
       key: 'status',
       header: 'Status',
-      renderCell: (row) => <StatusBadge status={row.status} />,
+      renderCell: (row) => <ChangeStatusBadges row={row} />,
     },
     {
       key: 'tasks',
