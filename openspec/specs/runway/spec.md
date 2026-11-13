@@ -36,3 +36,7 @@ A change whose latest build PR has merged SHALL show Built and leave the runway 
 #### Scenario: Build PR merged with its tasks unticked on the base
 - **WHEN** a change's build PR merges on GitHub, and its task list on the base branch still has open tasks
 - **THEN** the change shows Built and is off the runway, and a run started afterwards does not build it
+
+#### Scenario: Run started right after a merge
+- **WHEN** the owner starts a run seconds after a change's build PR merged on GitHub
+- **THEN** the run does not build that change

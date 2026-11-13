@@ -23,6 +23,13 @@ The PR body SHALL be generated from the change's artifacts (title, why, tasks) a
 - **WHEN** the build edited one existing test file and added three new ones
 - **THEN** the PR body gives the test share and names the one edited file
 
+### Requirement: Short PR body
+The PR body SHALL read at a glance: it SHALL lead with the preview link, a summary of the change's why in a few lines, the gate results and the test share in a line each, and the first three assumed decisions with how many more there are. The full list of assumed decisions, the edited test files, the gate table and the task list SHALL follow in one collapsed section.
+
+#### Scenario: Long proposal and many decisions
+- **WHEN** a change's proposal is long, its task list has 150 tasks and the builder assumed eight decisions
+- **THEN** the PR body opens with the preview link, a few lines of why, the gates, the test share and three decisions, and everything else is in a collapsed section
+
 ### Requirement: Preview link
 Each PR SHALL carry a preview link: the host's own preview deploy when one exists, otherwise a local preview Counterpoint serves for that worktree on loopback with its own port.
 
