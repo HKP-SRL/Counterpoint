@@ -459,6 +459,20 @@ describe('builder session budget (fake claude)', () => {
     expect(result.peakTokens).toBe(1015);
   });
 
+  it("measures the main thread only: a subagent's larger context neither wraps up nor ends it", async () => {
+    const dir = makeScratchDir('cp-bs');
+    // Main thread at 1015 of 4000 (under 40% = 1600); the subagent at 3000 is past 55% = 2200.
+    const session = await startBuilderSession({
+      ...base(dir),
+      prompt: 'SUBAGENT work',
+      windowTokens: 4000,
+      budgetPercent: 40,
+    });
+    const result = await session.done;
+    expect(result).toMatchObject({ reason: 'finished', outcome: { kind: 'ok' } });
+    expect(result.peakTokens).toBe(1015);
+  });
+
   it('sends the wrap-up message once the budget is passed, and the turn ends with it', async () => {
     const dir = makeScratchDir('cp-bs');
     const delivered: string[] = [];

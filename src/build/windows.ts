@@ -18,6 +18,7 @@ import {
   recordModelWindow,
   setAgentSessionPid,
 } from '../core/store/sessions.ts';
+import { classifiedEvent, classifySession, type SessionOutcome } from './governor.ts';
 
 /** `2.1.322 (Claude Code)` → `2.1.322`. */
 export function normalizeClaudeVersion(version: string): string {
@@ -64,9 +65,13 @@ export interface CalibrateInput {
 }
 
 export class CalibrationError extends Error {
-  constructor(message: string) {
+  /** How the calibration session ended, when it ran: the run waits or retries on it. */
+  readonly outcome: SessionOutcome | null;
+
+  constructor(message: string, outcome: SessionOutcome | null = null) {
     super(message);
     this.name = 'CalibrationError';
+    this.outcome = outcome;
   }
 }
 
@@ -94,6 +99,7 @@ export async function calibrateWindow(input: CalibrateInput): Promise<number> {
     rawLogPath: input.rawLogPath,
   });
   const meter = new ContextMeter();
+  const kept: StreamEvent[] = [];
   let resolved: string | null = null;
   const session = await runner.start({
     argv,
@@ -103,6 +109,7 @@ export async function calibrateWindow(input: CalibrateInput): Promise<number> {
     processTag: input.processTag,
     onEvent: (event) => {
       meter.observe(event);
+      if (classifiedEvent(event)) kept.push(event);
       resolved ??= initModel(event);
     },
   });
@@ -124,11 +131,15 @@ export async function calibrateWindow(input: CalibrateInput): Promise<number> {
     peakContextTokens: meter.peak,
   });
   if (window === null) {
+    // Classified like a builder session's end (build-runs: Usage limits pause every lane): the run
+    // waits out a usage limit and retries a transient error instead of ending.
+    const outcome = classifySession(kept);
     const failure = sessionFailure(end.result);
     throw new CalibrationError(
       failure !== null
         ? `The calibration session for ${input.model} failed: ${failure}`
         : `The calibration session for ${input.model} reported no context window${end.timedOut ? ' (timed out)' : ''}.`,
+      outcome.kind === 'ok' ? null : outcome,
     );
   }
   return window;

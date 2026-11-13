@@ -24,16 +24,20 @@
 // Before every session the approval is verified again: a change that leaves the runway stops at
 // its next handoff and is skipped (Needs You shows it as approved version changed).
 //
-// Every spawn goes through the governor (usage-limit pauses for every lane, the doctor gate) and
-// uses the claude installed at that moment: the binary and its version are resolved before each
-// spawn, and when the version differs from the one the last doctor report checked, the run runs
-// doctor itself (governed, about two minutes) and goes on if it passes. A claude update never stops
-// a run unless it really breaks the sandbox.
+// Every spawn goes through the governor (usage-limit pauses for every lane) and uses the claude
+// installed at that moment: the binary and its version are resolved before each spawn (a failed
+// `claude --version` is asked again, 3 tries), and a version with no learned window for the model
+// gets a calibration session first. A claude update never stops a run. Sessions run as the owner,
+// with no sandbox and no doctor (run-as-owner, 2026-11-12; docs/decisions.md Direction).
 //
-// Session endings (6.3): a usage limit pauses every lane (the governor) and the session is run
-// again after the pause, counting nothing; transient API errors back off (1, 2, 4, ... minutes) and
-// retry, up to five times, then count as a failed attempt; authentication, credit and spend-limit
-// errors stop the run with the reason (Needs You shows it).
+// Session endings (6.3): only claude's error decides how a session ended, never its summary. A
+// usage limit pauses every lane (the governor) and the session is run again after the pause,
+// counting nothing; transient API errors back off (1, 2, 4, ... minutes) and retry, up to five
+// times, then count as a failed attempt; two sessions in a row that end on claude's error without
+// a commit park the change with that error; a failed sign-in stops the run at once only when
+// claude holds no login, otherwise it is retried and may stop as a possible outage
+// (auth-failures.ts); credit and spend-limit errors stop the run with the reason (Needs You shows
+// it). The calibration session ends the same way.
 //
 // Stopping: the owner's stop and the run's stop time end the run at the next clean point. The
 // running session is asked to finish its task and hand off; running gates are stopped (a stopped
@@ -91,6 +95,13 @@ import {
 } from '../core/store/runs.ts';
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
 import { type AskServer, type BuilderAsk, openBuilderAsk } from './ask-session.ts';
+import {
+  accountStopMessage,
+  afterAuthFailure,
+  CALIBRATION_RETRIES,
+  VERSION_RETRY_MS,
+  VERSION_TRIES,
+} from './auth-failures.ts';
 import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
 import { deliveryTicks, onlyBuildTicks } from './build-ticks.ts';
 import {
@@ -104,6 +115,7 @@ import {
   GovernorRefusal,
   governedRunner,
   MAX_TRANSIENT_RETRIES,
+  type SessionOutcome,
   transientBackoffMs,
 } from './governor.ts';
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
@@ -119,13 +131,24 @@ import {
 } from './services.ts';
 import { commitSession, type SessionCommit } from './session-commit.ts';
 import { describeMissingTools, missingRunTools } from './tools.ts';
-import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
+import {
+  CalibrationError,
+  calibrateWindow,
+  formatBudget,
+  knownWindow,
+  normalizeClaudeVersion,
+} from './windows.ts';
 import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.ts';
 
 /** The longest one builder session may run. */
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 /** How long a run waits before trying a failed base fetch again (D-4). */
 export const FETCH_RETRY_MS = 5_000;
+/**
+ * Sessions in a row that end on claude's error (a bad model name, a turn or budget cap) without
+ * committing or ticking anything before the change parks with that error.
+ */
+export const FAILED_SESSIONS_TO_PARK = 2;
 /** The least time between two context-fill events of one session. */
 const FILL_EVENT_MS = 20_000;
 /** How far ahead a stop time may be. */
@@ -387,9 +410,9 @@ export class Orchestrator {
   // --- the owner's requests ----------------------------------------------------------------
 
   /**
-   * Starts a run, or refuses with the reason. Refused: an unknown host, a run already going, a
-   * failing doctor verdict (unless only the claude version changed: then the run re-runs doctor
-   * first), and any chosen change that is not on the runway now.
+   * Starts a run, or refuses with the reason. Refused: bad settings or stop time, an unknown or
+   * unreadable host, a run already going, any chosen change that is not on the runway now, and an
+   * empty runway.
    */
   async start(hostId: string, input: unknown): Promise<StartResult> {
     const parsed = RunSettings.safeParse(input);
@@ -760,9 +783,23 @@ export class Orchestrator {
     } catch (error) {
       throw new RunEnd('error', `claude could not be found: ${(error as Error).message}`);
     }
-    const version = (await runner.version?.()) ?? null;
-    if (version === null)
-      throw new RunEnd('error', 'claude could not be run (claude --version failed).');
+    // One slow `claude --version` (a busy machine, an update half done) is not a broken claude:
+    // it is asked again before the run ends.
+    let version: string | null = null;
+    for (let tries = 1; version === null; tries += 1) {
+      version = (await runner.version?.()) ?? null;
+      if (version !== null) break;
+      if (active.stop.signal.aborted) {
+        throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the next session.');
+      }
+      if (tries >= VERSION_TRIES) {
+        throw new RunEnd(
+          'error',
+          `claude could not be run (claude --version failed ${VERSION_TRIES} times).`,
+        );
+      }
+      await this.#sleep(VERSION_RETRY_MS * tries, active.stop.signal);
+    }
     return { runner, version };
   }
 
@@ -788,31 +825,75 @@ export class Orchestrator {
     });
     const dir = join(this.#runDir(active), 'calibration');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    try {
-      return record(
-        await (this.#o.calibrateWindow ?? calibrateWindow)({
-          runner: governedRunner(this.#o.governor, runner, {
+    // The calibration session ends like any session (build-runs: Usage limits pause every lane):
+    // a usage limit waits for the reset, transient errors and sign-in failures that may be an
+    // outage are tried again; only what no retry fixes ends the run.
+    let transient = 0;
+    let auth = 0;
+    for (;;) {
+      let outcome: SessionOutcome | null = null;
+      let failure: string;
+      try {
+        return record(
+          await (this.#o.calibrateWindow ?? calibrateWindow)({
+            runner: governedRunner(this.#o.governor, runner, {
+              hostId: active.hostId,
+              kind: 'calibration',
+              signal: active.stop.signal,
+            }),
+            db: this.#o.db,
             hostId: active.hostId,
-            kind: 'calibration',
-            signal: active.stop.signal,
+            model: settings.model,
+            claudeVersion: normalized,
+            cwd: dir,
+            rawLogPath: join(dir, 'session.jsonl'),
+            processTag: randomBytes(16).toString('hex'),
           }),
-          db: this.#o.db,
-          hostId: active.hostId,
-          model: settings.model,
-          claudeVersion: normalized,
-          cwd: dir,
-          rawLogPath: join(dir, 'session.jsonl'),
-          processTag: randomBytes(16).toString('hex'),
-        }),
-      );
-    } catch (error) {
-      if (error instanceof GovernorRefusal) {
+        );
+      } catch (error) {
+        if (error instanceof GovernorRefusal) {
+          throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the first build.');
+        }
+        if (error instanceof CalibrationError) outcome = error.outcome;
+        failure = `The model's context window could not be learned: ${(error as Error).message}`;
+      }
+      if (active.stop.signal.aborted) {
         throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the first build.');
       }
-      throw new RunEnd(
-        'error',
-        `The model's context window could not be learned: ${(error as Error).message}`,
-      );
+      let waitMs = 0;
+      if (outcome?.kind === 'usage-limit') {
+        // The governor paused every lane; the next calibration waits for the reset. A reset that
+        // is already past still waits the governor's 30 minutes, so this never spins.
+        this.#o.governor.noteOutcome(outcome);
+        if (this.#o.governor.holdUntil() === null) {
+          this.#o.governor.pauseForLimit(null, outcome.detail);
+        }
+      } else if (outcome?.kind === 'transient' && transient < CALIBRATION_RETRIES) {
+        transient += 1;
+        waitMs = transientBackoffMs(transient);
+      } else if (outcome?.kind === 'stop' && outcome.cause === 'auth') {
+        auth += 1;
+        const step = await afterAuthFailure({
+          runner,
+          detail: outcome.detail,
+          outage: outcome.outage === true,
+          failures: auth,
+        });
+        if (step.kind === 'stop') throw new RunEnd('error', step.message);
+        waitMs = step.waitMs;
+      } else if (outcome?.kind === 'stop') {
+        throw new RunEnd('error', accountStopMessage(outcome.cause, outcome.detail));
+      } else {
+        throw new RunEnd('error', failure);
+      }
+      if (waitMs > 0) {
+        this.#activity(active, {
+          change: null,
+          phase: 'waiting',
+          detail: `${outcome.kind === 'stop' ? 'Sign-in failed' : 'API error'}; learning ${settings.model}'s context window again in ${Math.round(waitMs / 60_000)} min`,
+        });
+        await this.#sleep(waitMs, active.stop.signal);
+      }
     }
   }
 
@@ -1176,6 +1257,8 @@ export class Orchestrator {
     const adapter = runtime.adapter;
     if (adapter === null) throw new RunEnd('error', 'The project has no planning framework.');
     let transient = 0;
+    let auth = 0;
+    let failed = 0;
     let gateFeedback = c.feedback;
     // Build tasks left open after the latest session (null: the change has no task list).
     let open: string[] | null = null;
@@ -1295,7 +1378,11 @@ export class Orchestrator {
       endAgentSession(db, sessionId, {
         reason: result.reason,
         peakContextTokens: result.peakTokens,
-        usage: { outcome: result.outcome.kind },
+        // The error itself is kept, not only its kind: the run report and a park reason name it.
+        usage:
+          result.outcome.kind === 'ok'
+            ? { outcome: 'ok' }
+            : { outcome: result.outcome.kind, detail: result.outcome.detail.slice(0, 500) },
       });
 
       // Every session's work is committed, whatever ended it.
@@ -1327,16 +1414,55 @@ export class Orchestrator {
           continue;
         }
         case 'stop': {
-          const what =
-            result.outcome.cause === 'auth'
-              ? 'claude is not signed in (authentication failed). Sign in to claude, then start a new run.'
-              : result.outcome.cause === 'credit'
-                ? 'Usage credits are needed. Add credit, then start a new run.'
-                : 'A spend limit was reached. Raise it, then start a new run.';
-          throw new RunEnd('error', `${what} (${result.outcome.detail})`);
+          if (result.outcome.cause !== 'auth') {
+            throw new RunEnd(
+              'error',
+              accountStopMessage(result.outcome.cause, result.outcome.detail),
+            );
+          }
+          // Signed out, or an outage? claude's own login decides; an outage is tried again.
+          auth += 1;
+          const step = await afterAuthFailure({
+            runner,
+            detail: result.outcome.detail,
+            outage: result.outcome.outage === true,
+            failures: auth,
+          });
+          if (step.kind === 'stop') throw new RunEnd('error', step.message);
+          this.#activity(active, {
+            change: c.row.change,
+            phase: 'waiting',
+            detail: `Sign-in failed; retrying in ${Math.round(step.waitMs / 60_000)} min`,
+          });
+          await this.#sleep(step.waitMs, active.stop.signal);
+          inAttempt -= 1;
+          continue;
+        }
+        case 'failed': {
+          // The same error again and again (a model name claude does not know fails every
+          // session) parks the change with that error instead of using up the attempt's sessions.
+          transient = 0;
+          auth = 0;
+          const moved = done !== null && (done.commit !== null || done.ticked.length > ticksBefore);
+          failed = moved ? 0 : failed + 1;
+          if (failed >= FAILED_SESSIONS_TO_PARK && !active.stop.signal.aborted) {
+            const detail = result.outcome.detail
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 300)
+              .replace(/([^.!?])$/, '$1.');
+            return this.#parkOpen(
+              active,
+              c,
+              `${failed} sessions in a row ended on an error from claude without a commit. The last one said: ${detail}`,
+            );
+          }
+          break;
         }
         default:
           transient = 0;
+          auth = 0;
+          failed = 0;
       }
       if (active.stop.signal.aborted || result.reason === 'stop-handoff') return 'stopped';
       open = done === null ? null : done.open;
