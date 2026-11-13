@@ -13,11 +13,19 @@ Gates SHALL be commands defined in the gates section of the host's Counterpoint 
 - **THEN** the gates that run are still the ones at the commit the build started from
 
 ### Requirement: Exit code is the only verdict
-A gate SHALL pass only when its command exits 0. A non-zero exit, a signal or a timeout SHALL fail it with a distinct stored reason. Each gate SHALL run in its own process group, killed as a group on timeout or stop.
+A gate SHALL pass only when its command exits 0. A non-zero exit, a signal or a timeout SHALL fail it with a distinct stored reason. Each gate SHALL run in its own process group, killed as a group on timeout or stop. A gate SHALL end when its command exits, even if a process it started still holds its output; that process SHALL then be ended. A stop SHALL always end a running gate, even one already ending on its timeout.
 
 #### Scenario: Gate times out
 - **WHEN** a gate exceeds its timeout
 - **THEN** its whole process group is killed and the gate fails with reason timeout
+
+#### Scenario: A process the gate started keeps its output open
+- **WHEN** a gate's command exits 0 while a server it started in a process group of its own still holds the gate's output
+- **THEN** the gate passes when its command exits, and the server is ended
+
+#### Scenario: Stop while a gate times out
+- **WHEN** the owner stops the run while a gate that timed out ignores the request to end
+- **THEN** the gate is killed at once and the run stops
 
 #### Scenario: Agent claims success
 - **WHEN** the builder reports the work is done but the unit gate exits 1
