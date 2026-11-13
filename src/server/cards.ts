@@ -14,6 +14,7 @@ import {
   type CardRow,
   deferCard,
   getCard,
+  hasDoneForYou,
   insertCard,
   type NewCard,
   reopenCard,
@@ -229,5 +230,10 @@ export class CardDesk {
   doneForYou(hostId: string | null, text: string, undo?: CardAction | null): void {
     addDoneForYou(this.#o.store, { hostId, text, undo: undo ?? null }, this.#now());
     this.#publish(hostId, { doneForYou: true });
+  }
+
+  /** Logs a line once: a recomputed cause logged again adds nothing. */
+  doneForYouOnce(hostId: string | null, text: string): void {
+    if (!hasDoneForYou(this.#o.store, hostId, text)) this.doneForYou(hostId, text);
   }
 }

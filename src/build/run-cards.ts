@@ -8,11 +8,12 @@
 // - A run that stopped on something only the owner can fix: named by its root cause ("not logged
 //   in", not the "no context window" it led to), with Counterpoint's fix where the catalog has one
 //   (re-read the environment and resume) and otherwise the one step only the owner can take.
-// - A note the run left (its login shell could not be read): re-read the environment.
+// - A note the run left (its login shell could not be read): re-read the environment. Any other
+//   note is a "Done for you" line, since no answer would change anything.
 //
 // The cards are recomputed from the store: each has a key, so raising it again finds the same card,
 // and a card whose cause is gone (a later run replaced it) resolves itself.
-import type { CardOption, NewCard } from '../core/store/cards.ts';
+import { type CardOption, getCardByKey, type NewCard } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
 import type { CardDesk } from '../server/cards.ts';
@@ -204,37 +205,43 @@ function questionCard(
   };
 }
 
-function noticeCard(hostId: string, runId: string, notice: string, index: number): NewCard {
-  const shell = /login shell/i.test(notice);
+/**
+ * A run notice is a card only when the owner can act on it (the login shell: re-read it). Any other
+ * notice changes nothing whatever the owner answers, so it is a "Done for you" line instead.
+ */
+function noticeCard(hostId: string, runId: string, notice: string, index: number): NewCard | null {
+  if (!/login shell/i.test(notice)) return null;
   return {
     hostId,
     key: `notice:${runId}:${index}`,
     kind: 'notice',
     source: 'run',
     runId,
-    question: shell
-      ? "Your login shell couldn't be read. Re-read it now?"
-      : clip(`${notice} Look into it?`, 500),
-    why: shell
-      ? clip(`${notice} Tools your shell adds may be missing.`)
-      : 'Nothing stopped; it may matter for the next run.',
-    options: shell
-      ? [
-          {
-            label: 'Re-read my environment',
-            consequence: 'Counterpoint reads your login shell again and resumes if the run ended.',
-            action: { type: 'refresh-environment-and-resume', runId },
-          },
-          { label: 'Ignore it', consequence: 'The next run reads your login shell again anyway.' },
-        ]
-      : [
-          { label: 'Got it', consequence: 'Nothing changes.' },
-          { label: 'Ignore it', consequence: 'Nothing changes.' },
-        ],
+    question: "Your login shell couldn't be read. Re-read it now?",
+    why: clip(`${notice} Tools your shell adds may be missing.`),
+    options: [
+      {
+        label: 'Re-read my environment',
+        consequence: 'Counterpoint reads your login shell again and resumes if the run ended.',
+        action: { type: 'refresh-environment-and-resume', runId },
+      },
+      { label: 'Ignore it', consequence: 'The next run reads your login shell again anyway.' },
+    ],
     recommended: 0,
     reversible: true,
     blocking: false,
   };
+}
+
+/** The latest run's notices that are no card: one "Done for you" line each, with its card key. */
+export function runNoticeLines(db: Store, hostId: string): { key: string; text: string }[] {
+  const run = latestRun(db, hostId);
+  if (run === undefined) return [];
+  return run.notices.flatMap((notice, index) =>
+    noticeCard(hostId, run.id, notice, index) === null
+      ? [{ key: `notice:${run.id}:${index}`, text: clip(`Run ${run.id}: ${notice}`) }]
+      : [],
+  );
 }
 
 /** The cards the host's latest run calls for now. */
@@ -246,7 +253,8 @@ export function runCards(db: Store, hostId: string): NewCard[] {
     cards.push(stoppedCard(hostId, run.id, run.endDetail ?? 'The run stopped on an error.'));
   }
   run.notices.forEach((notice, index) => {
-    cards.push(noticeCard(hostId, run.id, notice, index));
+    const card = noticeCard(hostId, run.id, notice, index);
+    if (card !== null) cards.push(card);
   });
   for (const change of listRunChanges(db, run.id)) {
     if (change.state !== 'parked') continue;
@@ -275,6 +283,15 @@ export function syncRunCards(desk: CardDesk, hostId: string): void {
       desk.raise(card);
     } catch {
       // a card the model refuses (text too long, say) is left out, never a failed read
+    }
+  }
+  // Notices nobody can act on are lines under "Done for you"; a card an earlier version raised for
+  // one closes, pointing there.
+  for (const line of runNoticeLines(desk.store, hostId)) {
+    desk.doneForYouOnce(hostId, line.text);
+    const card = getCardByKey(desk.store, line.key);
+    if (card !== undefined && (card.state === 'open' || card.state === 'deferred')) {
+      desk.resolve(card, 'Noted under Done for you.');
     }
   }
   for (const prefix of RUN_PREFIXES) {

@@ -450,6 +450,14 @@ export function addDoneForYou(
   return Number(result.lastInsertRowid);
 }
 
+/** True when the host's "Done for you" list already has this exact line. */
+export function hasDoneForYou(db: Store, hostId: string | null, text: string): boolean {
+  const row = db
+    .prepare('SELECT 1 AS ok FROM done_for_you WHERE host_id IS ? AND text = ? LIMIT 1')
+    .get(hostId, text.slice(0, MAX_LINE));
+  return row !== undefined;
+}
+
 export function listDoneForYou(db: Store, hostId: string, limit = 20): DoneForYouRow[] {
   return db
     .prepare(

@@ -16,7 +16,11 @@ The console SHALL have one Needs You inbox listing items as question cards, card
 ## ADDED Requirements
 
 ### Requirement: Every item can be answered
-Every item Counterpoint puts in Needs You SHALL offer options the owner can pick in one step, with a recommended option. A run-stopping problem SHALL offer Counterpoint's fix where the action catalog has one, otherwise the exact step only the owner can take, and Later.
+Every item Counterpoint puts in Needs You SHALL offer options the owner can pick in one step, with a recommended option. A run-stopping problem SHALL offer Counterpoint's fix where the action catalog has one, otherwise the exact step only the owner can take, and Later. A note a run left that no answer would act on SHALL be a line in "Done for you", not a card.
+
+#### Scenario: A note nothing can act on
+- **WHEN** a run leaves a note that changes nothing whatever the owner answers
+- **THEN** it shows once as a "Done for you" line and no card asks about it
 
 #### Scenario: Run stopped for a missing program
 - **WHEN** a run stops because a service program cannot be found
