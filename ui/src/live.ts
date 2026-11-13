@@ -24,6 +24,7 @@ export const EVENT_FAMILIES = [
   'doctor',
   'run',
   'settings',
+  'drafts',
 ] as const;
 export type EventFamily = (typeof EVENT_FAMILIES)[number];
 
@@ -54,6 +55,13 @@ export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly Qu
   run: (hostId) => [queryKeys.run(hostId), queryKeys.needsYou(hostId), queryKeys.runway(hostId)],
   // A project's run settings were saved: the Settings page and the Run card's summary.
   settings: (hostId) => [queryKeys.settings(hostId)],
+  // A change's design drafts moved: the Drafts page, and the hold the listings show (D-12).
+  drafts: (hostId) => [
+    queryKeys.drafts(hostId),
+    queryKeys.changes(hostId),
+    queryKeys.change(hostId),
+    queryKeys.runway(hostId),
+  ],
 };
 
 const SEQ_RE = /^\d{1,15}$/;

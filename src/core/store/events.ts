@@ -14,6 +14,7 @@ import type { Store } from './db.ts';
  * `run`: a build run started, moved on (phase, change state) or ended.
  * `doctor` and `needs-you` are only ever read back from events earlier versions stored.
  * `settings`: a project's run settings were saved.
+ * `drafts`: a change's design drafts moved (a screen list, a round, a draft, a mark, a sign-off).
  */
 export const EVENT_FAMILIES = [
   'host',
@@ -24,6 +25,7 @@ export const EVENT_FAMILIES = [
   'doctor',
   'run',
   'settings',
+  'drafts',
 ] as const;
 
 export type EventFamily = (typeof EVENT_FAMILIES)[number];

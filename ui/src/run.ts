@@ -143,6 +143,8 @@ export interface HostSettings {
   maxTurns: number;
   maxBudgetUsd: number;
   sessionsPerAttempt: number;
+  /** The model design-draft sessions use. */
+  draftModel: string;
 }
 
 export interface SettingsAnswer {
@@ -160,6 +162,7 @@ function isHostSettings(value: unknown): value is HostSettings {
   return (
     typeof v.model === 'string' &&
     typeof v.effort === 'string' &&
+    typeof v.draftModel === 'string' &&
     ['budgetPercent', 'maxTurns', 'maxBudgetUsd', 'sessionsPerAttempt'].every(
       (key) => typeof v[key] === 'number',
     )

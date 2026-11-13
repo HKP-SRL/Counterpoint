@@ -12,6 +12,8 @@ export type RunwayItem = {
   taskCount: number;
   /** Epoch ms. */
   approvedAt: number;
+  /** Its design drafts hold it until every screen is signed off (design-drafts D-12). */
+  waitingForSignOff: boolean;
 };
 
 export type RunwaySnapshot = {
@@ -34,6 +36,7 @@ function parseItem(value: unknown): RunwayItem | null {
     title: typeof value.title === 'string' && value.title !== '' ? value.title : value.changeId,
     taskCount: count(value.taskCount),
     approvedAt: count(value.approvedAt),
+    waitingForSignOff: value.waitingForSignOff === true,
   };
 }
 

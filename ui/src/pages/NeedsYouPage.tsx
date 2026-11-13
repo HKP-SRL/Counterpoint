@@ -323,6 +323,7 @@ const KIND_BADGE: Record<string, { label: string; variant: 'warning' | 'error' |
   'run-stopped': { label: 'Run stopped', variant: 'error' },
   notice: { label: 'Note', variant: 'info' },
   ask: { label: 'Question', variant: 'info' },
+  'drafts-hold': { label: 'Drafts', variant: 'info' },
 };
 
 function whereFrom(card: QuestionCard): string {
@@ -390,6 +391,9 @@ export function CardBlock(props: {
                   {`PR #${card.prUrl.split('/').pop()}`}
                 </Link>
               )}
+              {card.kind === 'drafts-hold' && card.change !== null ? (
+                <Link href={`/h/${props.hostId}/changes/${card.change}/drafts`}>Open drafts</Link>
+              ) : null}
             </HStack>
             {card.outcome === null ? null : <Text type="supporting">{card.outcome}</Text>}
           </VStack>

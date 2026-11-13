@@ -1537,3 +1537,119 @@ describe("a builder's ask tool (owner-inbox D-5)", () => {
     expect(getCard(ctx.db, cardId)?.outcome).toBe('The next session on a-thing gets this answer.');
   });
 });
+
+describe('design drafts hold the build (design-drafts 6.2-6.4)', () => {
+  const PAGE = 'openspec/changes/a-thing/drafts/home/main.html';
+  const RULES = '.counterpoint/design-rules.md';
+
+  /** A run with a-thing's drafts in `stage`; its sign-off write in `write`. */
+  async function run(
+    stage: 'none' | 'low' | 'signed' | 'dropped',
+    write: 'none' | 'open' | 'merged',
+    landed: boolean,
+  ) {
+    const ctx = await host({
+      ...INDEPENDENT,
+      [RULES]: 'Forms group related fields.\n',
+      ...(landed
+        ? {
+            [PAGE]: '<link rel="stylesheet" href="../styles.css"><p data-cp-id="x">Home</p>',
+            'openspec/changes/a-thing/drafts/styles.css': 'p { margin: 0 }',
+          }
+        : {}),
+    });
+    const { Drafts } = await import('../../src/drafts/service.ts');
+    const store = await import('../../src/core/store/drafts.ts');
+    const writes = await import('../../src/core/store/planning-writes.ts');
+    const drafts = new Drafts({
+      db: ctx.db,
+      home: ctx.home,
+      host: () => ctx.runtime,
+      runner: () => runner,
+      ownerEnv: async () => OWNER_ENV,
+      mapper: { maps: async () => ({}) },
+      publish: () => {},
+    });
+    if (stage !== 'none') {
+      store.startDraftChange(ctx.db, 'cena', 'a-thing');
+      store.setDraftChangeState(ctx.db, 'cena', 'a-thing', 'ready');
+      const [home] = store.replaceScreens(ctx.db, 'cena', 'a-thing', [
+        { screen: 'home', name: 'Home', purpose: 'p', states: ['main'], directions: [] },
+      ]);
+      if (write !== 'none') {
+        const row = writes.insertPlanningWrite(ctx.db, {
+          hostId: 'cena',
+          cardId: null,
+          message: 'sign off',
+          edits: [{ kind: 'text', path: PAGE, before: null, after: 'x' }],
+        });
+        if (write === 'merged') writes.updatePlanningWrite(ctx.db, row.id, { state: 'merged' });
+        store.updateScreen(ctx.db, home?.id as number, { stage: 'signed', signoffWrite: row.id });
+      }
+      if (stage === 'dropped') await drafts.drop('cena', 'a-thing');
+    }
+    const sessions = fakeSessions();
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      draftHold: (hostId, change, reader, base) => drafts.heldAtBase(hostId, change, reader, base),
+      referenceScreens: async (input) => {
+        const { prepareReferenceScreens } = await import('../../src/drafts/reference.ts');
+        return prepareReferenceScreens({ ...input, shooter: null });
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    const rows = listRunChanges(ctx.db, started.runId);
+    return { ctx, rows, prompts: sessions.prompts, runId: started.runId };
+  }
+
+  it('skips a held change with a card naming its screens; the others build', async () => {
+    const { ctx, rows, runId } = await run('low', 'none', false);
+    expect(rows.map((r) => [r.change, r.state, r.reason])).toEqual([
+      ['a-thing', 'skipped', 'Waiting for sign-off: Home.'],
+      ['b-thing', 'green', null],
+    ]);
+    const card = runCards(ctx.db, 'cena').find((c) => c.kind === 'drafts-hold');
+    expect(card).toMatchObject({
+      key: `drafts-hold:${runId}:a-thing`,
+      question: 'Sign off Home to build a-thing',
+      blocking: false,
+    });
+    expect(card?.options.map((option) => option.label)).toEqual(['Open drafts', 'Drop drafts']);
+  });
+
+  it('holds a change signed off but not merged, or merged but not on the base', async () => {
+    for (const [write, landed] of [
+      ['open', true],
+      ['merged', false],
+    ] as const) {
+      const { rows } = await run('signed', write, landed);
+      expect(rows[0]).toMatchObject({ change: 'a-thing', state: 'skipped' });
+    }
+  });
+
+  it('builds a signed-off, landed change with its reference screens and the design rules', async () => {
+    const { ctx, rows, prompts } = await run('signed', 'merged', true);
+    expect(rows.map((r) => [r.state, r.reason])).toEqual([
+      ['green', null],
+      ['green', null],
+    ]);
+    const prompt = prompts[0] ?? '';
+    expect(prompt).toContain('Forms group related fields.');
+    expect(prompt).toContain('Reference screens');
+    expect(prompt).toContain('- home, main: HTML .cp-drafts/home/main.html');
+    const tree = await runGit(ctx.repo.root, ['ls-tree', '-r', '--name-only', 'cp/a-thing']);
+    expect(tree.stdout).not.toContain('.cp-drafts');
+    expect(tree.stdout).toContain('src/session-1.ts');
+  });
+
+  it('builds a change whose drafts were dropped, or never started, as before', async () => {
+    for (const stage of ['dropped', 'none'] as const) {
+      const { rows, prompts } = await run(stage, 'none', false);
+      expect(rows.map((r) => r.state)).toEqual(['green', 'green']);
+      expect(prompts[0]).not.toContain('Reference screens');
+    }
+  });
+});

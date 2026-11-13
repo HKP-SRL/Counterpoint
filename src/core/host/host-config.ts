@@ -40,6 +40,10 @@
 //     ports: [54321]
 //   worktree:
 //     clone: [node_modules]     # git-ignored folders copied (APFS clone) from your checkout
+//   drafts:                     # hi-fi design drafts (design-drafts D-3); without it, low-fi only
+//     render: [node, scripts/render-draft.ts, '{entry}', '{out}']
+//     entry: draft.tsx          # the file name a hi-fi session writes, one per state
+//     guide: docs/drafts.md     # how to write a draft entry in this project
 import { isAbsolute, normalize } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
@@ -216,6 +220,22 @@ const Preview = z.strictObject({
   ports: z.array(Port).max(16).default([]),
 });
 
+/** The placeholders a drafts render command holds: the entry file and the output folder. */
+export const ENTRY_PLACEHOLDER = '{entry}';
+export const OUT_PLACEHOLDER = '{out}';
+
+/** Hi-fi drafts (design-drafts D-3): the host renders an entry; Counterpoint packs the page. */
+const Drafts = z.strictObject({
+  render: Argv.refine(
+    (argv) => argv.includes(ENTRY_PLACEHOLDER) && argv.includes(OUT_PLACEHOLDER),
+    `The render command needs ${ENTRY_PLACEHOLDER} and ${OUT_PLACEHOLDER}, each as an argument of its own.`,
+  ),
+  /** A file name (no folder): what the hi-fi session writes for each state. */
+  entry: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'A file name, without a folder.'),
+  guide: RepoPath.optional(),
+  timeout: Duration.prefault(120),
+});
+
 /** The test budget (gates: Test budget): advice for builders, never a gate. */
 const Tests = z.strictObject({
   budget: z.number().int().min(0).max(100).default(30),
@@ -231,6 +251,7 @@ const HostConfigSchema = z
     /** Accepted and ignored (paths that used to be flagged on a branch's diff). */
     protected: z.unknown().optional(),
     worktree: Worktree.nullish(),
+    drafts: Drafts.nullish(),
   })
   .superRefine((config, ctx) => {
     const names = new Set<string>();
@@ -254,6 +275,7 @@ const HostConfigSchema = z
 export type GateConfig = z.output<typeof Gate>;
 export type ServiceConfig = z.output<typeof Service>;
 export type PreviewConfig = z.output<typeof Preview>;
+export type DraftsConfig = z.output<typeof Drafts>;
 
 /** The test budget when the host config sets none (gates: Test budget). */
 export const DEFAULT_TEST_BUDGET = 30;
@@ -265,6 +287,8 @@ export interface HostConfig {
   tests: { budget: number };
   preview: PreviewConfig | null;
   worktree: { clone: string[] };
+  /** Hi-fi drafts; null: the host renders none (low-fi only). */
+  drafts: DraftsConfig | null;
 }
 
 /** The defaults for a host with no config file: no gates, three attempts. */
@@ -275,6 +299,7 @@ export const EMPTY_HOST_CONFIG: Readonly<HostConfig> = Object.freeze({
   tests: { budget: DEFAULT_TEST_BUDGET },
   preview: null,
   worktree: { clone: [] },
+  drafts: null,
 });
 
 /** Parses a config document (already read as YAML). Throws HostConfigError naming the key. */
@@ -304,6 +329,7 @@ export function parseHostConfig(document: Record<string, unknown> | null): HostC
     tests: { budget: config.tests?.budget ?? DEFAULT_TEST_BUDGET },
     preview: config.preview ?? null,
     worktree: { clone: config.worktree?.clone ?? [] },
+    drafts: config.drafts ?? null,
   };
 }
 

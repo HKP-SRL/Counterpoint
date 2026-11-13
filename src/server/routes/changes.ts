@@ -29,6 +29,14 @@ export interface ChangeRoutesOptions {
   approvals?: ApprovalViews;
   /** The base fetcher's state for a host; without it nothing is said about fetching. */
   baseFetch?: (hostId: string) => BaseFetchState | null;
+  /** Changes whose design drafts were started, and which screens still wait (design-drafts D-12). */
+  draftHolds?: (hostId: string) => ReadonlyMap<string, DraftHold>;
+}
+
+/** A change's design drafts as listings show them. */
+export interface DraftHold {
+  held: boolean;
+  waiting: string[];
 }
 
 /** Which base the view was read from, and how its fetch went. */
@@ -61,6 +69,7 @@ function changeRow(
   change: ChangeFacts,
   approval: ApprovalState | undefined,
   merged: ReadonlySet<string>,
+  hold: DraftHold | undefined,
 ) {
   // An archived change is done; an approval of the same name belongs to the active one, if any.
   const own = change.archived ? undefined : approval;
@@ -83,12 +92,15 @@ function changeRow(
     ownerStepCount: ownerSteps(change).length,
     unreadable: change.unreadable,
     approval: onRunway === null ? null : { state: 'on-runway', approvedAt: onRunway.approvedAt },
+    // Waiting for sign-off (D-12): drafts were started and a screen is not signed off and landed.
+    drafts: change.archived || hold === undefined ? null : hold,
   };
 }
 
 export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void {
   const { runtimes, approvals } = options;
   const fetchState = (hostId: string) => options.baseFetch?.(hostId) ?? null;
+  const holds = (hostId: string) => options.draftHolds?.(hostId) ?? new Map<string, DraftHold>();
 
   app.get('/api/hosts/:hostId/changes', async (c) => {
     const hostId = c.req.param('hostId');
@@ -107,7 +119,9 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
       tip: view.tip,
       base: baseFacts(view, fetchState(hostId)),
       unreadable: view.snapshot?.unreadable ?? null,
-      changes: changes.map((change) => changeRow(change, states.get(change.id), merged)),
+      changes: changes.map((change) =>
+        changeRow(change, states.get(change.id), merged, holds(hostId).get(change.id)),
+      ),
     });
   });
 
@@ -131,7 +145,7 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
-      ...changeRow(change, states.get(change.id), merged),
+      ...changeRow(change, states.get(change.id), merged, holds(hostId).get(change.id)),
       why: change.why,
       ownerSteps: ownerSteps(change),
     });

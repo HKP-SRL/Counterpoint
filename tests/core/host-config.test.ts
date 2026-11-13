@@ -138,7 +138,28 @@ describe('host config', () => {
       tests: { budget: 30 },
       preview: null,
       worktree: { clone: [] },
+      drafts: null,
     });
+  });
+
+  it('reads the drafts section (design-drafts 4.1): valid, missing and invalid', () => {
+    const render = ['node', 'scripts/render-draft.ts', '{entry}', '{out}'];
+    expect(
+      parseHostConfig({ drafts: { render, entry: 'draft.tsx', guide: 'docs/drafts.md' } }).drafts,
+    ).toEqual({ render, entry: 'draft.tsx', guide: 'docs/drafts.md', timeout: 120_000 });
+    expect(parseHostConfig({ attempts: 2 }).drafts).toBeNull();
+    expect(() =>
+      parseHostConfig({ drafts: { render: ['node', 'x', '{out}'], entry: 'd.tsx' } }),
+    ).toThrow(/drafts\.render/);
+    expect(() => parseHostConfig({ drafts: { render, entry: 'src/d.tsx' } })).toThrow(
+      /drafts\.entry/,
+    );
+    expect(() => parseHostConfig({ drafts: { render, entry: 'd.tsx', guide: '../x.md' } })).toThrow(
+      /drafts\.guide/,
+    );
+    expect(() => parseHostConfig({ drafts: { render, entry: 'd.tsx', extra: 1 } })).toThrow(
+      /drafts/,
+    );
   });
 
   it.each([

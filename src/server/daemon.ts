@@ -48,6 +48,10 @@ import { EventBus, publishEvent } from '../core/store/events.ts';
 import { runningOwnerStepResults } from '../core/store/owner-step-results.ts';
 import type { PlanningWriteRow } from '../core/store/planning-writes.ts';
 import { getRun } from '../core/store/runs.ts';
+import { DraftBrowser } from '../drafts/browser.ts';
+import { prepareReferenceScreens } from '../drafts/reference.ts';
+import { startDraftServer } from '../drafts/server.ts';
+import { Drafts } from '../drafts/service.ts';
 import { createApp, packageRoot, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
 import { CardDesk } from './cards.ts';
@@ -416,6 +420,36 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log,
   });
   const governor = new Governor({ db: store });
+  // Design drafts (design-drafts): one headless browser for element maps and the builder's
+  // reference screenshots, the script-free draft server on its own loopback port, and the drafts
+  // service. A round or revision the last daemon was making shows Failed with Try again (D-8).
+  const browser = new DraftBrowser();
+  const draftServer = await startDraftServer({ home: options.home }).catch((error: Error) => {
+    log('draft-server-failed', { message: error.message });
+    return null;
+  });
+  const drafts = new Drafts({
+    db: store,
+    home: options.home,
+    host: (hostId) => runtimes.get(hostId),
+    runner: (hostId, env) =>
+      governedRunner(governor, runnerFactory(env), { hostId, kind: 'draft' }),
+    ownerEnv: async () => (await readOwnerEnv()).env,
+    mapper: browser,
+    publish: (hostId, payload) => {
+      publishEvent(store, bus, { hostId, family: 'drafts', payload });
+    },
+    raise: (card) => {
+      try {
+        desk.raise(card);
+      } catch {
+        // a card the model refuses is left out
+      }
+    },
+    lane,
+    log,
+  });
+  if (drafts.recover() > 0) log('drafts-recovered');
   // Owner steps are cards (owner-inbox 4.2): recomputed with the run's cards on every read. Do it
   // for me runs a session as the owner, through the same governor as builders (4.3).
   const steps = new OwnerSteps({
@@ -475,6 +509,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     beforeBuild: (hostId, change) => {
       previews.stop(hostId, change);
     },
+    draftHold: (hostId, change, reader, baseCommit) =>
+      drafts.heldAtBase(hostId, change, reader, baseCommit),
+    referenceScreens: (input) => prepareReferenceScreens({ ...input, shooter: browser }),
     deliver: createDeliver({
       home: options.home,
       consolePort: bound,
@@ -535,7 +572,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
           paths,
           stamp: () => installStamp(root, entry),
           version: () => installedVersion(root),
-          busy: () => orchestrator.running() !== null || runningOwnerStepResults(store).length > 0,
+          busy: () =>
+            orchestrator.running() !== null ||
+            runningOwnerStepResults(store).length > 0 ||
+            drafts.busy(),
           spawnSuccessor: successorSpawner({
             paths,
             entry,
@@ -553,6 +593,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       orchestrator,
       ownerEnv: () => readOwnerEnv(),
       ownerSteps: (action, card, note) => steps.act(action, card, note),
+      dropDrafts: (hostId, change) => drafts.drop(hostId, change),
       ...(restarter === undefined ? {} : { restart: (when) => restarter.request(when) }),
       ...(askServer === undefined
         ? {}
@@ -603,6 +644,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       },
       previews,
     },
+    drafts: { drafts, draftOrigin: () => draftServer?.origin ?? null },
   });
 
   stop = async (reason: string) => {
@@ -614,6 +656,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     notifier.stop();
     restarter?.stop();
     await previews.stopAll();
+    await draftServer?.close();
+    await browser.close().catch(() => undefined);
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
     rmSync(paths.daemonJson, { force: true });

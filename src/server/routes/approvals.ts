@@ -13,12 +13,15 @@ import type { Hono } from 'hono';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
 import type { ApprovalViews } from '../approval-views.ts';
 import type { HostRuntime, HostRuntimes } from '../hosts.ts';
+import type { DraftHold } from './changes.ts';
 
 export interface ApprovalRoutesOptions {
   runtimes: HostRuntimes;
   approvals: ApprovalViews;
   /** Called after an approval or withdrawal (the daemon nudges the watcher). */
   onApprovalChanged?: (hostId: string) => void;
+  /** Changes held by their design drafts (design-drafts D-12): still on the runway, waiting. */
+  draftHolds?: (hostId: string) => ReadonlyMap<string, DraftHold>;
 }
 
 export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): void {
@@ -74,6 +77,7 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
     const runtime = hostOf(c.req.param('hostId'));
     if (runtime === null) return c.json({ error: 'not found' }, 404);
     const runway = await approvals.runway(runtime);
+    const holds = options.draftHolds?.(runtime.host.id) ?? new Map<string, DraftHold>();
     return c.json({
       hostId: runtime.host.id,
       tip: runway.tip,
@@ -84,6 +88,8 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
         title: entry.title ?? entry.changeId,
         taskCount: entry.taskCount,
         approvedAt: entry.approvedAt,
+        // Approved work, so it counts, but it waits for sign-off (D-12).
+        waitingForSignOff: holds.get(entry.changeId)?.held === true,
       })),
     });
   });

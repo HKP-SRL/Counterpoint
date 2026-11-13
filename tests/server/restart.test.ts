@@ -13,7 +13,8 @@ import { makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 afterAll(() => removeScratchDirs());
 
 function setup() {
-  const home = makeScratchDir('restart-unit');
+  // A short name: the socket path under the home must fit macOS's 103 bytes in a deep checkout.
+  const home = makeScratchDir('rs');
   const paths = homePaths(home);
   mkdirSync(paths.runDir, { recursive: true });
   const store = openStore(home);

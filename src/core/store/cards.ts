@@ -48,6 +48,7 @@ export const CardAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('land-owner-step'), resultId }),
   z.strictObject({ type: z.literal('discard-owner-step'), resultId }),
   z.strictObject({ type: z.literal('add-ask-tool') }),
+  z.strictObject({ type: z.literal('drop-drafts'), change }),
 ]);
 export type CardAction = z.infer<typeof CardAction>;
 export type CardActionType = CardAction['type'];

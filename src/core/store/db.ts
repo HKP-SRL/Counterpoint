@@ -350,6 +350,80 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE run_changes ADD COLUMN ticks TEXT CHECK (ticks IN ('pr', 'after-merge', 'base'));
   `,
+  // 15: design drafts (design-drafts D-8). One `draft_changes` row per change whose drafts were
+  // started (it holds the build, D-12, and says whether its screen list is being made); its screens,
+  // each screen's rounds (low-fi rounds and hi-fi versions), the drafts of a round (A, B, C, or one
+  // per state) and the owner's marks on parts. Dropping a change's drafts deletes all of it.
+  `
+  CREATE TABLE draft_changes (
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    change TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('listing', 'ready', 'failed')),
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (host_id, change)
+  ) STRICT;
+  CREATE TABLE draft_screens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL,
+    change TEXT NOT NULL,
+    screen TEXT NOT NULL,
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    states TEXT NOT NULL DEFAULT '[]',
+    directions TEXT NOT NULL DEFAULT '[]',
+    position INTEGER NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('low', 'locked', 'hifi', 'signed')),
+    locked_draft INTEGER,
+    signoff_write TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (host_id, change) REFERENCES draft_changes(host_id, change) ON DELETE CASCADE,
+    UNIQUE (host_id, change, screen)
+  ) STRICT;
+  CREATE TABLE draft_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    screen_id INTEGER NOT NULL REFERENCES draft_screens(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('low', 'hifi')),
+    state TEXT NOT NULL CHECK (state IN ('running', 'ready', 'failed')),
+    error TEXT,
+    also_changed TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (screen_id, number)
+  ) STRICT;
+  CREATE TABLE drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id INTEGER NOT NULL REFERENCES draft_rounds(id) ON DELETE CASCADE,
+    slot TEXT NOT NULL,
+    direction TEXT,
+    dir TEXT NOT NULL,
+    maps TEXT,
+    state TEXT NOT NULL CHECK (state IN ('running', 'ready', 'failed')),
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (round_id, slot)
+  ) STRICT;
+  CREATE TABLE draft_marks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    screen_id INTEGER NOT NULL REFERENCES draft_screens(id) ON DELETE CASCADE,
+    draft_id INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+    part TEXT NOT NULL,
+    snippet TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('select', 'comment')),
+    note TEXT,
+    width TEXT NOT NULL CHECK (width IN ('phone', 'desktop')),
+    state TEXT NOT NULL CHECK (state IN ('open', 'sent', 'addressed', 'detached')),
+    sent_round INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (kind = 'select' OR note IS NOT NULL)
+  ) STRICT;
+  CREATE INDEX draft_marks_by_screen ON draft_marks(screen_id, state);
+  `,
 ];
 
 /** Path of the state database under a home. */

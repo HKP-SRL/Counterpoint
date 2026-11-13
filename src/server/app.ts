@@ -16,6 +16,7 @@ import { CardDesk } from './cards.ts';
 import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
 import { mountApprovalRoutes } from './routes/approvals.ts';
 import { mountChangeRoutes } from './routes/changes.ts';
+import { type DraftRoutesOptions, mountDraftRoutes } from './routes/drafts.ts';
 import { mountNeedsYouRoutes, type NeedsYouRoutesOptions } from './routes/needs-you.ts';
 import { mountRunRoutes, type RunRoutesOptions } from './routes/run.ts';
 import { mountEvents } from './sse.ts';
@@ -52,6 +53,8 @@ export interface AppOptions {
   syncCards?: (hostId: string) => void | Promise<void>;
   /** Retry and Cancel on a blocked planning write. */
   writes?: NeedsYouRoutesOptions['writes'];
+  /** Design drafts (design-drafts D-13); the console frames pages from the draft origin. */
+  drafts?: DraftRoutesOptions;
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -88,7 +91,10 @@ export function createApp(options: AppOptions): Hono {
   // exact Host `127.0.0.1:${port}` → security headers → Origin / Fetch Metadata / JSON body on
   // non-GET /api → session on every /api.
   app.use('*', hostGuard(getPort));
-  app.use('*', securityHeaders());
+  app.use(
+    '*',
+    securityHeaders(() => options.drafts?.draftOrigin() ?? null),
+  );
   app.use('/api/*', mutationGuard(getPort));
   // The SSE stream carries its own sseGuard then sessionGuard (Origin checked before session, as
   // for writes), so it is mounted ahead of the shared session check.
@@ -139,10 +145,16 @@ export function createApp(options: AppOptions): Hono {
     runtimes,
     approvals,
     ...(options.baseFetch === undefined ? {} : { baseFetch: options.baseFetch }),
+    ...(options.drafts === undefined
+      ? {}
+      : { draftHolds: (hostId: string) => options.drafts?.drafts.holds(hostId) ?? new Map() }),
   });
   mountApprovalRoutes(app, {
     runtimes,
     approvals,
+    ...(options.drafts === undefined
+      ? {}
+      : { draftHolds: (hostId: string) => options.drafts?.drafts.holds(hostId) ?? new Map() }),
     ...(options.onApprovalChanged === undefined
       ? {}
       : { onApprovalChanged: options.onApprovalChanged }),
@@ -163,6 +175,8 @@ export function createApp(options: AppOptions): Hono {
       approvals,
     });
   }
+
+  if (options.drafts !== undefined) mountDraftRoutes(app, options.drafts);
 
   // Unknown API reads are JSON 404s, never the console page. GET only, so API routes added to the
   // app after createApp (later route groups, tests) stay reachable for other methods.

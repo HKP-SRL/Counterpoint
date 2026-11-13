@@ -48,6 +48,7 @@ import type { ChangeFacts } from '../core/framework/port.ts';
 import { findChange } from '../core/framework/port.ts';
 import type { BaseFetcher, BaseFetchState } from '../core/git/base-fetch.ts';
 import { runGit } from '../core/git/run.ts';
+import { readDesignRules } from '../core/host/design-rules.ts';
 import { hostDir } from '../core/host/home.ts';
 import {
   type GateConfig,
@@ -90,6 +91,7 @@ import {
   updateRunChange,
 } from '../core/store/runs.ts';
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
+import { holdReason } from '../drafts/hold.ts';
 import { type AskServer, type BuilderAsk, openBuilderAsk } from './ask-session.ts';
 import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
 import { deliveryTicks, onlyBuildTicks } from './build-ticks.ts';
@@ -108,7 +110,7 @@ import {
 } from './governor.ts';
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
 import { type OwnerEnv, readOwnerEnv } from './owner-env.ts';
-import { builderPrompt, type GateFailure } from './prompt.ts';
+import { builderPrompt, type GateFailure, type ReferenceScreen } from './prompt.ts';
 import { parseQuestions } from './questions.ts';
 import { askParkWhy } from './run-cards.ts';
 import {
@@ -274,6 +276,23 @@ export interface OrchestratorOptions {
     /** The host's preview deploy, looked up in the background (awaited before the report). */
     previewLater?: (signal: AbortSignal) => Promise<string | null>;
   }>;
+  /**
+   * The screens a change's design drafts still wait on at the build's base commit, or null when it
+   * may build (design-drafts D-12). Without it nothing is held.
+   */
+  draftHold?: (
+    hostId: string,
+    change: ChangeFacts,
+    reader: RunHost['reader'],
+    baseCommit: string,
+  ) => Promise<string[] | null>;
+  /** The change's signed-off screens, copied and rendered into the worktree (design-drafts D-10). */
+  referenceScreens?: (input: {
+    worktree: string;
+    changeDir: string;
+    reader: RunHost['reader'];
+    baseCommit: string;
+  }) => Promise<ReferenceScreen[]>;
   /** Called before a change builds: its local preview (if running) must stop first. */
   beforeBuild?: (hostId: string, change: string) => void;
   /** Writes the run report (11.4). */
@@ -919,6 +938,23 @@ export class Orchestrator {
       });
       return;
     }
+    // A change whose design drafts are not all signed off and landed waits (design-drafts D-12):
+    // skipped like a withdrawn change, so the run goes on with the others.
+    const waitingOn = await (this.#o.draftHold?.(
+      active.hostId,
+      facts,
+      runtime.reader,
+      baseCommit,
+    ) ?? Promise.resolve(null));
+    if (waitingOn !== null) {
+      updateRunChange(db, row.id, {
+        state: 'skipped',
+        reason: holdReason(waitingOn),
+        endedAt: this.#now(),
+      });
+      this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'skipped' });
+      return;
+    }
     // A change that depends on one that parked in this run waits for it (build-runs: A run ends
     // only when it cannot go on).
     const blocked = this.#blockedInRun(active.id);
@@ -972,6 +1008,23 @@ export class Orchestrator {
     });
     this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'building' });
 
+    // The signed-off screens, for the builder to build to (design-drafts D-10).
+    let referenceScreens: ReferenceScreen[] = [];
+    try {
+      referenceScreens =
+        (await this.#o.referenceScreens?.({
+          worktree,
+          changeDir: facts.dir,
+          reader: runtime.reader,
+          baseCommit,
+        })) ?? [];
+    } catch (error) {
+      this.#o.log?.('reference-screens-failed', {
+        change: row.change,
+        message: (error as Error).message,
+      });
+    }
+
     const services = createServiceSession({ config, worktree, parentEnv: active.env });
     let feedback: GateFailure | null = null;
     try {
@@ -990,6 +1043,7 @@ export class Orchestrator {
           feedback,
           gates: config.gates,
           testBudget: config.tests.budget,
+          referenceScreens,
         });
         if (built === 'stopped' || built === 'left-runway' || built === 'parked') return;
 
@@ -1170,6 +1224,7 @@ export class Orchestrator {
       feedback: GateFailure | null;
       gates: readonly GateConfig[];
       testBudget: number;
+      referenceScreens: readonly ReferenceScreen[];
     },
   ): Promise<'built' | 'stopped' | 'left-runway' | 'parked'> {
     const { db } = this.#o;
@@ -1210,6 +1265,8 @@ export class Orchestrator {
         testBudget: c.testBudget,
         ownerNotes: waitingChangeNotes(db, active.hostId, c.row.change),
         askTool: this.#o.askServer !== undefined,
+        designRules: await readDesignRules(runtime.reader, c.baseCommit).catch(() => null),
+        referenceScreens: c.referenceScreens,
       });
       markChangeNotesUsed(db, active.hostId, c.row.change, this.#now());
       const processTag = randomBytes(16).toString('hex');
