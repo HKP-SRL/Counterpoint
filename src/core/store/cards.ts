@@ -33,6 +33,12 @@ const resultId = z.string().regex(/^r-[0-9a-f]{16}$/);
 export const CardAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('refresh-environment-and-resume'), runId }),
   z.strictObject({ type: z.literal('retry-parked'), runId, change }),
+  z.strictObject({
+    type: z.literal('hold-parked'),
+    runId,
+    change,
+    why: z.enum(['left-parked', 'replan']),
+  }),
   z.strictObject({ type: z.literal('resume-run'), runId }),
   z.strictObject({
     type: z.literal('set-git-identity'),
