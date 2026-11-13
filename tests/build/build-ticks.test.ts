@@ -227,7 +227,11 @@ describe('ticks of an open build PR', () => {
       allowExitCodes: [0, 1],
     });
     expect(trial.exitCode).toBe(0);
-    expect(getRunChange(pr.db, pr.rowId)?.ticks).toBe('after-merge');
+    expect(getRunChange(pr.db, pr.rowId)).toMatchObject({
+      ticks: 'after-merge',
+      // What Counterpoint pushed last.
+      headCommit: pr.pushed[0],
+    });
     // The local branch follows, so the next delivery pushes on top of it.
     const local = await runGit(pr.repo.root, ['rev-parse', 'cp/a-thing']);
     expect(local.stdout.trim()).toBe(pr.pushed[0]);

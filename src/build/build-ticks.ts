@@ -365,7 +365,7 @@ export class BuildTicks {
       // The worktree kept for review follows the branch; its own list is left as it is.
       await runGit(pr.worktree, ['reset', '-q', '--', path]).catch(() => undefined);
     }
-    updateRunChange(this.#o.db, pr.id, { ticks: 'after-merge' });
+    updateRunChange(this.#o.db, pr.id, { ticks: 'after-merge', headCommit: made.commit });
     this.#seen.set(pr.id, base.tip);
     this.#o.log?.('build-ticks-out', { hostId: host.id, change: pr.change, commit: made.commit });
   }

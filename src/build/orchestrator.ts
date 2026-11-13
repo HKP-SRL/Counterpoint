@@ -243,6 +243,11 @@ export interface DeliverContext {
   env: Readonly<Record<string, string>>;
   /** How much of the change is tests, against the host's budget (gates: Test budget). */
   testShare: StoredTestShare | null;
+  /**
+   * The remote head the push replaces (`--force-with-lease`): the branch was made again, or the
+   * remote one is a closed PR's. Null or absent: a fast-forward push.
+   */
+  lease?: string | null;
 }
 
 export interface OrchestratorOptions {
