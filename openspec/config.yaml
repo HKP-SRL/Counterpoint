@@ -5,7 +5,8 @@ schema: spec-driven
 context: |
   Counterpoint is a local mission-control tool for autonomous spec-driven development with
   Claude Code. It reads a host project's planning through a framework adapter (OpenSpec first),
-  lets the owner sign changes into a runway, and builds approved changes into per-change PRs.
+  lets the owner approve changes into a runway with one click, and builds approved changes into
+  per-change PRs.
   First host: Cena. The owner is a single person; there are no other users.
 
   Hard constraints:
@@ -16,9 +17,9 @@ context: |
     never Tailwind. Served as a prebuilt SPA by the local server; live updates over SSE.
   - Framework coupling: core never knows which spec framework the host uses. Everything
     framework-specific goes through an adapter; an import rule enforces the boundary.
-  - Security: the approval signing key and the start/stop token must be unreadable and unusable
-    by agents; the approval key is never cached (no ssh-agent, no Keychain). Agents run as the
-    same OS user, so they are the threat model.
+  - Counterpoint acts as the owner: agent sessions, gates and services run with the owner's
+    rights, login environment, tools and network, with no sandbox. Approving is one click in the
+    console; nothing is signed. Work reaches the base branch only through a PR the owner merges.
   - Isolation: builds never touch the owner's checkout; worktrees only.
   - The server is local, host-agnostic and loopback-only (bind 127.0.0.1).
   - Context windows: no hard-coded window sizes; budgets follow the model.

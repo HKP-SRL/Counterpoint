@@ -5,13 +5,12 @@
 // `{ hostId, tip }`; open consoles refetch. A debounced re-read that settles publishes
 // `{ hostId, tip, settled: true }`.
 //
-// Approvals and the runway (runway: Runway recomputed from git): on every pass it also recomputes
-// the runway with `computeRunway` (through the approval views: cached per tip and trusted key, so
-// an unchanged tip costs one ref read). It publishes `approval` `{ hostId, tip }` when any
-// approval's state changed and `runway` `{ hostId, count }` when the count changed. The first look
-// at a host only records a baseline. `nudge(hostId)` runs the same check at once (an approval just
-// landed). It then derives the Needs You items and publishes `needs-you` `{ hostId, count }` when
-// they changed (needs-you: One inbox). Checks of one host never overlap.
+// Approvals and the runway (runway: Runway is the approved work not yet built): on every pass it
+// also derives the runway from the store's approvals and the snapshot at the tip (cached per tip,
+// so an unchanged tip costs one ref read). It publishes `approval` `{ hostId, tip }` when any
+// change's approval state changed and `runway` `{ hostId, count }` when the count changed. The
+// first look at a host only records a baseline. `nudge(hostId)` runs the same check at once (the
+// owner just approved or withdrew a change). Checks of one host never overlap.
 //
 // Errors are logged and never thrown: one unreadable host must not stop the others.
 import type { Store } from '../core/store/db.ts';
@@ -51,7 +50,6 @@ export function startWatcher(options: WatcherOptions): Watcher {
   const log = options.log ?? (() => {});
   const lastTips = new Map<string, string | null>();
   const lastRunway = new Map<string, RunwaySeen>();
-  const lastNeedsYou = new Map<string, string>();
   const running = new Map<string, Promise<void>>();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -90,39 +88,15 @@ export function startWatcher(options: WatcherOptions): Watcher {
     if (approvals === undefined) return;
     const { id } = runtime.host;
     const runway = await approvals.runway(runtime);
-    const signature = JSON.stringify([
-      runway.onRunway.map((e) => [e.changeId, 'on-runway', e.commit, e.title, e.taskCount]),
-      runway.changed.map((e) => [e.changeId, 'changed', e.commit, e.title, e.taskCount]),
-      runway.invalid.map((e) => [e.changeId, 'invalid', e.reason]),
-    ]);
+    const signature = JSON.stringify(
+      runway.onRunway.map((e) => [e.changeId, e.approvedAt, e.title, e.taskCount]),
+    );
     const seen = lastRunway.get(id);
     lastRunway.set(id, { signature, count: runway.count });
     if (seen === undefined) return;
     if (seen.signature !== signature)
       publish(id, 'approval', { hostId: id, tip: runway.tip ?? tip });
     if (seen.count !== runway.count) publish(id, 'runway', { hostId: id, count: runway.count });
-  };
-
-  // Needs You (needs-you: One inbox): the items derived from the changed approvals. A `needs-you`
-  // event goes out when the set of items (or what an item lists as changed) differs from the last
-  // look.
-  const checkNeedsYou = async (runtime: HostRuntime): Promise<void> => {
-    if (approvals === undefined) return;
-    const { id } = runtime.host;
-    const { items, changed } = await approvals.needsYou(runtime);
-    const signature = JSON.stringify([
-      items.map((item) => [item.id, item.changedCount, item.gatesChanged, item.unreadable]),
-      changed.map((c) => [
-        c.changeId,
-        c.commit,
-        c.changes.map((change) => [change.path, change.change, change.nowDigest]),
-        c.gatesChange === null ? null : [c.gatesChange.change, c.gatesChange.nowDigest],
-      ]),
-    ]);
-    const seen = lastNeedsYou.get(id);
-    lastNeedsYou.set(id, signature);
-    if (seen === undefined || seen === signature) return;
-    publish(id, 'needs-you', { hostId: id, count: items.length });
   };
 
   const checkHost = async (runtime: HostRuntime): Promise<void> => {
@@ -142,11 +116,6 @@ export function startWatcher(options: WatcherOptions): Watcher {
       await checkRunway(runtime, tip);
     } catch (error) {
       log('watch-runway-failed', { hostId: id, message: (error as Error).message });
-    }
-    try {
-      await checkNeedsYou(runtime);
-    } catch (error) {
-      log('watch-needs-you-failed', { hostId: id, message: (error as Error).message });
     }
   };
 

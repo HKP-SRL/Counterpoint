@@ -11,12 +11,13 @@
 // A commit id names immutable content, so a snapshot that read cleanly is memoized per adapter by
 // commit (a small LRU, cloned on the way out). A snapshot with anything unreadable is never kept:
 // the host runtime re-reads such a tip once after a debounce and must see a fresh read.
-import type {
-  ChangeFacts,
-  ChangeSnapshot,
-  FrameworkAdapter,
-  GitFileReader,
-  UnreadableFile,
+import {
+  AmbiguousChangeError,
+  type ChangeFacts,
+  type ChangeSnapshot,
+  type FrameworkAdapter,
+  type GitFileReader,
+  type UnreadableFile,
 } from '../../core/framework/port.ts';
 import { approvalInputs } from './inputs.ts';
 import {
@@ -36,7 +37,7 @@ import {
 import { parseMetadata, reasonFrom } from './metadata.ts';
 import { orderChanges } from './order.ts';
 import { parseProposal } from './proposal.ts';
-import { countTasks } from './tasks.ts';
+import { countTasks, normalizeTasks, openBuildTasks, tickedTasks } from './tasks.ts';
 
 const ADAPTER_ID = 'openspec';
 
@@ -157,10 +158,22 @@ async function readSnapshot(reader: GitFileReader, commit: string): Promise<Chan
     };
   }
 
+  // A name carried by more than one folder is ambiguous: every folder of that name is unreadable.
+  const byId = new Map<string, string[]>();
+  for (const dir of dirs) byId.set(dir.id, [...(byId.get(dir.id) ?? []), dir.path]);
+
   const changes: ChangeFacts[] = [];
   for (const dir of dirs) {
+    const same = byId.get(dir.id) ?? [];
     try {
-      changes.push(await readChange(reader, commit, dir));
+      const facts = await readChange(reader, commit, dir);
+      if (same.length > 1) {
+        facts.unreadable = {
+          file: dir.path,
+          reason: new AmbiguousChangeError(dir.id, same).message,
+        };
+      }
+      changes.push(facts);
     } catch (error) {
       // A listing failure inside one change affects only that change.
       changes.push({
@@ -213,5 +226,30 @@ export function createOpenSpecAdapter(): FrameworkAdapter {
     detect,
     snapshot,
     approvalInputs,
+    isPlanningPath: (path) => path === 'openspec' || path.startsWith('openspec/'),
+    tasksPath: (change) => (change.artifacts.tasks ? `${change.dir}/tasks.md` : null),
+    tickedTasks,
+    openTasks: openBuildTasks,
+    sameApartFromTicks: (before, after) => normalizeTasks(before) === normalizeTasks(after),
+    buildInstructions,
   };
+}
+
+/**
+ * The builder's instructions for an OpenSpec change. The host's own OpenSpec skills and commands
+ * load in builder sessions (`--setting-sources user,project`), so the builder uses them.
+ */
+function buildInstructions(change: ChangeFacts): string {
+  const tasks = change.artifacts.tasks ? `${change.dir}/tasks.md` : null;
+  return [
+    `This repository plans with OpenSpec. Implement the change "${change.id}" (folder ${change.dir}/).`,
+    'Read its proposal.md, design.md (if present) and the spec deltas under specs/, then implement it',
+    "with the repository's OpenSpec apply workflow (the openspec-apply-change skill, or the",
+    `/opsx:apply command) for this change.`,
+    tasks === null
+      ? 'The change has no task list; implement what the proposal and specs describe.'
+      : `Work through ${tasks} in order and tick each task's checkbox there as soon as it is done.`,
+    'Tasks whose text starts with "Owner:" are for the owner: skip them.',
+    'Do not edit any other file under openspec/: planning changes go through the owner.',
+  ].join('\n');
 }

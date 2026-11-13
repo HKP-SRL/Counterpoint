@@ -12,7 +12,6 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
 import type { Server } from 'node:http';
@@ -20,12 +19,23 @@ import { connect } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
+import { ClaudeCliRunner } from '../agent/runner.ts';
+import { createDeliver } from '../build/deliver.ts';
+import { Governor } from '../build/governor.ts';
+import { LocalPreviews } from '../build/local-preview.ts';
+import { Orchestrator } from '../build/orchestrator.ts';
+import { recoverRuns } from '../build/recovery.ts';
+import { factsFromRuntime, writeRunReport } from '../build/run-report.ts';
 import { detectFramework } from '../compose.ts';
+import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
+import { carryOverApprovals } from '../core/runway/carry-over.ts';
+import { runNeedsYou } from '../core/runway/run-items.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
-import { EventBus } from '../core/store/events.ts';
+import { EventBus, publishEvent } from '../core/store/events.ts';
+import { getRun } from '../core/store/runs.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
 import { createControlApp, hashToken } from './control.ts';
@@ -38,12 +48,19 @@ export interface DaemonOptions {
   home: string;
   /** Port for the console; 0 binds an ephemeral port (tests). */
   port: number;
+  /**
+   * The random id of this start, also on the daemon's command line (`--instance`), so `stop` can
+   * confirm a pid is this daemon before signalling it (daemon-lifecycle: Stop never signals an
+   * unrelated process).
+   */
+  instance?: string;
 }
 
 export interface DaemonInfo {
   pid: number;
   port: number;
   startedAt: string;
+  instance?: string;
 }
 
 export interface StartResult {
@@ -153,6 +170,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.exit(0);
   }
 
+  // A run record left by a crashed daemon names a pid that may now belong to another program.
+  // Holding the lock means no other daemon is alive, so the record is stale: clear it at once.
+  rmSync(paths.daemonJson, { force: true });
   rmSync(paths.startResult, { force: true });
   const tokenHash = loadTokenHash(paths);
 
@@ -207,7 +227,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }).catch((error: NodeJS.ErrnoException): never => {
     if (error.code === 'EADDRINUSE') {
       const result: StartResult = { error: 'port-in-use', port: options.port };
-      writeFileSync(paths.startResult, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+      writeFileAtomic0600(paths.startResult, `${JSON.stringify(result)}\n`);
       log('port-in-use', { port: options.port });
     } else {
       log('http-listen-failed', { code: error.code ?? null, message: error.message });
@@ -221,9 +241,104 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
-  // One set of approval views (states and runway recomputed from git, cached per tip in memory
-  // only, so every daemon start begins with an empty cache).
-  const approvals = createApprovalViews({ home: options.home });
+  // Approvals given before one-click approval carry over once (approvals: Earlier approvals
+  // carry over).
+  await carryOverApprovals(
+    store,
+    (hostId) => {
+      const runtime = runtimes.get(hostId);
+      return runtime === null
+        ? null
+        : {
+            hostId,
+            baseBranch: runtime.host.baseBranch,
+            reader: runtime.reader,
+            adapter: runtime.adapter,
+          };
+    },
+    log,
+  );
+  // One set of approval views: approvals from the store, the runway derived at the tip.
+  const approvals = createApprovalViews({ store });
+
+  // The build lane. Every agent spawn goes through the one governor (usage-limit pauses).
+  // A runner for the claude on the run's PATH (the owner's login shell's); the daemon's own PATH
+  // when no run environment is given (the version shown in the console).
+  const runnerFactory = (env?: Readonly<Record<string, string>>) =>
+    new ClaudeCliRunner(env === undefined ? {} : { env });
+  const claudeVersion = async (): Promise<string | null> => {
+    try {
+      return (await runnerFactory().version()) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const publish = (family: 'run') => (hostId: string, payload: Record<string, unknown>) =>
+    void publishEvent(store, bus, { hostId, family, payload });
+  const governor = new Governor({ db: store });
+  const previews = new LocalPreviews({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    consolePort: bound,
+    publish: publish('run'),
+  });
+  const orchestrator = new Orchestrator({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    approvals,
+    governor,
+    runnerFactory,
+    consolePort: bound,
+    publish: publish('run'),
+    onRunEnd: async (runId) => {
+      const run = getRun(store, runId);
+      if (run === undefined) return;
+      await writeRunReport({
+        home: options.home,
+        db: store,
+        runId,
+        factsAt: factsFromRuntime(runtimes.get(run.hostId)),
+      });
+    },
+    beforeBuild: (hostId, change) => {
+      previews.stop(hostId, change);
+    },
+    deliver: createDeliver({
+      home: options.home,
+      consolePort: bound,
+      adapterFor: (hostId) => runtimes.get(hostId)?.adapter ?? null,
+    }),
+    log,
+  });
+  // Crash recovery before any new work: end what a killed daemon left running, commit
+  // interrupted work; the run itself resumes once the daemon is up.
+  const recovered = await recoverRuns({
+    home: options.home,
+    db: store,
+    host: (hostId) => runtimes.get(hostId),
+    log,
+  }).catch((error: Error) => {
+    log('recovery-failed', { message: error.message });
+    return null;
+  });
+
+  let stopping = false;
+  let control: Server | undefined;
+  let watcher: Watcher | undefined;
+  let stop: (reason: string) => Promise<void> = async () => {};
+  /** The owner's stop (console or CLI): a run first stops at its next clean point. */
+  const stopAfterRun = async (reason: string) => {
+    if (stopping) return;
+    if (orchestrator.running() !== null) {
+      log('stopping-run-first', { reason });
+      orchestrator.stop();
+      await orchestrator.idle();
+    }
+    await stop(reason);
+  };
+
   app = createApp({
     store,
     port: bound,
@@ -232,17 +347,24 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     runtimes,
     home: options.home,
     approvals,
+    onApprovalChanged: (hostId) => void watcher?.nudge(hostId),
+    run: {
+      orchestrator,
+      claudeVersion,
+      stopDaemon: () => void stopAfterRun('console'),
+      onSettingsChanged: (hostId) => {
+        publishEvent(store, bus, { hostId, family: 'settings' });
+      },
+      previews,
+    },
   });
 
-  let stopping = false;
-  let control: Server | undefined;
-  let watcher: Watcher | undefined;
-
-  const stop = async (reason: string) => {
+  stop = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log('stopping', { reason });
     watcher?.stop();
+    await previews.stopAll();
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
     rmSync(paths.daemonJson, { force: true });
@@ -257,7 +379,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     bus,
     tokenHash,
     port: bound,
-    onStop: () => void stop('control'),
+    onStop: () => void stopAfterRun('control'),
+    orchestrator,
     detectFramework,
     nudge: (hostId) => void watcher?.nudge(hostId),
     runwayCount: async (hostId) => {
@@ -266,19 +389,26 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     needsYouCount: async (hostId) => {
       const runtime = runtimes.get(hostId);
-      return runtime === null ? null : (await approvals.needsYou(runtime)).items.length;
+      return runtime === null ? null : runNeedsYou(store, hostId).length;
     },
   });
   control = createAdaptorServer({ fetch: controlApp.fetch }) as Server;
   await listenOnSocket(control, paths.socket);
   chmodSync(paths.socket, 0o600);
 
-  const info: DaemonInfo = { pid: process.pid, port: bound, startedAt: new Date().toISOString() };
-  writeFileSync(paths.daemonJson, `${JSON.stringify(info)}\n`, { mode: 0o600 });
+  const info: DaemonInfo = {
+    pid: process.pid,
+    port: bound,
+    startedAt: new Date().toISOString(),
+    ...(options.instance === undefined ? {} : { instance: options.instance }),
+  };
+  writeFileAtomic0600(paths.daemonJson, `${JSON.stringify(info)}\n`);
 
   // Base-tip polling (host-planning: Live refresh from the base branch): a commit to a host's base
   // branch reaches open consoles within ~2 s.
   watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
+
+  if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 
   process.once('SIGTERM', () => void stop('SIGTERM'));
   process.once('SIGINT', () => void stop('SIGINT'));

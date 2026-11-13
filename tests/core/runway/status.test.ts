@@ -39,7 +39,7 @@ describe('deriveChangeStatus', () => {
       tasks: { total: 0, done: 0, ownerSteps: [] },
     });
     expect(deriveChangeStatus(archived)).toEqual({ status: 'built', notReadyReason: null });
-    expect(deriveChangeStatus(archived, 'changed').status).toBe('built');
+    expect(deriveChangeStatus(archived, 'on-runway').status).toBe('built');
   });
 
   it('reports a change whose every task is done as built, over any overlay', () => {
@@ -60,10 +60,9 @@ describe('deriveChangeStatus', () => {
       status: 'on-runway',
       notReadyReason: null,
     });
-    expect(deriveChangeStatus(change(), 'changed').status).toBe('changed');
     // The overlay wins even when the change would otherwise not be ready.
     const bare = change({ artifacts: { proposal: false, design: false, tasks: false, specs: [] } });
-    expect(deriveChangeStatus(bare, 'changed').status).toBe('changed');
+    expect(deriveChangeStatus(bare, 'on-runway').status).toBe('on-runway');
   });
 
   it('reports a proposal plus at least one task as ready', () => {

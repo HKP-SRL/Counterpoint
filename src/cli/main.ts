@@ -1,14 +1,16 @@
 // The `counterpoint` command. The default action starts (or attaches to) the one background
 // daemon, registers the current repository and prints a one-time sign-in link; `open` prints a
-// fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon. The CLI
-// re-enters itself as the daemon through the hidden `__daemon` command, so the daemon runs the
-// same code. The owner's setup commands (`init-key`, `trust-key`, `trust`, `approve`) and the
-// accepted-risk commands (`accept-risk gh-keychain`, which needs a terminal, and `revoke-risk`)
-// are the owner's act at a terminal; no console route or agent reaches them.
+// fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon; `run`
+// starts, stops and reports build runs (the console offers the same). The CLI re-enters itself as
+// the daemon through the hidden `__daemon` command, so the daemon runs the same code. Approving is
+// a click in the console.
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
   closeSync,
+  constants,
   existsSync,
   mkdirSync,
   openSync,
@@ -17,7 +19,6 @@ import {
   statSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Command, InvalidArgumentError } from 'commander';
@@ -32,27 +33,20 @@ import {
   requireHome,
   resolveHome,
   SocketPathTooLongError,
+  tightenHome,
 } from '../core/host/home.ts';
 import { packageRoot } from '../server/app.ts';
-import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
-import { doctorCommand } from './doctor.ts';
-import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
-import {
-  initKeyCommand,
-  type TrustCommandOptions,
-  trustHostCommand,
-  trustKeyCommand,
-} from './trust.ts';
+import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
+import { runReportCommand, runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
 
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 10_000;
+/** How long `stop` waits for a run to reach its clean point (a session finishing its task). */
+const RUN_STOP_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const KILL_GRACE_MS = 5_000;
 const POLL_MS = 100;
 const SQLITE_BUSY = 5;
-
-/** Parent variables the daemon may inherit. */
-const DAEMON_ENV_ALLOW_LIST = ['PATH', 'HOME', 'LANG', 'TMPDIR', 'COUNTERPOINT_HOME'] as const;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -92,7 +86,10 @@ function packageVersion(): string {
 function homeOrExit(): { home: string; paths: HomePaths } {
   try {
     const home = requireHome();
-    return { home, paths: homePaths(home) };
+    const paths = homePaths(home);
+    const notice = tightenHome(home);
+    if (notice !== null) console.error(notice);
+    return { home, paths };
   } catch (error) {
     if (
       error instanceof HomeMissingError ||
@@ -159,16 +156,21 @@ function spawnDaemon(paths: HomePaths, port: number): { exited: () => boolean } 
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
   rmSync(paths.startResult, { force: true });
   const logFd = openSync(paths.daemonLog, 'a', 0o600);
-  const env: Record<string, string> = {};
-  for (const key of DAEMON_ENV_ALLOW_LIST) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
+  // The daemon acts as the owner: it gets the whole environment of the terminal that started it.
+  // Each run reads the owner's login shell again, so a later PATH change needs no restart.
+  const env = { ...process.env };
   let exited = false;
   try {
     const child = spawn(
       process.execPath,
-      [fileURLToPath(import.meta.url), '__daemon', '--port', String(port)],
+      [
+        fileURLToPath(import.meta.url),
+        '__daemon',
+        '--port',
+        String(port),
+        '--instance',
+        randomBytes(16).toString('hex'),
+      ],
       { detached: true, stdio: ['ignore', logFd, logFd], env, cwd: paths.home },
     );
     child.once('exit', () => {
@@ -251,14 +253,34 @@ async function mintSignInLink(home: string): Promise<string> {
   return url;
 }
 
-/** Opens a validated sign-in link in the default browser (argument array, never a shell). */
+/** Where xdg-open is looked for on Linux: absolute paths only, never a PATH lookup (IN-03). */
+const XDG_OPEN_PATHS = ['/usr/bin/xdg-open', '/usr/local/bin/xdg-open', '/bin/xdg-open'] as const;
+
+/** The absolute path of the system's browser opener, or undefined when there is none. */
+function browserOpener(): string | undefined {
+  if (process.platform === 'darwin') return '/usr/bin/open';
+  if (process.platform !== 'linux') return undefined;
+  return XDG_OPEN_PATHS.find((path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Opens a validated sign-in link in the default browser (argument array, never a shell).
+ *
+ * Accepted risk (IN-03, owner decision 2026-11-11): the one-time code is in the opener's argv for
+ * the moment `open` runs, so a process running as the owner could read it with `ps`. The code
+ * works once and expires; whoever uses it first gets a console session, the owner's own sign-in
+ * then fails visibly, and a console session can never sign approvals (that needs the owner's key
+ * and passphrase at a terminal).
+ */
 async function openInBrowser(url: string): Promise<void> {
-  const opener =
-    process.platform === 'darwin'
-      ? '/usr/bin/open'
-      : process.platform === 'linux'
-        ? 'xdg-open'
-        : undefined;
+  const opener = browserOpener();
   if (opener === undefined || !LOGIN_URL_RE.test(url)) return;
   const result = await execa(opener, [url], { stdio: 'ignore', reject: false, timeout: 10_000 });
   if (result.exitCode !== 0) {
@@ -329,6 +351,8 @@ function init(): void {
     if (!existing.isDirectory()) {
       throw new CliExit(2, `"${home}" exists and is not a folder. Nothing was created.`);
     }
+    const notice = tightenHome(home);
+    if (notice !== null) console.error(notice);
     console.log(`Counterpoint home is ready at "${home}".`);
     return;
   }
@@ -345,13 +369,18 @@ function init(): void {
   console.log(`Created the Counterpoint home at "${home}".`);
 }
 
-function pidFromDaemonJson(paths: HomePaths): { pid?: number; port?: number } {
-  const info = readJson(paths.daemonJson) as { pid?: unknown; port?: unknown } | undefined;
+function pidFromDaemonJson(paths: HomePaths): { pid?: number; port?: number; instance?: string } {
+  const info = readJson(paths.daemonJson) as
+    | { pid?: unknown; port?: unknown; instance?: unknown }
+    | undefined;
   return {
     ...(typeof info?.pid === 'number' && Number.isInteger(info.pid) && info.pid > 1
       ? { pid: info.pid }
       : {}),
     ...(typeof info?.port === 'number' ? { port: info.port } : {}),
+    ...(typeof info?.instance === 'string' && INSTANCE_RE.test(info.instance)
+      ? { instance: info.instance }
+      : {}),
   };
 }
 
@@ -367,13 +396,23 @@ async function waitUntil(
   return predicate();
 }
 
-/** Socket dead but lock held: signal the pid recorded in daemon.json, SIGKILL after a grace. */
+/**
+ * Socket dead but lock held: signal the pid recorded in daemon.json, SIGKILL after a grace, once
+ * that pid is confirmed to be the recorded daemon.
+ */
 async function stopByPid(paths: HomePaths): Promise<number | undefined> {
-  const { pid, port } = pidFromDaemonJson(paths);
+  const { pid, port, instance } = pidFromDaemonJson(paths);
   if (pid === undefined) {
     throw new CliExit(
       1,
       `Counterpoint's daemon holds its lock but doesn't answer, and ${paths.daemonJson} has no pid.`,
+    );
+  }
+  // Signal only a process confirmed to be the daemon this record describes (WR-08).
+  if (instance === undefined || !(await isRecordedDaemon(pid, instance))) {
+    throw new CliExit(
+      1,
+      `Counterpoint's daemon holds its lock but doesn't answer, and process ${pid} from ${paths.daemonJson} could not be confirmed as that daemon, so it was not signalled. Find the daemon with "ps -ax | grep __daemon" and stop it yourself.`,
     );
   }
   try {
@@ -399,7 +438,16 @@ async function stop(): Promise<void> {
   const status = await isDaemonRunning(home);
 
   if (status !== null) {
-    await controlRequest(home, 'POST', '/control/stop');
+    const answer = await controlRequest(home, 'POST', '/control/stop');
+    // A run first stops at its next clean point (its session finishes the task it is on), which
+    // can take a while; the daemon exits after it. Wait for it rather than signalling it.
+    const withRun = (answer.body as { run?: unknown } | null)?.run === true;
+    if (withRun) {
+      console.log(
+        'A run is going: it stops at its next clean point first, then Counterpoint stops.',
+      );
+      await waitUntil(async () => !existsSync(paths.socket), RUN_STOP_TIMEOUT_MS);
+    }
     const gone = await waitUntil(
       async () => !existsSync(paths.socket) && !lockHeld(paths),
       STOP_TIMEOUT_MS,
@@ -422,68 +470,43 @@ async function stop(): Promise<void> {
   );
 }
 
-/** Owner confirmation at the terminal: both stdin and stdout must be a TTY. */
-function terminalPrompt(): TrustCommandOptions {
-  return {
-    isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
-    confirm: async (question) => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        return await rl.question(question);
-      } finally {
-        rl.close();
-      }
-    },
-  };
-}
-
 /** Turns a command's exit code into the CLI's exit (0 returns normally). */
 function exitWith(code: number): void {
   if (code !== 0) throw new CliExit(code);
 }
 
-async function trustKey(pub: string): Promise<void> {
+async function runStart(
+  hostId: string | undefined,
+  flags: { model?: string; budget?: string; until?: string; changes?: string },
+): Promise<void> {
   const { home } = homeOrExit();
-  exitWith(await trustKeyCommand(home, pub, terminalPrompt()));
+  exitWith(await runStartCommand(home, hostId, flags));
 }
 
-async function trustHost(hostId: string): Promise<void> {
+async function runStop(hostId: string | undefined): Promise<void> {
   const { home } = homeOrExit();
-  exitWith(await trustHostCommand(home, hostId, terminalPrompt()));
+  exitWith(await runStopCommand(home, hostId));
 }
 
-async function doctor(hostId: string | undefined): Promise<void> {
+async function runStatus(hostId: string | undefined): Promise<void> {
   const { home } = homeOrExit();
-  exitWith(await doctorCommand(home, hostId));
+  exitWith(await runStatusCommand(home, hostId));
 }
 
-async function acceptRisk(risk: string): Promise<void> {
+function runReport(hostId: string | undefined): void {
   const { home } = homeOrExit();
-  exitWith(await acceptRiskCommand(home, risk, terminalPrompt()));
+  exitWith(runReportCommand(home, hostId));
 }
 
-function revokeRisk(risk: string): void {
-  const { home } = homeOrExit();
-  exitWith(revokeRiskCommand(home, risk));
-}
-
-async function approve(hostId: string, changeId: string): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(
-    await approveCommand({
-      home,
-      hostId,
-      changeId,
-      isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
-    }),
-  );
-}
-
-async function daemon(options: { port?: number }): Promise<void> {
+async function daemon(options: { port?: number; instance?: string }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
   const { runDaemon } = await import('../server/daemon.ts');
-  await runDaemon({ home, port });
+  const instance =
+    options.instance !== undefined && INSTANCE_RE.test(options.instance)
+      ? options.instance
+      : undefined;
+  await runDaemon({ home, port, ...(instance === undefined ? {} : { instance }) });
 }
 
 export function buildProgram(): Command {
@@ -518,56 +541,51 @@ export function buildProgram(): Command {
     .description('stop the background daemon')
     .action(() => stop());
 
-  program
-    .command('doctor')
-    .description('check tools, the approval key and the agent sandbox (live probe) for a project')
+  const run = program
+    .command('run')
+    .description('start a build run of approved changes (the console offers the same)')
     .argument('[host]', 'the registered project id (default: the project you are in)')
-    .action((hostId: string | undefined) => doctor(hostId));
-
-  program
-    .command('accept-risk')
-    .description(
-      'record that you accept a known sandbox risk (only gh-keychain; asks you to confirm)',
+    .option('--model <model>', "the model builders use (default: the project's settings)")
+    .option('--effort <level>', "low, medium, high, xhigh or max (default: the project's settings)")
+    .option(
+      '--budget <percent>',
+      "context budget, % of the model window (default: the project's settings)",
     )
-    .argument('<risk>', 'the risk id: gh-keychain')
-    .action((risk: string) => acceptRisk(risk));
-
-  program
-    .command('revoke-risk')
-    .description('withdraw an accepted sandbox risk')
-    .argument('<risk>', 'the risk id: gh-keychain')
-    .action((risk: string) => revokeRisk(risk));
-
-  program
-    .command('init-key')
-    .description('print how to create the dedicated, passphrase-protected approval key')
-    .action(() => initKeyCommand());
-
-  program
-    .command('trust-key')
-    .description('trust a public key for signing approvals (asks you to confirm)')
-    .argument('<pub>', 'the public key file, for example ~/.ssh/counterpoint_approval.pub')
-    .action((pub: string) => trustKey(pub));
-
-  program
-    .command('trust')
-    .description("review a project's .git config and hooks and accept them as the baseline")
-    .argument('<host>', 'the registered project id')
-    .action((hostId: string) => trustHost(hostId));
-
-  program
-    .command('approve')
-    .description(
-      'sign a planned change into the runway with your approval key (asks for its passphrase)',
-    )
-    .argument('<host>', 'the registered project id')
-    .argument('<change>', 'the change name, for example qr-menu-browsing')
-    .action((hostId: string, changeId: string) => approve(hostId, changeId));
+    .option('--until <HH:MM>', 'stop time: no new session starts after it')
+    .option('--changes <a,b>', 'the runway changes to build (default: all of them)')
+    .action(
+      (
+        hostId: string | undefined,
+        flags: {
+          model?: string;
+          effort?: string;
+          budget?: string;
+          until?: string;
+          changes?: string;
+        },
+      ) => runStart(hostId, flags),
+    );
+  run
+    .command('stop')
+    .description('stop the run at its next clean point')
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runStop(hostId));
+  run
+    .command('report')
+    .description("print the project's latest run report")
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runReport(hostId));
+  run
+    .command('status')
+    .description("show the project's current or last run")
+    .argument('[host]', 'the registered project id')
+    .action((hostId: string | undefined) => runStatus(hostId));
 
   program
     .command('__daemon', { hidden: true })
     .option('--port <n>', 'port for the console', parsePort)
-    .action((options: { port?: number }) => daemon(options));
+    .option('--instance <id>', 'the random id of this start')
+    .action((options: { port?: number; instance?: string }) => daemon(options));
 
   return program;
 }

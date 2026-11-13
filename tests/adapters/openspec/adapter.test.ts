@@ -1,13 +1,13 @@
 // The OpenSpec adapter against committed content: detection, the snapshot (facts, order, archived
 // listing, one unreadable change never affecting the others) and the approval inputs (every file
 // of the change, tasks.md normalized, unsafe entries refused).
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { TASKS_NORMALIZER } from '../../../src/adapters/openspec/tasks.ts';
-import { sha256Digest } from '../../../src/core/approvals/digest.ts';
-import { ChangeNotFoundError } from '../../../src/core/framework/port.ts';
+import { AmbiguousChangeError, ChangeNotFoundError } from '../../../src/core/framework/port.ts';
 import { createGitFileReader, UnsafeTreeEntryError } from '../../../src/core/git/reader.ts';
 import { InvalidIdError } from '../../../src/core/ids.ts';
 import { deriveChangeStatus } from '../../../src/core/runway/status.ts';
@@ -22,6 +22,9 @@ import {
   SYNTHETIC_FILES,
 } from '../../helpers/fixture-repo.ts';
 import { removeScratchDirs } from '../../helpers/scratch.ts';
+
+const sha256Digest = (bytes: Uint8Array): string =>
+  `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 const adapter = createOpenSpecAdapter();
 const READY_DIR = `openspec/changes/${SYNTHETIC.ready}`;
@@ -161,7 +164,13 @@ describe('snapshot memo', () => {
       'openspec/changes/a-change/proposal.md': '# A\n',
     });
     const r = createGitFileReader(repo.root);
-    const countingRepo = { ...r, list: (c: string, d: string) => (lists++, r.list(c, d)) };
+    const countingRepo = {
+      ...r,
+      list: (c: string, d: string) => {
+        lists++;
+        return r.list(c, d);
+      },
+    };
     const first = await own.snapshot(countingRepo, repo.commit);
     const afterFirst = lists;
     first.changes[0]?.dependsOn.push('mutated');
@@ -174,7 +183,13 @@ describe('snapshot memo', () => {
     const own = createOpenSpecAdapter();
     const r = createGitFileReader(synthetic.root);
     let lists = 0;
-    const counting = { ...r, list: (c: string, d: string) => (lists++, r.list(c, d)) };
+    const counting = {
+      ...r,
+      list: (c: string, d: string) => {
+        lists++;
+        return r.list(c, d);
+      },
+    };
     await own.snapshot(counting, synthetic.commit);
     const once = lists;
     await own.snapshot(counting, synthetic.commit);
@@ -416,5 +431,59 @@ describe('approvalInputs', () => {
     );
     expect(inputs.map((i) => i.label)).toEqual(['.openspec.yaml', 'proposal.md', 'tasks.md']);
     expect(inputs[0]?.path.startsWith('openspec/changes/archive/2026-09-01-old-thing/')).toBe(true);
+  });
+});
+
+describe('ambiguous change names fail closed (WR-03)', () => {
+  const META = 'schema: spec-driven\ncreated: 2026-11-01\n';
+  const proposal = (title: string) => `# ${title}\n\n## Why\n\nBecause.\n`;
+
+  it.each([
+    [
+      'an active change and an archived one',
+      {
+        'openspec/changes/twin/.openspec.yaml': META,
+        'openspec/changes/twin/proposal.md': proposal('Active twin'),
+        'openspec/changes/twin/tasks.md': '- [ ] 1.1 Do it\n',
+        'openspec/changes/archive/2026-10-01-twin/proposal.md': proposal('Archived twin'),
+      },
+      ['openspec/changes/twin', 'openspec/changes/archive/2026-10-01-twin'],
+    ],
+    [
+      'two archive folders',
+      {
+        'openspec/changes/archive/2026-09-01-twin/proposal.md': proposal('Older'),
+        'openspec/changes/archive/2026-10-01-twin/proposal.md': proposal('Newer'),
+      },
+      ['openspec/changes/archive/2026-09-01-twin', 'openspec/changes/archive/2026-10-01-twin'],
+    ],
+  ])('refuses inputs and shows every folder unreadable for %s', async (_, files, dirs) => {
+    const repo = await materializeOpenSpecHost({
+      'openspec/config.yaml': SYNTHETIC_CONFIG,
+      ...files,
+    });
+    const reader = createGitFileReader(repo.root);
+    await expect(adapter.approvalInputs(reader, repo.commit, 'twin')).rejects.toBeInstanceOf(
+      AmbiguousChangeError,
+    );
+    const snapshot = await adapter.snapshot(reader, repo.commit);
+    const twins = snapshot.changes.filter((c) => c.id === 'twin');
+    expect(twins.map((c) => c.dir).sort()).toEqual([...dirs].sort());
+    for (const twin of twins) {
+      expect(twin.unreadable?.file).toBe(twin.dir);
+      expect(twin.unreadable?.reason).toContain('More than one folder is named for change "twin"');
+    }
+  });
+
+  it('still reads a uniquely named archived change', async () => {
+    const repo = await materializeOpenSpecHost({
+      'openspec/config.yaml': SYNTHETIC_CONFIG,
+      'openspec/changes/archive/2026-10-01-solo/proposal.md': proposal('Solo'),
+    });
+    const reader = createGitFileReader(repo.root);
+    const inputs = await adapter.approvalInputs(reader, repo.commit, 'solo');
+    expect(inputs.map((i) => i.label)).toEqual(['proposal.md']);
+    const [solo] = (await adapter.snapshot(reader, repo.commit)).changes;
+    expect(solo?.unreadable).toBeNull();
   });
 });

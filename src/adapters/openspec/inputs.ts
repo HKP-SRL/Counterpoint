@@ -10,10 +10,12 @@
 // `cp-openspec-tasks/v1` normalizer so ticking a box is not a content change. A file added to the
 // directory is an added input; a file removed is a removed one.
 //
-// The active change of that name is used; an archived one only when no active change has it.
+// A change name must name exactly one directory, active or archived; two of the same name fail
+// closed (AmbiguousChangeError).
 // Unsafe entries are refused, not skipped: the reader throws UnsafeTreeEntryError for a symlink
 // or a blob over 5 MiB, so an approval can never silently cover less than it claims.
 import {
+  AmbiguousChangeError,
   type ApprovalInput,
   type ApprovalInputKind,
   ChangeNotFoundError,
@@ -48,18 +50,27 @@ export function inputKind(relPath: string): ApprovalInputKind {
   return 'other';
 }
 
-/** The directory of change `changeId` at `commit`: the active one first, else the newest archive. */
+/**
+ * The directory of change `changeId` at `commit`, or null when there is none. A name that matches
+ * more than one directory (active and archived, or two archive folders) throws
+ * AmbiguousChangeError: the approval would otherwise cover whichever one a rule happened to pick.
+ */
 export async function findChangeDir(
   reader: GitFileReader,
   commit: string,
   changeId: string,
 ): Promise<ChangeDir | null> {
-  const active = (await listActiveChanges(reader, commit)).find((dir) => dir.id === changeId);
-  if (active) return active;
-  const archived = (await listArchivedChanges(reader, commit))
-    .filter((dir) => dir.id === changeId)
-    .sort((a, b) => ((a.archivedOn ?? '') < (b.archivedOn ?? '') ? 1 : -1));
-  return archived[0] ?? null;
+  const matches = [
+    ...(await listActiveChanges(reader, commit)),
+    ...(await listArchivedChanges(reader, commit)),
+  ].filter((dir) => dir.id === changeId);
+  if (matches.length > 1) {
+    throw new AmbiguousChangeError(
+      changeId,
+      matches.map((dir) => dir.path),
+    );
+  }
+  return matches[0] ?? null;
 }
 
 export async function approvalInputs(

@@ -1,34 +1,28 @@
 // Change detail (`/h/{hostId}/changes/{changeId}`, host-planning: Change detail; long titles, paths
 // and owner steps wrap): the change's title and why, why it is or is not approvable, its owner
-// steps (shown prominently, they never block approval), dependencies, artifacts, task progress, and
-// exactly which files a signature would bind (every file in the change directory), all read at the
-// base branch tip (host-planning: Committed content only).
+// steps (shown prominently, they never block approval), dependencies, artifacts, task progress,
+// the base-branch tip and the approval state, all read at the base branch tip.
 //
-// `Approve change` is the page's one primary action, rendered only for Ready to approve;
-// it opens the approval dialog, which previews and hands over the terminal command (no signing in
-// the browser). A Changed-since-signed change offers `Review changes` (its Needs You drift view)
-// instead, and an approved change with uncommitted edits shows the soft hint under the header
-// (runway: Uncommitted edits do not change the runway).
-// Approval facts (signed at, commit) are the server's verification from git.
+// `Approve` is the page's one primary action, rendered only for Ready to approve: one click puts
+// the change on the runway (approvals: Approve in one click). An On runway change offers
+// `Withdraw` instead.
 // Every string comes from the host's planning files (untrusted) and renders as React text only.
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
-import { Card } from '@astryxdesign/core/Card';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
 import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
-import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import { ApiError, apiGet, queryKeys } from '../api';
-import { ApprovalDialog } from '../components/ApprovalDialog';
+import { useApprovalActions } from '../approvals';
 import { OwnerStepsBanner } from '../components/OwnerStepsBanner';
 import { StatusBadge } from '../components/StatusBadge';
 import {
@@ -37,15 +31,7 @@ import {
   notReadyText,
   parseChangeRow,
   tasksText,
-  UncommittedHint,
 } from './ChangesPage';
-
-type InputRow = {
-  path: string;
-  label: string;
-  kind: string;
-  digest: string;
-};
 
 type ChangeDetail = ChangeRow & {
   hostId: string;
@@ -54,22 +40,12 @@ type ChangeDetail = ChangeRow & {
   tip: string | null;
   why: string | null;
   ownerSteps: string[];
-  inputs: InputRow[];
-  inputsError: string | null;
 };
-
-const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 const strOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-
-function parseInput(value: unknown): InputRow | null {
-  if (!isRecord(value) || typeof value.path !== 'string') return null;
-  if (typeof value.digest !== 'string' || !DIGEST_RE.test(value.digest)) return null;
-  return { path: value.path, label: str(value.label), kind: str(value.kind), digest: value.digest };
-}
 
 async function fetchChange(
   hostId: string,
@@ -92,10 +68,6 @@ async function fetchChange(
     ownerSteps: Array.isArray(body.ownerSteps)
       ? body.ownerSteps.filter((step): step is string => typeof step === 'string')
       : [],
-    inputs: Array.isArray(body.inputs)
-      ? body.inputs.map(parseInput).filter((input): input is InputRow => input !== null)
-      : [],
-    inputsError: strOrNull(body.inputsError),
   };
 }
 
@@ -105,11 +77,6 @@ const changeQuery = (hostId: string, changeId: string) =>
     queryFn: ({ signal }) => fetchChange(hostId, changeId, signal),
     placeholderData: keepPreviousData,
   });
-
-/** The 12-hex short digest shown in the UI; the full value is in a Tooltip. */
-function shortDigest(digest: string): string {
-  return digest.slice(7, 19);
-}
 
 function ReasonBanners({ change }: { change: ChangeDetail }) {
   const host = change.hostName;
@@ -154,56 +121,6 @@ function ReasonBanners({ change }: { change: ChangeDetail }) {
   }
 
   return banners.length === 0 ? null : <VStack gap={4}>{banners}</VStack>;
-}
-
-const inputColumns: TableColumn<InputRow>[] = [
-  {
-    key: 'file',
-    header: 'File',
-    renderCell: (input) => (
-      <Text type="code" wordBreak="break-all">
-        {input.path}
-      </Text>
-    ),
-  },
-  {
-    key: 'digest',
-    header: 'Digest',
-    renderCell: (input) => (
-      <Tooltip content={<Text type="code">{input.digest}</Text>}>
-        <Text type="code" aria-label={input.digest}>
-          {shortDigest(input.digest)}
-        </Text>
-      </Tooltip>
-    ),
-  },
-];
-
-function InputsCard({ change }: { change: ChangeDetail }) {
-  const files = change.inputs.length;
-  return (
-    <Card padding={4} elevation="none" aria-label="Covered files">
-      <VStack gap={4}>
-        <VStack gap={1}>
-          <Text type="label" weight="semibold">
-            Covered files
-          </Text>
-          <Text type="supporting" color="secondary" hasTabularNumbers>
-            {`An approval signs ${files === 1 ? 'this file' : `these ${files} files`} as committed at the base branch tip. Ticking task boxes in tasks.md does not count as a change.`}
-          </Text>
-        </VStack>
-        {change.inputsError === null ? (
-          <Table<InputRow> data={change.inputs} columns={inputColumns} idKey="path" />
-        ) : (
-          <Banner
-            status="error"
-            title="Couldn't read this change's files"
-            description={change.inputsError}
-          />
-        )}
-      </VStack>
-    </Card>
-  );
 }
 
 function artifactList(change: ChangeDetail): string[] {
@@ -262,23 +179,9 @@ function LoadingDetail() {
 function ApprovalFactsItems({ change }: { change: ChangeDetail }) {
   const approval = change.approval;
   if (approval === null) return null;
-  if (approval.state === 'invalid') {
-    return (
-      <MetadataListItem label="Approval">
-        <Text>{`not verified (${approval.reason})`}</Text>
-      </MetadataListItem>
-    );
-  }
   return (
-    <MetadataListItem label="Signed">
-      <HStack gap={2} vAlign="center" wrap="wrap">
-        <Timestamp value={approval.signedAt} hasTooltip />
-        <Tooltip content={<Text type="code">{approval.commit}</Text>}>
-          <Text type="code" aria-label={`commit ${approval.commit}`}>
-            {approval.commit.slice(0, 7)}
-          </Text>
-        </Tooltip>
-      </HStack>
+    <MetadataListItem label="Approved">
+      <Timestamp value={new Date(approval.approvedAt).toISOString()} hasTooltip />
     </MetadataListItem>
   );
 }
@@ -287,7 +190,7 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
   const query = useQuery(changeQuery(hostId, changeId));
   const change =
     query.data?.hostId === hostId && query.data.id === changeId ? query.data : undefined;
-  const [approving, setApproving] = useState(false);
+  const actions = useApprovalActions(hostId);
 
   useEffect(() => {
     document.title = `${changeId} · Counterpoint`;
@@ -333,23 +236,26 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
             <StatusBadge status={change.status} />
           </HStack>
           {change.status === 'ready' ? (
-            <Button label="Approve change" variant="primary" onClick={() => setApproving(true)} />
-          ) : null}
-          {change.status === 'changed' ? (
-            // The Needs You item for this change (its drift view), where the owner re-signs.
             <Button
-              label="Review changes"
+              label="Approve"
+              variant="primary"
+              isLoading={actions.pending === change.id}
+              onClick={() => void actions.approve(change.id)}
+            />
+          ) : null}
+          {change.status === 'on-runway' ? (
+            <Button
+              label="Withdraw"
               variant="secondary"
-              href={`/h/${hostId}/needs-you/${change.id}`}
+              isLoading={actions.pending === change.id}
+              onClick={() => void actions.withdraw(change.id)}
             />
           ) : null}
         </HStack>
         <Text type="code" color="secondary">
           {change.id}
         </Text>
-        {/* Uncommitted-edits soft hint (shared with the Changes row), reading:
-            `Uncommitted edits to this approved change. The approval only follows what is committed on {base}.` */}
-        {change.uncommittedEdits ? <UncommittedHint baseBranch={change.baseBranch} /> : null}
+        {actions.error === null ? null : <Banner status="error" title={actions.error} />}
       </VStack>
     );
 
@@ -407,7 +313,6 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
           </MetadataListItem>
           <ApprovalFactsItems change={change} />
         </MetadataList>
-        <InputsCard change={change} />
       </VStack>
     );
   }
@@ -420,20 +325,6 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
           <VStack gap={6}>
             {errorBanner}
             {body}
-            {change !== undefined ? (
-              // Mounted with the page, so it stays open after the change leaves Ready (it just
-              // landed) and returns focus to `Approve change` on close.
-              <ApprovalDialog
-                hostId={hostId}
-                hostName={change.hostName}
-                changeId={change.id}
-                changeTitle={change.title}
-                isOpen={approving}
-                onOpenChange={setApproving}
-                currentTip={change.tip}
-                approval={change.approval}
-              />
-            ) : null}
           </VStack>
         </LayoutContent>
       }

@@ -2,8 +2,11 @@
 //   /                → the last-used host (localStorage `counterpoint.lastHost`) or the first one
 //   /h/$hostId       → AppFrame (AppShell chrome) around the host's pages; Mission is its index
 //   /h/$hostId/changes[/$changeId] → Changes and Change detail
-//   /h/$hostId/needs-you[/$itemId] → Needs You and the approved-version-changed drift view
-//   /h/$hostId/trust → Trust (the last doctor report)
+//   /h/$hostId/needs-you → Needs You
+//   /h/$hostId/trust → the Mission page (an old link: the Trust page is gone)
+//   /h/$hostId/settings → Settings (the project's run settings)
+//   /h/$hostId/preview/$changeId → a green change's local preview, started on demand
+//   /h/$hostId/runs/$runId → a run's report
 //   /signed-out      → signed-out, used-link and blocked screens, without AppShell
 // Host ids from the address bar are checked against the slug rule and against GET /api/hosts
 // before use; an unknown id goes back to `/`.
@@ -23,11 +26,12 @@ import { hostsQuery } from './api';
 import { HOST_ID_RE, isChangeId } from './ids';
 import { ChangeDetailPage } from './pages/ChangeDetailPage';
 import { ChangesPage } from './pages/ChangesPage';
-import { DriftViewPage } from './pages/DriftViewPage';
 import { MissionPage } from './pages/MissionPage';
-import { isNeedsYouItemId, NeedsYouPage } from './pages/NeedsYouPage';
+import { NeedsYouPage } from './pages/NeedsYouPage';
+import { PreviewPage } from './pages/PreviewPage';
+import { RunReportPage } from './pages/RunReportPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { SignedOutPage } from './pages/SignedOutPage';
-import { TrustPage } from './pages/TrustPage';
 import { AppFrame } from './shell/AppFrame';
 
 export const LAST_HOST_KEY = 'counterpoint.lastHost';
@@ -166,35 +170,56 @@ function NeedsYouRoute() {
   return <NeedsYouPage hostId={hostId} />;
 }
 
-const driftViewRoute = createRoute({
-  getParentRoute: () => hostRoute,
-  path: '/needs-you/$itemId',
-  beforeLoad: ({ params }) => {
-    if (!isNeedsYouItemId(params.itemId)) {
-      throw redirect({
-        to: '/h/$hostId/needs-you',
-        params: { hostId: params.hostId },
-        replace: true,
-      });
-    }
-  },
-  component: DriftViewRoute,
-});
-
-function DriftViewRoute() {
-  const { hostId, itemId } = driftViewRoute.useParams();
-  return <DriftViewPage key={`${hostId}/${itemId}`} hostId={hostId} itemId={itemId} />;
-}
-
+// The Trust page is gone (run-as-owner): an old link lands on Mission.
 const trustRoute = createRoute({
   getParentRoute: () => hostRoute,
   path: '/trust',
-  component: TrustRoute,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/h/$hostId', params: { hostId: params.hostId }, replace: true });
+  },
 });
 
-function TrustRoute() {
+const settingsRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/settings',
+  component: SettingsRoute,
+});
+
+function SettingsRoute() {
   const { hostId } = hostRoute.useParams();
-  return <TrustPage hostId={hostId} />;
+  return <SettingsPage key={hostId} hostId={hostId} />;
+}
+
+const previewRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/preview/$changeId',
+  beforeLoad: ({ params }) => {
+    if (!isChangeId(params.changeId)) {
+      throw redirect({ to: '/h/$hostId', params: { hostId: params.hostId }, replace: true });
+    }
+  },
+  component: PreviewRoute,
+});
+
+function PreviewRoute() {
+  const { hostId, changeId } = previewRoute.useParams();
+  return <PreviewPage key={`${hostId}/${changeId}`} hostId={hostId} changeId={changeId} />;
+}
+
+const runReportRoute = createRoute({
+  getParentRoute: () => hostRoute,
+  path: '/runs/$runId',
+  beforeLoad: ({ params }) => {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(params.runId)) {
+      throw redirect({ to: '/h/$hostId', params: { hostId: params.hostId }, replace: true });
+    }
+  },
+  component: RunReportRoute,
+});
+
+function RunReportRoute() {
+  const { hostId, runId } = runReportRoute.useParams();
+  return <RunReportPage key={`${hostId}/${runId}`} hostId={hostId} runId={runId} />;
 }
 
 const signedOutRoute = createRoute({
@@ -218,8 +243,10 @@ const routeTree = rootRoute.addChildren([
     changesRoute,
     changeRoute,
     needsYouRoute,
-    driftViewRoute,
     trustRoute,
+    settingsRoute,
+    previewRoute,
+    runReportRoute,
   ]),
   signedOutRoute,
 ]);

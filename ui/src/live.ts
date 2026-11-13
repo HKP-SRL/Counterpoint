@@ -22,6 +22,8 @@ export const EVENT_FAMILIES = [
   'runway',
   'needs-you',
   'doctor',
+  'run',
+  'settings',
 ] as const;
 export type EventFamily = (typeof EVENT_FAMILIES)[number];
 
@@ -46,7 +48,12 @@ export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly Qu
   ],
   runway: (hostId) => [queryKeys.runway(hostId)],
   'needs-you': (hostId) => [queryKeys.needsYou(hostId)],
-  doctor: (hostId) => [queryKeys.doctor(hostId)],
+  // Stored by earlier versions only; nothing publishes it now.
+  doctor: () => [],
+  // A build run moved on: the Run card, and what it changes (parked items, the runway).
+  run: (hostId) => [queryKeys.run(hostId), queryKeys.needsYou(hostId), queryKeys.runway(hostId)],
+  // A project's run settings were saved: the Settings page and the Run card's summary.
+  settings: (hostId) => [queryKeys.settings(hostId)],
 };
 
 const SEQ_RE = /^\d{1,15}$/;

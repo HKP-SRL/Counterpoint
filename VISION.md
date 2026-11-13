@@ -2,7 +2,7 @@
 
 > Working name. Independent voices that each keep their own line and resolve into one harmony: council seats arguing, agents building in parallel, and the owner as composer who signs off the result.
 
-Status: brainstorm captured on 2026-11-09, before any planning. Input for the first planning round.
+Status: brainstorm captured on 2026-11-09, before any planning. Updated 2026-11-12: Counterpoint runs as the owner (see `docs/decisions.md`, Direction).
 
 ## What it is
 
@@ -15,17 +15,18 @@ It is its own public project (open source, published as a scoped npm package, e.
 1. **Agnostic to the SDD framework.** The core never knows which spec framework is used. Frameworks plug in through adapters. **OpenSpec is the first adapter**; "no framework" (a plain markdown/YAML list) should also work.
 2. **Read the plan, don't own it.** Counterpoint reads planning truth from the host's framework (for OpenSpec: `openspec/` specs and changes — proposal, design, tasks). It never becomes a second spec system.
 3. **Claude Code only.** Designed for Claude Code as the agent runtime; no multi-vendor abstraction.
-4. **The owner approves, agents satisfy.** Human approval is a signed git commit by a key agents cannot use (passphrase or Touch ID, never cached).
+4. **The owner approves, agents satisfy.** Approving is one click in the console. Work reaches the base branch only through a pull request the owner merges.
 5. **An external judge.** Gates are commands judged by exit code. An agent saying "done" never counts.
 6. **Host-agnostic UI.** The UI is Counterpoint's own local server (e.g. `npx counterpoint`), not routes inside the host app, so it works with any stack.
+7. **Acts as the owner.** Agents run with the owner's environment, tools and network, with no sandbox. A run never stops for something it can do itself, and asks first only before what cannot be undone outside its worktree.
 
 ## Core loop
 
 ```
  PLANNING LANE (owner leads)                      BUILD LANE (autonomous, day or night)
  ─────────────────────────────────────────        ──────────────────────────────────────
- Spec ─▶ Screen draft ─▶ Council ─▶ ✍ Approve ─▶ Work items ─▶ Build ─▶ Gates ─▶ Merged
-          (mock data)   (cards to you) (signed)        │            ▲        │
+ Spec ─▶ Screen draft ─▶ Council ─▶ ✔ Approve ─▶ Work items ─▶ Build ─▶ Gates ─▶ Merged
+          (mock data)   (cards to you) (1 click)       │            ▲        │
                                                        └── RUNWAY ──┘     parked ─▶ Needs you
 ```
 
@@ -61,7 +62,7 @@ Runway length, questions resolved, rounds-to-converge, first-attempt gate pass r
 - Each work item runs in **fresh `claude -p` sessions**, in its own git worktree (so day runs never touch the owner's checkout).
 - **Context budget**: when a session's context passes a set share of the model's window, it finishes the task in progress, writes a handoff, commits and stops; the next fresh session continues from the handoff. Default **40%**. The budget **follows the model's context window** (no hard-coded 1M) and is **adjustable in the UI per run**, with the token figure shown ("40% of 1M = 400k tokens").
 - Parking after N failed attempts, usage-limit waits (reset time + 2 min), API-error backoff, a stop time, a single shared test lock, a run report, draft PR at the end.
-- Start/Stop protected by a local token agents cannot read.
+- Start/Stop from the signed-in console or with the local control token.
 
 ## Prior art to reuse (not copy wholesale)
 
@@ -70,7 +71,7 @@ Runway length, questions resolved, rounds-to-converge, first-attempt gate pass r
 
 ## Open questions
 
-- Approving and deciding from the UI vs. signing in a terminal: prepare-and-show-command, a local passphrase helper, or a Touch ID key (1Password SSH agent) signing on click.
+- ~~Approving from the UI vs. signing in a terminal.~~ Settled 2026-11-12: one click in the console, nothing signed.
 - How OpenSpec changes map to buildable work items (change → tasks) and where "approved" lives.
 - Day-mode concurrency: the owner working in the main checkout while builds run in worktrees — merge/conflict policy.
 - Which Cena scope Counterpoint builds first (the QR-menu roadmap vs. the ordering/kitchen tier the prototype targeted).

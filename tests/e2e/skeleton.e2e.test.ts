@@ -3,10 +3,12 @@
 //
 // Walking skeleton: `counterpoint` in a git repo starts one background daemon, which registers
 // the repo as a host in SQLite and serves the Astryx console on 127.0.0.1 showing that host.
-import { existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { createServer, type Server } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { type Browser, chromium } from 'playwright-core';
@@ -216,5 +218,76 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
     const second = await cli(['stop'], home, repo);
     expect(second.exitCode).toBe(0);
     expect(second.stdout).toContain('Counterpoint is not running.');
+  });
+});
+
+describe('stop never signals an unrelated process (WR-08)', () => {
+  let bystander: ReturnType<typeof spawn> | undefined;
+
+  afterAll(() => {
+    bystander?.kill('SIGKILL');
+    removeScratchDirs();
+  });
+
+  function startBystander(): number {
+    bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    return bystander.pid as number;
+  }
+
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('clears a stale run record at daemon start', async () => {
+    const home = makeScratchDir('home');
+    const repo = makeScratchDir('repo');
+    await initScratchRepo(repo);
+    writeFileIn(repo, 'README.md', '# scratch host\n');
+    await commitAll(repo, 'initial');
+    const pid = startBystander();
+    // A crashed daemon's record naming a pid now used by another program.
+    writeFileIn(join(home, 'run'), 'daemon.json', JSON.stringify({ pid, port: 1, startedAt: '' }));
+    try {
+      const started = await cli(['--port', '0', '--no-open'], home, repo);
+      expect(started.exitCode).toBe(0);
+      const info = JSON.parse(readFileSync(join(home, 'run', 'daemon.json'), 'utf8')) as {
+        pid: number;
+        instance: string;
+      };
+      expect(info.pid).not.toBe(pid);
+      expect(info.instance).toMatch(/^[0-9a-f]{32}$/);
+    } finally {
+      await cli(['stop'], home, repo);
+    }
+    expect(alive(pid)).toBe(true);
+  });
+
+  it('refuses to signal a recorded pid it cannot confirm as the daemon', async () => {
+    const home = makeScratchDir('home');
+    const pid = startBystander();
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 });
+    // The lock is held (as by a hung daemon) and the record names an unrelated process.
+    const lock = new DatabaseSync(join(home, 'run', 'daemon.lock.db'));
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      writeFileIn(
+        join(home, 'run'),
+        'daemon.json',
+        JSON.stringify({ pid, port: 1, startedAt: '', instance: '0'.repeat(32) }),
+      );
+      const result = await cli(['stop'], home, REPO_ROOT);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(`process ${pid}`);
+      expect(result.stderr).toContain('was not signalled');
+      expect(alive(pid)).toBe(true);
+    } finally {
+      lock.exec('ROLLBACK');
+      lock.close();
+    }
   });
 });

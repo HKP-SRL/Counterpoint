@@ -114,6 +114,30 @@ export interface FrameworkAdapter {
   snapshot(reader: GitFileReader, commit: string): Promise<ChangeSnapshot>;
   /** The inputs an approval of `changeId` covers. Throws ChangeNotFoundError for an unknown id. */
   approvalInputs(reader: GitFileReader, commit: string, changeId: string): Promise<ApprovalInput[]>;
+  /**
+   * True for a repository-relative path that belongs to the host's planning (build-runs: builds
+   * never write planning files; planning-writes: Builds never write planning files directly).
+   */
+  isPlanningPath(path: string): boolean;
+  /** The repository-relative path of the change's task list, or null when it has none. */
+  tasksPath(change: ChangeFacts): string | null;
+  /**
+   * Tasks that are open in `before` and done in `after` (two versions of the task list), by their
+   * text, in the order they appear in `after`. Used to record a builder's progress.
+   */
+  tickedTasks(before: string, after: string): string[];
+  /**
+   * The open tasks of a task list that are not owner steps, by their text, in file order. A build
+   * is done only when this is empty.
+   */
+  openTasks(tasks: string): string[];
+  /** True when two versions of a task list differ only in which boxes are ticked. */
+  sameApartFromTicks(before: string, after: string): boolean;
+  /**
+   * What a builder is told about implementing `change` with the host's own workflow (which
+   * artifacts to follow, which skill or command applies the change, how progress is recorded).
+   */
+  buildInstructions(change: ChangeFacts): string;
 }
 
 export class ChangeNotFoundError extends Error {
@@ -123,6 +147,25 @@ export class ChangeNotFoundError extends Error {
     super(`Change ${JSON.stringify(changeId.slice(0, 64))} was not found.`);
     this.name = 'ChangeNotFoundError';
     this.changeId = changeId;
+  }
+}
+
+/**
+ * More than one planning entry carries the name `changeId` (for example an active change and an
+ * archived one, or two archived ones). Which one an approval covers would be a guess, so it fails
+ * closed: the adapter refuses to compute inputs and shows each entry as unreadable.
+ */
+export class AmbiguousChangeError extends Error {
+  readonly changeId: string;
+  readonly dirs: readonly string[];
+
+  constructor(changeId: string, dirs: readonly string[]) {
+    super(
+      `More than one folder is named for change ${JSON.stringify(changeId.slice(0, 64))}: ${dirs.join(', ')}. Rename or remove all but one.`,
+    );
+    this.name = 'AmbiguousChangeError';
+    this.changeId = changeId;
+    this.dirs = [...dirs];
   }
 }
 

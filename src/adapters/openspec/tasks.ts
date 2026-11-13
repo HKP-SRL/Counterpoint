@@ -76,3 +76,51 @@ export function normalizeTasks(text: string): string {
 
   return `${lines.slice(start, end).join('\n')}\n`;
 }
+
+/**
+ * Open tasks that are not owner steps, by their text, in file order: the work a build has left.
+ * The task number stays on (it is how a builder and the owner name a task).
+ */
+export function openBuildTasks(text: string): string[] {
+  const open: string[] = [];
+  for (const task of taskLines(text)) {
+    if (task.done) continue;
+    if (OWNER_RE.test(task.description.replace(TASK_NUMBER_RE, ''))) continue;
+    open.push(task.description);
+  }
+  return open;
+}
+
+/** Each task line's description and whether it is done, in file order. */
+function taskLines(text: string): { description: string; done: boolean }[] {
+  const tasks: { description: string; done: boolean }[] = [];
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const match = TASK_LINE_RE.exec(line);
+    if (!match) continue;
+    tasks.push({
+      description: clip(match[2] ?? ''),
+      done: (match[1] ?? '').toLowerCase() === 'x',
+    });
+  }
+  return tasks;
+}
+
+/**
+ * Tasks open in `before` and done in `after`, matched by their text (a task listed twice is
+ * matched once per listing). Returned in `after` order.
+ */
+export function tickedTasks(before: string, after: string): string[] {
+  const open = new Map<string, number>();
+  for (const task of taskLines(before)) {
+    if (!task.done) open.set(task.description, (open.get(task.description) ?? 0) + 1);
+  }
+  const ticked: string[] = [];
+  for (const task of taskLines(after)) {
+    if (!task.done) continue;
+    const left = open.get(task.description) ?? 0;
+    if (left === 0) continue;
+    open.set(task.description, left - 1);
+    ticked.push(task.description);
+  }
+  return ticked;
+}

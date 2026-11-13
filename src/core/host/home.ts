@@ -1,10 +1,11 @@
 // The Counterpoint home (daemon-lifecycle: Home must exist before start): where the store, token,
-// logs and trust material live.
+// logs and run folders live. Earlier versions kept `trust/` and each host's `doctor.json` and
+// `integrity.json` here; they are left on disk and no longer read.
 //
 // Resolution: COUNTERPOINT_HOME, else the platform default. A missing home is refused and never
 // created here; only `counterpoint init` creates it, so state can never silently land on the
 // internal disk when the Dock volume is not mounted.
-import { readFileSync, statSync } from 'node:fs';
+import { chmodSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -88,7 +89,6 @@ export interface HomePaths {
   token: string;
   logsDir: string;
   daemonLog: string;
-  trustDir: string;
   hostsDir: string;
   tmpDir: string;
 }
@@ -111,7 +111,6 @@ export function homePaths(home: string): HomePaths {
     token: join(root, 'token'),
     logsDir,
     daemonLog: join(logsDir, 'daemon.log'),
-    trustDir: join(root, 'trust'),
     hostsDir: join(root, 'hosts'),
     tmpDir: join(root, 'tmp'),
   };
@@ -155,4 +154,20 @@ export function readConfig(home: string): CounterpointConfig {
     throw new ConfigError(file, `${where}${issue?.message ?? 'unexpected value'}`);
   }
   return { port: parsed.data.port ?? DEFAULT_PORT };
+}
+
+/**
+ * Keeps the Counterpoint home private (IN-04): a home this user owns that group or others can
+ * reach is set to 0700. Returns a one-line notice when it tightened the home, a warning when the
+ * home is not this user's (it is left alone), and null when it was already private.
+ */
+export function tightenHome(home: string, uid: number = process.getuid?.() ?? -1): string | null {
+  const stat = lstatSync(home, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory()) return null;
+  if ((stat.mode & 0o077) === 0) return null;
+  if (stat.uid !== uid) {
+    return `Warning: the Counterpoint home "${home}" belongs to another user and others can reach it. Use a home you own.`;
+  }
+  chmodSync(home, 0o700);
+  return `The Counterpoint home "${home}" was open to other users; it is now private (0700).`;
 }

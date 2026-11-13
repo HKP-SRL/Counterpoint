@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { commitParents } from '../../../src/core/git/plumbing.ts';
 import { createGitFileReader, UnsafeTreeEntryError } from '../../../src/core/git/reader.ts';
 import { GitError } from '../../../src/core/git/run.ts';
 import {
@@ -7,7 +8,14 @@ import {
   type FixtureRepo,
   materializeFixtureRepo,
 } from '../../helpers/fixture-repo.ts';
-import { gitIn, removeScratchDirs } from '../../helpers/scratch.ts';
+import {
+  commitAll,
+  gitIn,
+  initScratchRepo,
+  makeScratchDir,
+  removeScratchDirs,
+  writeFileIn,
+} from '../../helpers/scratch.ts';
 
 let repo: FixtureRepo;
 
@@ -169,5 +177,44 @@ describe('GitFileReader.read', () => {
     // and the symlink fixture really is a symlink in git's eyes
     const out = await gitIn(repo.root, ['ls-tree', 'HEAD', '--', 'docs/link.md']);
     expect(out.startsWith('120000')).toBe(true);
+  });
+});
+
+describe('replace refs and grafts are ignored (WR-04)', () => {
+  /** A repo whose proposal went from `signed` (c1) to `edited` (c2), with the blob ids of both. */
+  async function editedRepo() {
+    const dir = initScratchRepo(makeScratchDir('replace'));
+    const root = await dir;
+    writeFileIn(root, 'proposal.md', 'signed\n');
+    const c1 = await commitAll(root, 'signed');
+    writeFileIn(root, 'proposal.md', 'edited\n');
+    const c2 = await commitAll(root, 'edited');
+    const signedBlob = (await gitIn(root, ['rev-parse', `${c1}:proposal.md`])).trim();
+    const editedBlob = (await gitIn(root, ['rev-parse', `${c2}:proposal.md`])).trim();
+    return { root, c1, c2, signedBlob, editedBlob };
+  }
+
+  it('reads the edited bytes when a replace ref maps the edited blob to the signed one', async () => {
+    const { root, c2, signedBlob, editedBlob } = await editedRepo();
+    await gitIn(root, ['replace', editedBlob, signedBlob]);
+    // Plain git now shows the signed content for the edited blob: the attack is live.
+    expect(await gitIn(root, ['cat-file', 'blob', editedBlob])).toBe('signed');
+    const bytes = await createGitFileReader(root).read(c2, 'proposal.md');
+    expect(Buffer.from(bytes ?? new Uint8Array()).toString('utf8')).toBe('edited\n');
+  });
+
+  it('reads the edited tree when a replace ref maps the edited commit to the signed one', async () => {
+    const { root, c1, c2 } = await editedRepo();
+    await gitIn(root, ['replace', c2, c1]);
+    expect(await gitIn(root, ['show', `${c2}:proposal.md`])).toBe('signed');
+    const bytes = await createGitFileReader(root).read(c2, 'proposal.md');
+    expect(Buffer.from(bytes ?? new Uint8Array()).toString('utf8')).toBe('edited\n');
+  });
+
+  it('ignores a graft file that rewrites a commit parent', async () => {
+    const { root, c1, c2 } = await editedRepo();
+    const gitDir = (await gitIn(root, ['rev-parse', '--absolute-git-dir'])).trim();
+    writeFileIn(gitDir, 'info/grafts', `${c2}\n`);
+    expect(await commitParents(root, c2)).toEqual([c1]);
   });
 });

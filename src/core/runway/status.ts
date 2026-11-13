@@ -1,20 +1,14 @@
 // Change status and owner steps, derived from adapter facts only (framework-agnostic: this module
 // knows the port types, never a framework's files).
 //
-// Precedence (openspec-host-adapter design decision 5): unreadable > built (archived, or every
-// task done) > overlay (on-runway / changed, from verified approvals) > ready (a proposal and at
-// least one task) > not-planned. A built change is never offered for approval.
+// Precedence (host-planning: Change statuses): unreadable > built (archived, or every task done) >
+// on-runway (the owner approved it) > ready (a proposal and at least one task) > not-planned. A
+// built change is never offered for approval.
 import type { ChangeFacts } from '../framework/port.ts';
 
-export type ChangeStatus =
-  | 'unreadable'
-  | 'built'
-  | 'on-runway'
-  | 'changed'
-  | 'ready'
-  | 'not-planned';
+export type ChangeStatus = 'unreadable' | 'built' | 'on-runway' | 'ready' | 'not-planned';
 export type NotReadyReason = 'no-proposal' | 'no-tasks';
-export type StatusOverlay = 'on-runway' | 'changed';
+export type StatusOverlay = 'on-runway';
 
 export interface DerivedStatus {
   status: ChangeStatus;

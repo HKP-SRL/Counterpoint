@@ -40,6 +40,7 @@ export function controlRequest(
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
+  options: { timeoutMs?: number } = {},
 ): Promise<ControlResponse> {
   const { socket } = homePaths(home);
   if (!existsSync(socket)) return Promise.reject(new DaemonUnreachableError('no control socket'));
@@ -53,7 +54,7 @@ export function controlRequest(
         path,
         method,
         agent: false,
-        timeout: REQUEST_TIMEOUT_MS,
+        timeout: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
         headers: {
           authorization: `Bearer ${token}`,
           host: 'counterpoint.control',

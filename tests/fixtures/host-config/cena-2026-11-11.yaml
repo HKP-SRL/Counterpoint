@@ -1,0 +1,73 @@
+# Counterpoint's config for Cena: how a build of an approved change is judged.
+#
+# Counterpoint reads this file at the approved base commit, so it is covered by your signature:
+# a builder that edits it in its worktree changes nothing about how its own change is judged.
+# Gates run in order, each in Counterpoint's gate sandbox: they write only the worktree and a temp
+# folder, read nothing protected, and reach only the loopback ports they list (no internet).
+# Exit code 0 is the only pass.
+
+gates:
+  - name: types
+    command: [node_modules/.bin/tsc, --noEmit]
+    timeout: 5m
+
+  - name: lint
+    command: [node_modules/.bin/eslint]
+    timeout: 5m
+
+  # `next build` before `unit`: tests/theme/build-assets.test.ts reads the build and fails, by
+  # design, when there is none. The fonts are committed files (self-host-fonts), so the build needs
+  # no internet and no Supabase variables. Webpack, not Turbopack: Turbopack's build binds a local
+  # port and a gate may not (local binding would let gate code reach every loopback port, the
+  # console's included). Vercel still builds every pull request with Turbopack for its preview.
+  - name: build
+    command: [node_modules/.bin/next, build, --webpack]
+    timeout: 10m
+
+  # The whole suite runs against the one local Supabase stack, serially (vitest.config.ts), so it
+  # takes the machine-wide test lock and gets a freshly reset database first.
+  - name: unit
+    command: [node_modules/.bin/vitest, run]
+    timeout: 20m
+    testLock: true
+    # 54321: the Supabase API. 54324: its mail catcher, where the password-recovery tests read
+    # the emailed link (tests/auth/mailbox.ts).
+    ports: [54321, 54324]
+    services: [supabase]
+    testCount: 'Tests\s+(\d+) passed'
+
+
+services:
+  # Runs OUTSIDE the sandbox, from the worktree, with your environment. So these commands are
+  # fixed programs, never package scripts or anything else the builder could have written. `reset`
+  # applies the change's own migrations to the local database: testing them is the point.
+  supabase:
+    start: [supabase, start]
+    reset: [supabase, db, reset]
+    timeout: 10m
+    env:
+      command: [supabase, status, -o, env]
+      map:
+        NEXT_PUBLIC_SUPABASE_URL: API_URL
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: PUBLISHABLE_KEY
+        SUPABASE_SECRET_KEY: SECRET_KEY
+      # tests/setup-env.ts loads it; written only while a gate runs, then put back.
+      file: .env.local
+
+attempts: 3
+
+# Paths flagged on a branch's diff so you look at them: they change how the code is judged or
+# what runs outside the sandbox. (Edits to existing tests are flagged anyway.)
+protected:
+  - vitest.config.ts
+  - tests/setup-env.ts
+  - supabase/config.toml
+  - eslint.config.mjs
+  - tsconfig.json
+
+worktree:
+  # Copied from your checkout into each new worktree (APFS clone, about 5 s): nothing in a run
+  # may install dependencies.
+  clone: [node_modules]
+
+# No preview command: Cena's pull requests get Vercel preview deploys, which Counterpoint links.

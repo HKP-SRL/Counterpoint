@@ -64,6 +64,34 @@ export async function apiPost(path: string, body: unknown, signal?: AbortSignal)
 }
 
 /**
+ * A write whose refusal the page shows in its own words: 2xx and 4xx answers (other than 401 and
+ * 403) come back with the server's JSON body instead of throwing.
+ */
+export async function apiPostAnswer(
+  path: string,
+  body: unknown,
+): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+  const res = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (res.status === 401 || res.status === 403 || res.status >= 500) {
+    await readResponse(res);
+  }
+  let parsed: unknown = {};
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = {};
+  }
+  const record =
+    typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  return { ok: res.ok, status: res.status, body: record };
+}
+
+/**
  * Query keys. Host-scoped data sits under `['host', hostId, …]`, apart from the host list, so
  * invalidating one family never sweeps up another. `change(hostId)` without a change id is the
  * prefix of every change detail of that host.
@@ -77,7 +105,15 @@ export const queryKeys = {
       : (['host', hostId, 'change', changeId] as const),
   runway: (hostId: string) => ['host', hostId, 'runway'] as const,
   needsYou: (hostId: string) => ['host', hostId, 'needs-you'] as const,
-  doctor: (hostId: string) => ['host', hostId, 'doctor'] as const,
+  run: (hostId: string) => ['host', hostId, 'run'] as const,
+  budget: (hostId: string, model: string, percent: number) =>
+    ['host', hostId, 'run', 'budget', model, percent] as const,
+  settings: (hostId: string) => ['host', hostId, 'settings'] as const,
+  /** Under the run key, so every `run` event refetches it. */
+  runReport: (hostId: string, runId: string) => ['host', hostId, 'run', 'report', runId] as const,
+  /** Under the run key, so every `run` event refetches it. */
+  preview: (hostId: string, changeId: string) =>
+    ['host', hostId, 'run', 'preview', changeId] as const,
 };
 
 export interface HostSummary {

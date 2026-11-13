@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { execa } from 'execa';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import {
   readConfig,
   requireHome,
   resolveHome,
+  tightenHome,
 } from '../../src/core/host/home.ts';
 import {
   detectBaseBranch,
@@ -27,9 +28,6 @@ import {
   InvalidIdError,
   isChangeId,
   isHostId,
-  PROBE_CANARY_RE,
-  PROBE_GIT_ARTIFACT_RE,
-  PROBE_NONCE_RE,
 } from '../../src/core/ids.ts';
 import {
   commitAll,
@@ -43,8 +41,6 @@ import {
 afterAll(() => {
   removeScratchDirs();
 });
-
-const HEX32 = '0123456789abcdef0123456789abcdef';
 
 // ---------------------------------------------------------------------------------------------
 // ids
@@ -163,39 +159,6 @@ describe('hostIdFromName', () => {
   );
 });
 
-describe('sandbox-probe artifact names', () => {
-  it.each([
-    [HEX32, true],
-    [HEX32.slice(1), false],
-    [HEX32.toUpperCase(), false],
-    [`${HEX32}0`, false],
-  ])('PROBE_NONCE_RE %j -> %s', (value, ok) => {
-    expect(PROBE_NONCE_RE.test(value)).toBe(ok);
-  });
-
-  it.each([
-    [`.cp-canary-${HEX32}`, true],
-    [`.cp-canary-${HEX32.slice(1)}`, false],
-    [`.cp-canary-${HEX32.toUpperCase()}`, false],
-    [`cp-canary-${HEX32}`, false],
-    [`.cp-canary-${HEX32}x`, false],
-  ])('PROBE_CANARY_RE %j -> %s', (value, ok) => {
-    expect(PROBE_CANARY_RE.test(value)).toBe(ok);
-  });
-
-  it.each([
-    [`cp-${HEX32}`, true],
-    [`cp-${HEX32}-w`, true],
-    ['pre-commit', false],
-    ['cp-x', false],
-    ['exclude', false],
-    [`cp-${HEX32}-x`, false],
-    [`cp-${HEX32.toUpperCase()}`, false],
-  ])('PROBE_GIT_ARTIFACT_RE %j -> %s', (value, ok) => {
-    expect(PROBE_GIT_ARTIFACT_RE.test(value)).toBe(ok);
-  });
-});
-
 // ---------------------------------------------------------------------------------------------
 // home
 // ---------------------------------------------------------------------------------------------
@@ -284,7 +247,6 @@ describe('homePaths and hostDir', () => {
       token: '/Volumes/Dock/cp/token',
       logsDir: '/Volumes/Dock/cp/logs',
       daemonLog: '/Volumes/Dock/cp/logs/daemon.log',
-      trustDir: '/Volumes/Dock/cp/trust',
       hostsDir: '/Volumes/Dock/cp/hosts',
       tmpDir: '/Volumes/Dock/cp/tmp',
     });
@@ -372,6 +334,8 @@ describe('cleanGitEnv and gitBinary', () => {
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_TERMINAL_PROMPT: '0',
       GIT_OPTIONAL_LOCKS: '0',
+      GIT_NO_REPLACE_OBJECTS: '1',
+      GIT_GRAFT_FILE: '/dev/null',
     });
   });
 
@@ -685,5 +649,30 @@ describe('registerHost', () => {
     expect((await registerHost(store3, { cwd: repo, detectFramework: detectOpenSpec })).id).toBe(
       `${derived}-3`,
     );
+  });
+});
+
+describe('tightenHome (IN-04)', () => {
+  it('sets a home this user owns back to 0700 and says so', () => {
+    const home = makeScratchDir('tight');
+    chmodSync(home, 0o755);
+    expect(tightenHome(home)).toBe(
+      `The Counterpoint home "${home}" was open to other users; it is now private (0700).`,
+    );
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+    expect(tightenHome(home)).toBeNull();
+  });
+
+  it('only warns about a home another user owns', () => {
+    const home = makeScratchDir('tight');
+    chmodSync(home, 0o750);
+    expect(tightenHome(home, -2)).toMatch(
+      /^Warning: the Counterpoint home .* belongs to another user/,
+    );
+    expect(statSync(home).mode & 0o777).toBe(0o750);
+  });
+
+  it('does nothing for a missing home', () => {
+    expect(tightenHome(join(makeScratchDir('tight'), 'gone'))).toBeNull();
   });
 });

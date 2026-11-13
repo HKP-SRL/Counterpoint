@@ -16,20 +16,6 @@ export const CHANGE_ID_MAX = 64;
 /** The one name that matches CHANGE_ID_RE but is never a change. */
 const RESERVED_CHANGE_IDS: ReadonlySet<string> = new Set(['archive']);
 
-// Sandbox-probe artifact names: the one source of truth for the doctor probe and the integrity
-// snapshot, which must recognise exactly the names the probe creates.
-
-/** A probe nonce: 16 random bytes as lowercase hex. */
-export const PROBE_NONCE_RE = /^[0-9a-f]{32}$/;
-/** A probe canary file name. */
-export const PROBE_CANARY_RE = /^\.cp-canary-[0-9a-f]{32}$/;
-/** A probe artifact inside a repository's git dir (`hooks/`, `info/`). */
-export const PROBE_GIT_ARTIFACT_RE = /^cp-[0-9a-f]{32}(-w)?$/;
-/** The probe's outside-workdir canary directory, directly under the user's home. */
-export const PROBE_OUTSIDE_DIR_RE = /^\.cp-outside-[0-9a-f]{32}$/;
-/** A probe file inside the outside-workdir canary directory (Write target or Edit target). */
-export const PROBE_OUTSIDE_ARTIFACT_RE = /^cp-[0-9a-f]{32}-(w|e)$/;
-
 const ECHO_LIMIT = 40;
 
 export class InvalidIdError extends Error {

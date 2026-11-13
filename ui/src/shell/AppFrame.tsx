@@ -1,14 +1,16 @@
 // The console chrome (local-console: Host-scoped navigation): TopNav with the wordmark, host
 // switcher, live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves
 // the SideNav into its mobile drawer. Items: Mission, Changes, Needs You (with its count badge),
-// Trust. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
+// Settings. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
 // owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
+import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   DropdownMenu,
+  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
@@ -23,10 +25,11 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import { type ReactNode, useEffect, useRef } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { type HostSummary, hostsQuery } from '../api';
 import { useConnectionState, useLiveEvents } from '../live';
-import { needsYouQuery } from '../pages/NeedsYouPage';
+import { needsYouQuery, needsYouCount as needsYouTotal } from '../pages/NeedsYouPage';
+import { stopCounterpoint } from '../run';
 import { parseThemePreference, useThemeChoice } from '../theme';
 
 function HostSwitcher({
@@ -100,6 +103,58 @@ function ThemeMenu() {
   );
 }
 
+/**
+ * Stop Counterpoint (daemon-lifecycle: Stop Counterpoint from the console), behind a confirm: a run
+ * going first stops at its next clean point and writes its report, then the daemon exits and this
+ * console closes. Starting it again is a terminal act (`counterpoint`), like the sign-in link.
+ */
+function CounterpointMenu({ onStopping }: { onStopping: (withRun: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const stop = async () => {
+    setBusy(true);
+    try {
+      const answer = await stopCounterpoint();
+      if (answer.ok) onStopping(answer.body.run === true);
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <DropdownMenu
+        hasChevron={false}
+        renderTrigger={(trigger) => (
+          <IconButton
+            {...trigger}
+            label="Counterpoint"
+            tooltip="Counterpoint"
+            variant="ghost"
+            icon={<Text aria-hidden="true">⏻</Text>}
+          />
+        )}
+      >
+        <DropdownMenuItem
+          label="Stop Counterpoint…"
+          variant="destructive"
+          onClick={() => setOpen(true)}
+        />
+      </DropdownMenu>
+      <AlertDialog
+        isOpen={open}
+        onOpenChange={setOpen}
+        title="Stop Counterpoint?"
+        description="A run that is going stops at its next clean point first: the current session finishes its task and hands off, and the run report is written. Then Counterpoint stops and this console closes. Start it again in a terminal with counterpoint."
+        actionLabel="Stop Counterpoint"
+        actionVariant="destructive"
+        isActionLoading={busy}
+        onAction={() => void stop()}
+      />
+    </>
+  );
+}
+
 /** The SideNav count: hidden at 0 or while loading, exact 1-99, `99+` above (full count spoken). */
 function NeedsYouCount({ count }: { count: number | null }) {
   if (count === null || count === 0) return null;
@@ -148,14 +203,15 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const onChanges = pathname === changesPath || pathname.startsWith(`${changesPath}/`);
   const needsYouPath = `${missionPath}/needs-you`;
   const onNeedsYou = pathname === needsYouPath || pathname.startsWith(`${needsYouPath}/`);
-  const trustPath = `${missionPath}/trust`;
+  const settingsPath = `${missionPath}/settings`;
   const queryClient = useQueryClient();
   useLiveEvents(queryClient);
   const connected = useConnectionState() === 'connected';
+  const [stopping, setStopping] = useState<null | { withRun: boolean }>(null);
 
   // The Needs You count for the badge and the tab title: unknown (hidden) until it arrives.
   const needsYou = useQuery(needsYouQuery(hostId));
-  const needsYouCount = needsYou.data?.hostId === hostId ? needsYou.data.items.length : null;
+  const needsYouCount = needsYou.data?.hostId === hostId ? needsYouTotal(needsYou.data) : null;
   useTitleCount(needsYouCount);
 
   // New items are announced politely; the first count and decreases are not.
@@ -190,6 +246,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
                 label={connected ? 'Live updates connected' : 'Live updates reconnecting'}
               />
               <ThemeMenu />
+              <CounterpointMenu onStopping={(withRun) => setStopping({ withRun })} />
             </HStack>
           }
         />
@@ -208,12 +265,27 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
             isSelected={onNeedsYou}
             endContent={<NeedsYouCount count={needsYouCount} />}
           />
-          <SideNavItem label="Trust" href={trustPath} isSelected={pathname === trustPath} />
+          <SideNavItem
+            label="Settings"
+            href={settingsPath}
+            isSelected={pathname === settingsPath}
+          />
         </SideNav>
       }
     >
       <VStack gap={6}>
-        {connected ? null : (
+        {stopping === null ? null : (
+          <Banner
+            status="info"
+            title="Counterpoint is stopping"
+            description={
+              stopping.withRun
+                ? 'The run stops at its next clean point first, then Counterpoint stops and this console closes. Start it again in a terminal with counterpoint.'
+                : 'This console closes in a moment. Start it again in a terminal with counterpoint.'
+            }
+          />
+        )}
+        {connected || stopping !== null ? null : (
           <Banner
             status="warning"
             title="Live updates paused"

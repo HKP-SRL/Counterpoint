@@ -1,6 +1,6 @@
-// The runway snapshot (GET /api/hosts/{id}/runway, runway: Runway is the Mission headline),
-// shared by the Mission page and the approval dialog. The server recomputes it from git at the
-// base tip; the console only shows it.
+// The runway snapshot (GET /api/hosts/{id}/runway, runway: Runway is the Mission headline): the
+// changes the owner approved that are readable and not built, in build order. The server derives
+// it; the console only shows it.
 // `runway` and `approval` events invalidate it (live.ts FAMILY_TO_KEYS).
 import { keepPreviousData, queryOptions } from '@tanstack/react-query';
 import { apiGet, queryKeys } from './api';
@@ -10,8 +10,8 @@ export type RunwayItem = {
   changeId: string;
   title: string;
   taskCount: number;
-  signedAt: string;
-  unreadable: boolean;
+  /** Epoch ms. */
+  approvedAt: number;
 };
 
 export type RunwaySnapshot = {
@@ -19,7 +19,6 @@ export type RunwaySnapshot = {
   tip: string | null;
   count: number;
   taskCount: number;
-  changedCount: number;
   items: RunwayItem[];
 };
 
@@ -30,13 +29,11 @@ const count = (value: unknown): number =>
 
 function parseItem(value: unknown): RunwayItem | null {
   if (!isRecord(value) || !isChangeId(value.changeId)) return null;
-  if (typeof value.signedAt !== 'string') return null;
   return {
     changeId: value.changeId,
     title: typeof value.title === 'string' && value.title !== '' ? value.title : value.changeId,
     taskCount: count(value.taskCount),
-    signedAt: value.signedAt,
-    unreadable: value.unreadable === true,
+    approvedAt: count(value.approvedAt),
   };
 }
 
@@ -48,7 +45,6 @@ async function fetchRunway(hostId: string, signal?: AbortSignal): Promise<Runway
     tip: typeof raw.tip === 'string' ? raw.tip : null,
     count: count(raw.count),
     taskCount: count(raw.taskCount),
-    changedCount: count(raw.changedCount),
     items: Array.isArray(raw.items)
       ? raw.items.map(parseItem).filter((item): item is RunwayItem => item !== null)
       : [],
