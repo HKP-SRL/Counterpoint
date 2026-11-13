@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRun, AgentRunner, AgentRunRequest } from '../../src/agent/runner.ts';
 import { pushPlanCommit } from '../../src/build/deliver.ts';
-import { OwnerSteps } from '../../src/build/owner-steps.ts';
+import { OwnerSteps, ownerStepCard } from '../../src/build/owner-steps.ts';
 import { PlanningLane } from '../../src/build/planning-lane.ts';
 import { fetchBaseBranch } from '../../src/core/git/base-fetch.ts';
 import { runGit } from '../../src/core/git/run.ts';
@@ -147,13 +147,18 @@ describe('owner steps as cards', () => {
     const { bare, store, desk, steps, lane, github } = await setup();
     await steps.sync('cena');
     await steps.sync('cena');
+    // 1.3 is listed after the open build task 1.2: it waits for the build.
     const cards = listWaitingCards(store, 'cena');
     expect(cards.map((card) => [card.kind, card.change, card.question])).toEqual([
-      ['owner-step', 'a-thing', 'tell the cook'],
       ['owner-step', 'a-thing', 'check the menu'],
     ]);
     const menu = cards.find((card) => card.question === 'check the menu');
-    expect(menu?.options.map((option) => option.label)).toEqual(['Done', 'Do it for me']);
+    expect(menu?.options.map((option) => option.label)).toEqual(['Done', 'Do it for me', 'Later']);
+    // Done merges to the base, so Enter (the recommended option) only defers it.
+    expect(menu?.recommended).toBe(2);
+    const later = await desk.answer(menu?.id as string, { option: 2 });
+    expect([later.state, later.answer]).toEqual(['deferred', null]);
+    expect(github.prs).toHaveLength(0);
 
     await desk.answer(menu?.id as string, { option: 0 });
     await lane.idle('cena');
@@ -163,29 +168,79 @@ describe('owner steps as cards', () => {
     expect(github.prs[0]?.state).toBe('MERGED');
     const remote = (await runGit(bare, ['show', `refs/heads/master:${TASKS}`])).stdout;
     expect(remote).toBe(LIST.replace('[ ] 1.1', '[x] 1.1'));
-    // The ticked step's card stays answered; the other step is still waiting; nothing is raised again.
+    // The ticked step's card stays answered; nothing is raised again.
     await steps.sync('cena');
     expect(getCard(store, menu?.id as string)?.state).toBe('answered');
-    expect(listWaitingCards(store, 'cena').map((card) => card.question)).toEqual(['tell the cook']);
+    expect(listWaitingCards(store, 'cena')).toEqual([]);
   });
 
   it('resolves a card whose step was ticked elsewhere and reopens it when the step comes back', async () => {
     const { store, steps, landElsewhere } = await setup();
     await steps.sync('cena');
-    const cook = listWaitingCards(store, 'cena').find((card) => card.question === 'tell the cook');
-    await landElsewhere(LIST.replace('[ ] 1.3', '[x] 1.3'));
+    const menu = listWaitingCards(store, 'cena').find((card) => card.question === 'check the menu');
+    await landElsewhere(LIST.replace('[ ] 1.1', '[x] 1.1'));
     await steps.sync('cena');
-    expect(getCard(store, cook?.id as string)?.state).toBe('resolved');
+    expect(getCard(store, menu?.id as string)?.state).toBe('resolved');
     await landElsewhere(LIST);
     await steps.sync('cena');
-    expect(getCard(store, cook?.id as string)?.state).toBe('open');
-    expect(listWaitingCards(store, 'cena')).toHaveLength(2);
+    expect(getCard(store, menu?.id as string)?.state).toBe('open');
+    expect(listWaitingCards(store, 'cena')).toHaveLength(1);
+  });
+
+  it('ticks a step longer than 300 characters with Done', async () => {
+    const long = `Owner: ${'check every screen on a real phone and write down what is hard; '.repeat(7)}`;
+    const list = `# Tasks\n\n- [ ] 13.3 ${long}\n- [ ] 13.4 Build it\n`;
+    const { bare, store, desk, steps, lane } = await setup({ list });
+    await steps.sync('cena');
+    const [card] = listWaitingCards(store, 'cena');
+    await desk.answer(card?.id as string, { option: 0 });
+    await lane.idle('cena');
+    expect(cardPlanningWrite(store, card?.id as string)?.state).toBe('merged');
+    const remote = (await runGit(bare, ['show', `refs/heads/master:${TASKS}`])).stdout;
+    expect(remote).toBe(list.replace('[ ] 13.3', '[x] 13.3'));
+  });
+
+  it('moves a step that was a card before it waited for the build out of the inbox', async () => {
+    const { store, desk, steps } = await setup();
+    // A card raised by an earlier version, Done recommended.
+    const old = desk.raise({
+      ...ownerStepCard('cena', 'a-thing', 'Owner: tell the cook'),
+      recommended: 0,
+    });
+    const menu = desk.raise({
+      ...ownerStepCard('cena', 'a-thing', 'Owner: check the menu'),
+      options: ownerStepCard('cena', 'a-thing', 'Owner: check the menu').options.slice(0, 2),
+      recommended: 0,
+    });
+    await steps.sync('cena');
+    expect(getCard(store, old.id)?.state).toBe('resolved');
+    expect(getCard(store, old.id)?.outcome).toBe('Comes back once a-thing is built.');
+    // A card still open gets the current options, Later recommended.
+    const now = getCard(store, menu.id);
+    expect(now?.options.map((option) => option.label)).toEqual(['Done', 'Do it for me', 'Later']);
+    expect(now?.recommended).toBe(2);
+  });
+
+  it('offers no Do it for me for a step that names only paths a result may never touch', () => {
+    const card = ownerStepCard('cena', 'a-thing', 'Owner: add the hook to `.claude/settings.json`');
+    expect(card.options.map((option) => option.label)).toEqual(['Done', 'Later']);
+    expect(card.recommended).toBe(1);
+    const config = ownerStepCard(
+      'cena',
+      'a-thing',
+      'Owner: add `drafts` to `.counterpoint/config.yaml`',
+    );
+    expect(config.options.map((option) => option.label)).toEqual(['Done', 'Do it for me', 'Later']);
   });
 
   it("keeps a built change's open steps as cards naming its merged PR, until it is archived", async () => {
     const { repo, bare, store, steps } = await setup();
     await steps.sync('cena');
-    // The build PR merged: built, both owner steps still open.
+    expect(listWaitingCards(store, 'cena').map((card) => card.question)).toEqual([
+      'check the menu',
+    ]);
+    // The build PR merged: built, both owner steps still open, and the one that waited for the
+    // build is a card now.
     const prUrl = 'https://github.com/alex/Cena/pull/16';
     insertRun(store, { id: 'r1', hostId: 'cena', settings: {}, stopAt: null });
     const row = insertRunChange(store, { runId: 'r1', change: 'a-thing', position: 0 });
@@ -199,7 +254,11 @@ describe('owner steps as cards', () => {
       ['check the menu', why],
     ]);
     expect(cards.map((card) => cardView(card, store).prUrl)).toEqual([prUrl, prUrl]);
-    expect(cards[0]?.options.map((option) => option.label)).toEqual(['Done', 'Do it for me']);
+    expect(cards[0]?.options.map((option) => option.label)).toEqual([
+      'Done',
+      'Do it for me',
+      'Later',
+    ]);
 
     // Archived on the base: no card is left.
     const clone = makeScratchDir('owner-steps-archive');
@@ -327,7 +386,7 @@ describe('Do it for me', () => {
 
     // A Land it card with the diff; the base and the owner's checkout are untouched.
     const land = listWaitingCards(store, 'cena').find((c) => c.kind === 'owner-step-result');
-    expect(land?.options.map((o) => o.label)).toEqual(['Land it', 'Discard']);
+    expect(land?.options.map((o) => o.label)).toEqual(['Land it', 'Discard', 'Later']);
     const result = landCardResult(store, land?.id as string);
     expect(result?.edits.map((e) => e.path)).toEqual(['package-lock.json', 'package.json']);
     const diff = cardView(land as NonNullable<typeof land>, store).diff ?? '';
@@ -390,5 +449,62 @@ describe('Do it for me', () => {
       "Counterpoint couldn't do it: This needs your bank login; log in at the bank and pay the invoice.",
     );
     expect(listWaitingCards(store, 'cena').some((c) => c.kind === 'owner-step-result')).toBe(false);
+  });
+
+  /** Do it for me on the first step, then Land it; returns what the base holds after. */
+  async function doAndLand(
+    ctx: Awaited<ReturnType<typeof setup>>,
+    between: () => Promise<void> = async () => {},
+  ) {
+    const { store, desk, steps, lane } = ctx;
+    await steps.sync('cena');
+    const card = listWaitingCards(store, 'cena').find((c) => c.kind === 'owner-step');
+    await desk.answer(card?.id as string, { option: 1 });
+    await steps.idle();
+    const land = listWaitingCards(store, 'cena').find((c) => c.kind === 'owner-step-result');
+    expect(land).toBeDefined();
+    await between();
+    const answered = await desk.answer(land?.id as string, { option: 0 });
+    await lane.idle('cena');
+    return { card, land, answered };
+  }
+
+  it('lands a result under .counterpoint/, which the owner sees as a diff first', async () => {
+    const ctx = await setup({
+      list: '# Tasks\n\n- [ ] 7.2 Owner: land `.counterpoint/design-rules.md`\n',
+      session: async (request) => {
+        mkdirSync(join(request.cwd, '.counterpoint'), { recursive: true });
+        writeFileSync(join(request.cwd, '.counterpoint/design-rules.md'), '# Rules\n');
+        return 'Drafted the rules.';
+      },
+    });
+    const { land, answered } = await doAndLand(ctx);
+    expect(answered.outcome).toBe('Landing as a small PR.');
+    expect(cardPlanningWrite(ctx.store, land?.id as string)?.state).toBe('merged');
+    const rules = await runGit(ctx.bare, [
+      'show',
+      'refs/heads/master:.counterpoint/design-rules.md',
+    ]);
+    expect(rules.stdout).toBe('# Rules\n');
+  });
+
+  it('still lands a result whose step text changed meanwhile, without the tick', async () => {
+    const list = '# Tasks\n\n- [ ] 1.1 Owner: write the notes\n';
+    const ctx = await setup({
+      list,
+      session: async (request) => {
+        writeFileSync(join(request.cwd, 'NOTES.md'), 'notes\n');
+        return 'Wrote the notes.';
+      },
+    });
+    const reworded = list.replace('write the notes', 'write the release notes');
+    const { land, answered } = await doAndLand(ctx, () => ctx.landElsewhere(reworded));
+    expect(answered.outcome).toBe(
+      "Landing as a small PR; the step isn't open in the plan as it was, so it isn't ticked.",
+    );
+    expect(landCardResult(ctx.store, land?.id as string)?.state).toBe('submitted');
+    expect(cardPlanningWrite(ctx.store, land?.id as string)?.state).toBe('merged');
+    expect((await runGit(ctx.bare, ['show', 'refs/heads/master:NOTES.md'])).stdout).toBe('notes\n');
+    expect((await runGit(ctx.bare, ['show', `refs/heads/master:${TASKS}`])).stdout).toBe(reworded);
   });
 });

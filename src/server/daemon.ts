@@ -26,6 +26,7 @@ import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
 import { createDeliver, pushTarget, remoteBranchHead } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
 import { HoldCards, resolveHoldCards } from '../build/hold-card.ts';
+import { identityFallbackNotice } from '../build/identity-card.ts';
 import { endLiveProcesses } from '../build/live-processes.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
@@ -42,7 +43,7 @@ import { BaseFetcher } from '../core/git/base-fetch.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { carryOverApprovals } from '../core/runway/carry-over.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
-import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
+import { deleteExpiredSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { revokeBuilderCapabilities } from '../core/store/ask.ts';
 import { getCard, listWaitingCards } from '../core/store/cards.ts';
 import { openStore, type Store } from '../core/store/db.ts';
@@ -238,10 +239,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
-  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes. Only
-  // a planned self-restart, handed over by the previous daemon, keeps the sessions (D-10).
+  // Crash-only reconcile: a (re)started daemon drops expired console sessions and stale codes. The
+  // rest stay signed in, after a crash as after a planned self-restart (D-10): signing in again
+  // needs a terminal, which the owner should not need.
   const planned = takeHandover(paths, options.handover);
-  if (!planned) clearAllSessions(store);
+  deleteExpiredSessions(store);
   deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no
@@ -361,6 +363,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
   });
   const desk = new CardDesk({ store, bus, log, notify: (card) => notifier.notify(card) });
+  // A commit without the owner's git identity says so in Needs You, once (owner-identity).
+  const identityFallback = identityFallbackNotice(desk, async () => (await readOwnerEnv()).env);
   /** What the card that started a planning write says while it lands (D-12). */
   const writeOutcome = (row: PlanningWriteRow): string | null => {
     switch (row.state) {
@@ -389,6 +393,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     ownerEnv: async () => (await readOwnerEnv()).env,
     fetchBase: (host, env) => fetcher.fetch(host, env),
+    onIdentityFallback: () => identityFallback(),
     onChange: (row) => {
       const card = row.cardId === null ? undefined : getCard(store, row.cardId);
       const text = writeOutcome(row);
@@ -497,6 +502,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const orchestrator = new Orchestrator({
     home: options.home,
     db: store,
+    onIdentityFallback: () => identityFallback(),
     host: (hostId) => runtimes.get(hostId),
     approvals,
     governor,

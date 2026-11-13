@@ -57,7 +57,8 @@ Only Counterpoint's own code paths create cards with actions. Cards from `ask_ow
 - **Tools:**
   - `ask_owner({question, why, options[2-4], recommended, reversible, wait})`;
   - `check_answer({card})`.
-  `wait` blocks at most 10 minutes per call (MCP calls must not hang a session indefinitely), then returns "still open" with the card id.
+  `wait` blocks at most 10 minutes per call (MCP calls must not hang a session indefinitely), then returns "still open" with the card id. Builders never wait (fix, 2026-11-13): a builder's `wait` returns at once with the recommendation assumed.
+- **Fixes (2026-11-13):** an interactive session's cards always notify, and its tool replies tell it to repeat a waiting question in the chat; answered session cards say "Not read yet" until the session reads them; an interactive session whose MCP server's input ends closes its unanswered cards as "Session ended" and loses its capability.
 - **Answers reach later sessions:** an answer arriving after a builder session ended is written into the next session's prompt for that change.
 
 **D-6. The unanswered rules generalise council's.**
@@ -79,7 +80,7 @@ When the principle decides (a refreshed environment, an owner identity used for 
 macOS notifications use `osascript` with the question passed as an argument, never interpolated into the script. The console adds the tab-title count (already specified) and a browser Notification once the owner allows it. Only blocking cards notify, at most one notification per minute, merged.
 
 **D-10. A planned self-restart keeps sessions.**
-The daemon watches its installed package's version. When it changes and no run is active, it starts its successor with the login environment, hands over through the control channel, and exits. The successor keeps console sessions (stored as hashes in the store), and a crash restart still expires them. During a run, a card asks.
+The daemon watches its installed package's version. When it changes and no run is active, it starts its successor with the login environment, hands over through the control channel, and exits. The successor keeps console sessions (stored as hashes in the store). Fix (2026-11-13): a crash restart keeps them too, and a session slides 12 hours ahead on each use, up to 30 days, since signing in again needs a terminal. During a run, a card asks.
 
 **D-11. Planning writes land as small PRs that the same click merges** (owner, 2026-11-13).
 Each write (Done on an owner step, Land it, later council and `pr-revisions` writes):
@@ -114,10 +115,10 @@ Since `build-from-remote-base`, every build starts from the remote base, which i
 **Added beyond the plan** (while implementing 4.2):
 - A catalog action `tick-owner-step` for Done on an owner step (D-2 had no action that ticks).
 - Owner-step cards are named by a hash of the step's text, so a step whose text changes is a new card; a step that comes back after it was ticked or left the plan reopens its old card.
-- Until the open question on marking steps is settled, every owner step offers Do it for me; Done is the recommended option, so `Enter` never starts a session.
+- Until the open question on marking steps is settled, every owner step offers Do it for me, except one whose named paths are all under `.git/` or `.claude/`. Later is the recommended option (fix, 2026-11-13: Done merges to the base, and one `Enter` falsely ticked steps that wait for a build), so `Enter` neither ticks nor starts a session. A step listed after an open build task is no card until the change is built.
 
 **Added beyond the plan** (while implementing 4.3):
-- A planning write can carry a `code` flag, set only when Land it lands an owner-step result, so that write may touch files outside the planning (D-8 needs it). The `.git`, `.counterpoint` and `.claude` paths stay refused.
+- A planning write can carry a `code` flag, set only when Land it lands an owner-step result, so that write may touch files outside the planning (D-8 needs it), `.counterpoint/` included (the owner sees the diff first; design-drafts 7.1 and 7.2 need it). The `.git` and `.claude` paths stay refused.
 - A catalog action `discard-owner-step` for Discard on a Land it card (D-2 had none), so the result is dropped and the step card comes back.
 
 **Added beyond the plan** (while implementing 5.1):

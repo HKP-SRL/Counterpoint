@@ -191,7 +191,7 @@ describe('counterpoint status, open and the sign-in link', () => {
     expect(first.location).toBe(`/h/${hostIdFromName(basename(repo))}`);
     expect(first.setCookie).toHaveLength(1);
     expect(first.setCookie[0]).toMatch(
-      /^cp_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/,
+      /^cp_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=2592000$/,
     );
 
     const second = await rawGet(link);
@@ -212,7 +212,7 @@ describe('counterpoint status, open and the sign-in link', () => {
     expect(result.stdout.trim()).toBe('not running');
   });
 
-  it('a restarted daemon has signed every browser out', async () => {
+  it('a restarted daemon keeps the browsers signed in', async () => {
     const before = openStoreReadOnly(home);
     const sessionsBefore = Number(before.prepare('SELECT COUNT(*) AS n FROM sessions').get()?.n);
     before.close();
@@ -224,6 +224,6 @@ describe('counterpoint status, open and the sign-in link', () => {
     const after = openStoreReadOnly(home);
     const sessionsAfter = Number(after.prepare('SELECT COUNT(*) AS n FROM sessions').get()?.n);
     after.close();
-    expect(sessionsAfter).toBe(0);
+    expect(sessionsAfter).toBe(sessionsBefore);
   });
 });

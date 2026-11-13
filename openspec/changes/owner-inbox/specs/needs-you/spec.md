@@ -16,7 +16,11 @@ The console SHALL have one Needs You inbox listing items as question cards, card
 ## ADDED Requirements
 
 ### Requirement: Every item can be answered
-Every item Counterpoint puts in Needs You SHALL offer options the owner can pick in one step, with a recommended option. A run-stopping problem SHALL offer Counterpoint's fix where the action catalog has one, otherwise the exact step only the owner can take, and Later.
+Every item Counterpoint puts in Needs You SHALL offer options the owner can pick in one step, with a recommended option. A run-stopping problem SHALL offer Counterpoint's fix where the action catalog has one, otherwise the exact step only the owner can take, and Later. A note a run left that no answer would act on SHALL be a line in "Done for you", not a card.
+
+#### Scenario: A note nothing can act on
+- **WHEN** a run leaves a note that changes nothing whatever the owner answers
+- **THEN** it shows once as a "Done for you" line and no card asks about it
 
 #### Scenario: Run stopped for a missing program
 - **WHEN** a run stops because a service program cannot be found
@@ -38,7 +42,7 @@ A parked change SHALL offer to retry with the failure as a note to the builder, 
 - **THEN** the change is queued for the next run and its first session receives the hint
 
 ### Requirement: Notified when a card blocks work
-When a card that blocks work arrives, Counterpoint SHALL notify the owner on this machine: a macOS notification naming the question, the count in the tab title, and a browser notification when the console is open and the owner has allowed it. Notifications SHALL carry no secret and no host file content beyond the card's question.
+When a card that blocks work arrives, Counterpoint SHALL notify the owner on this machine; a question from the owner's own interactive session counts as blocking, since that session is waiting in the chat. The notification is a macOS notification naming the question, the count in the tab title, and a browser notification when the console is open and the owner has allowed it. Notifications SHALL carry no secret and no host file content beyond the card's question.
 
 #### Scenario: Owner in another app
 - **WHEN** a run parks a change while the owner works in another app

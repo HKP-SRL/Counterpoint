@@ -280,6 +280,29 @@ describe('commitSession', () => {
     expect(status).toBe('M openspec/changes/add-menu/tasks.md');
   });
 
+  it("says so when git config names no owner and the commit falls back to Counterpoint's", async () => {
+    const { root, base, changeDir } = await worktreeWithChange();
+    writeFileIn(root, 'src/app.ts', 'export const menu = 2;\n');
+    let fallbacks = 0;
+    const result = await commitSession({
+      worktree: root,
+      change,
+      adapter: createOpenSpecAdapter(),
+      changeDir,
+      session: 1,
+      runId: 'r1',
+      baseCommit: base,
+      identity: async () => null,
+      onIdentityFallback: () => {
+        fallbacks += 1;
+      },
+    });
+    expect(result.commit).not.toBeNull();
+    expect(fallbacks).toBe(1);
+    const author = (await runGit(root, ['log', '-1', '--format=%ae'])).stdout.trim();
+    expect(author).toBe('counterpoint@localhost');
+  });
+
   it('restores a task list edited beyond ticks, and commits nothing when nothing else changed', async () => {
     const { root, base, changeDir } = await worktreeWithChange();
     writeFileIn(root, 'openspec/changes/add-menu/tasks.md', '- [x] 1.1 Add the table\n');

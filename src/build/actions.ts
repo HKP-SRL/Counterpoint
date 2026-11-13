@@ -175,6 +175,9 @@ export function createActionRunner(context: ActionContext): ActionRunner {
       case 'discard-owner-step':
         if (context.ownerSteps === undefined) throw new Error('Owner steps are not available.');
         return context.ownerSteps(action, card, note);
+      case 'later':
+        // The desk defers the card instead of answering it; nothing to run.
+        return 'Later: it stays here.';
     }
   };
 }

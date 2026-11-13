@@ -49,6 +49,8 @@ export const CardAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('discard-owner-step'), resultId }),
   z.strictObject({ type: z.literal('add-ask-tool') }),
   z.strictObject({ type: z.literal('drop-drafts'), change }),
+  /** Later as an option: the card is deferred, not answered (the desk handles it). */
+  z.strictObject({ type: z.literal('later') }),
 ]);
 export type CardAction = z.infer<typeof CardAction>;
 export type CardActionType = CardAction['type'];
@@ -346,6 +348,37 @@ export function setCardWhy(db: Store, id: string, why: string, now = Date.now())
   );
 }
 
+/**
+ * Gives a waiting recomputed card the options it is raised with now (its cause is the same; the
+ * choices offered changed). False when nothing changed, the card is closed, or the options break
+ * the model.
+ */
+export function setCardOptions(
+  db: Store,
+  id: string,
+  input: { options: readonly CardOption[]; recommended: number },
+  now = Date.now(),
+): boolean {
+  const card = getCard(db, id);
+  if (card === undefined || (card.state !== 'open' && card.state !== 'deferred')) return false;
+  const options = z.array(CardOption).min(MIN_OPTIONS).max(MAX_OPTIONS).safeParse(input.options);
+  if (!options.success || input.recommended < 0 || input.recommended >= options.data.length) {
+    return false;
+  }
+  if (card.source === 'session' && options.data.some((option) => option.action !== undefined)) {
+    return false;
+  }
+  const json = JSON.stringify(options.data);
+  if (json === JSON.stringify(card.options) && input.recommended === card.recommended) return false;
+  db.prepare('UPDATE cards SET options = ?, recommended = ?, updated_at = ? WHERE id = ?').run(
+    json,
+    input.recommended,
+    now,
+    id,
+  );
+  return true;
+}
+
 /** Puts an answered card back as it was before the answer (a cancelled planning write). */
 export function reopenCard(db: Store, id: string, now = Date.now()): void {
   db.prepare(
@@ -416,6 +449,14 @@ export function addDoneForYou(
       now,
     );
   return Number(result.lastInsertRowid);
+}
+
+/** True when the host's "Done for you" list already has this exact line. */
+export function hasDoneForYou(db: Store, hostId: string | null, text: string): boolean {
+  const row = db
+    .prepare('SELECT 1 AS ok FROM done_for_you WHERE host_id IS ? AND text = ? LIMIT 1')
+    .get(hostId, text.slice(0, MAX_LINE));
+  return row !== undefined;
 }
 
 export function listDoneForYou(db: Store, hostId: string, limit = 20): DoneForYouRow[] {

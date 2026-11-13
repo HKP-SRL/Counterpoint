@@ -117,10 +117,10 @@ export function createApp(options: AppOptions): Hono {
     }
     const session = createSession(options.store);
     // No Secure flag and no __Host- prefix: Safari drops Secure cookies on http://127.0.0.1 (A7).
-    // Max-Age is SESSION_TTL_MS (12 h) in seconds.
+    // Max-Age is SESSION_MAX_MS (30 days) in seconds; the server ends a session unused 12 hours.
     c.header(
       'Set-Cookie',
-      `${SESSION_COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`,
+      `${SESSION_COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`,
     );
     const newest = listHosts(options.store)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))

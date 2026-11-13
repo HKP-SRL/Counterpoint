@@ -139,6 +139,8 @@ export interface SessionCommitInput {
   interrupted?: boolean;
   /** Seam for tests: the identity lookup (default: the owner's, from git config). */
   identity?: (worktree: string) => Promise<GitIdentity | null>;
+  /** Told when the commit falls back to Counterpoint's identity (Needs You says so). */
+  onIdentityFallback?: () => void;
 }
 
 export interface SessionCommit {
@@ -228,7 +230,9 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
   if (staged.exitCode === 1) {
     const message = `cp: ${change.id} session ${input.session}${input.interrupted === true ? ' (interrupted)' : ''}`;
     const trailer = `Counterpoint-Run: ${input.runId} session ${input.session}`;
-    const identity = (await (input.identity ?? ownerIdentity)(worktree)) ?? FALLBACK_IDENTITY;
+    const owner = await (input.identity ?? ownerIdentity)(worktree);
+    if (owner === null) input.onIdentityFallback?.();
+    const identity = owner ?? FALLBACK_IDENTITY;
     await runGit(
       worktree,
       [...commitIdentity(identity), 'commit', '-q', '--no-verify', '-m', message, '-m', trailer],
