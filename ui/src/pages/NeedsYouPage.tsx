@@ -26,8 +26,17 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRouterState } from '@tanstack/react-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { apiGet, apiPostAnswer, queryKeys } from '../api';
+import {
+  apiGet,
+  apiPostAnswer,
+  hostsQuery,
+  needsYouCountsQuery,
+  queryKeys,
+  type WaitingElsewhere,
+  waitingElsewhere,
+} from '../api';
 import { isChangeId } from '../ids';
 import {
   enterAction,
@@ -652,13 +661,85 @@ export function NeedsYouLoading({ rows = 3 }: { rows?: number }) {
   );
 }
 
-export function NeedsYouEmpty({ headingLevel = 2 }: { headingLevel?: 2 | 3 }) {
+/** The other projects with items waiting; the project open comes from the address if not given. */
+function useWaitingElsewhere(hostId?: string): WaitingElsewhere[] {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const current = hostId ?? /^\/h\/([^/]+)/.exec(pathname)?.[1] ?? '';
+  const hosts = useQuery(hostsQuery).data ?? [];
+  const counts = useQuery(needsYouCountsQuery).data;
+  return waitingElsewhere(counts, hosts, current);
+}
+
+const needsYouHref = (hostId: string) => `/h/${hostId}/needs-you`;
+
+/** One line on what waits in other projects: "2 wait in Cena." */
+export function elsewhereText(elsewhere: readonly WaitingElsewhere[]): string {
+  const first = elsewhere[0];
+  if (first === undefined) return '';
+  if (elsewhere.length > 1) return `Items wait in ${elsewhere.length} other projects.`;
+  return `${first.count === 1 ? '1 item waits' : `${first.count} items wait`} in ${first.name}.`;
+}
+
+/** Links to the other projects' inboxes, each with its count. */
+function ElsewhereLinks({ elsewhere }: { elsewhere: readonly WaitingElsewhere[] }) {
+  return (
+    <HStack gap={3} vAlign="center" wrap="wrap">
+      {elsewhere.map((entry) => (
+        <Link key={entry.id} href={needsYouHref(entry.id)}>
+          {`Open ${entry.name} (${entry.count})`}
+        </Link>
+      ))}
+    </HStack>
+  );
+}
+
+/** The empty inbox; when another project has items waiting, it names it with a link. */
+export function NeedsYouEmptyView({
+  headingLevel = 2,
+  elsewhere,
+}: {
+  headingLevel?: 2 | 3;
+  elsewhere: readonly WaitingElsewhere[];
+}) {
+  if (elsewhere.length === 0) {
+    return (
+      <EmptyState
+        headingLevel={headingLevel}
+        title="Nothing needs you"
+        description="When a run needs an answer or a fix from you, it shows up here."
+      />
+    );
+  }
   return (
     <EmptyState
       headingLevel={headingLevel}
-      title="Nothing needs you"
-      description="When a run needs an answer or a fix from you, it shows up here."
+      title="Nothing needs you here"
+      description={elsewhereText(elsewhere)}
+      actions={<ElsewhereLinks elsewhere={elsewhere} />}
     />
+  );
+}
+
+export function NeedsYouEmpty({
+  headingLevel = 2,
+  hostId,
+}: {
+  headingLevel?: 2 | 3;
+  hostId?: string;
+}) {
+  return <NeedsYouEmptyView headingLevel={headingLevel} elsewhere={useWaitingElsewhere(hostId)} />;
+}
+
+/** Under a non-empty inbox: what also waits in other projects, one quiet line. */
+export function AlsoWaiting({ elsewhere }: { elsewhere: readonly WaitingElsewhere[] }) {
+  if (elsewhere.length === 0) return null;
+  return (
+    <HStack gap={3} vAlign="center" wrap="wrap">
+      <Text type="supporting" color="secondary">
+        {`Also waiting: ${elsewhereText(elsewhere)}`}
+      </Text>
+      <ElsewhereLinks elsewhere={elsewhere} />
+    </HStack>
   );
 }
 
@@ -715,6 +796,7 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   const [noteFor, setNoteFor] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const notifications = useNotificationPermission();
+  const elsewhere = useWaitingElsewhere(hostId);
 
   useEffect(() => {
     document.title = 'Needs You · Counterpoint';
@@ -860,7 +942,7 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
     body = (
       <VStack gap={6}>
         {cards.length === 0 ? (
-          <NeedsYouEmpty />
+          <NeedsYouEmptyView elsewhere={elsewhere} />
         ) : (
           <VStack gap={3}>
             {cards.map((card, index) => (
@@ -889,6 +971,7 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
                 onLater={() => void act(card.id, 'later', {})}
               />
             ))}
+            <AlsoWaiting elsewhere={elsewhere} />
           </VStack>
         )}
         <LandingList

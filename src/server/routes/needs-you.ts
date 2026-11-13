@@ -2,6 +2,7 @@
 // session guard like every /api route; writes also pass the Origin and JSON checks.
 //
 //   GET  /api/hosts/:hostId/needs-you                  { cards, answered, doneForYou, runItems }
+//   GET  /api/needs-you/counts                         { total, machine, hosts, blocking }
 //   POST /api/hosts/:hostId/cards/:cardId/answer       { option, note? } → { card }
 //   POST /api/hosts/:hostId/cards/:cardId/later        → { card }
 //   POST /api/hosts/:hostId/writes/:writeId/retry      → { card }  (a blocked planning write)
@@ -13,6 +14,11 @@
 // what happened next, `doneForYou` the decisions
 // Counterpoint took without asking (D-7). `runItems` are the details behind the run's cards (the
 // failing gate's last lines, every attempt), from the host's latest run in the store.
+//
+// `counts` is what waits across every project, for the badge, the tab title, the project switcher
+// and browser notifications: `hosts[].count` is a project's own waiting items (open cards and
+// blocked planning writes), `machine` the open cards of the machine (shown in every project's
+// inbox, counted once), `total` their sum, and `blocking` the open cards that block work.
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { builderSessionOf } from '../../build/ask-session.ts';
@@ -134,6 +140,16 @@ export function cardView(card: CardRow, store?: Store) {
   };
 }
 
+/** What waits on the owner in one project's inbox, as needsYouCount counts it in the console. */
+function hostCounts(store: Store, hostId: string) {
+  const waiting = listWaitingCards(store, hostId).filter((card) => card.state === 'open');
+  const blockedWrites = listAnsweredCards(store, hostId).filter(
+    (card) => card.hostId !== null && cardPlanningWrite(store, card.id)?.state === 'blocked',
+  ).length;
+  const own = waiting.filter((card) => card.hostId !== null);
+  return { own, machine: waiting.filter((card) => card.hostId === null), blockedWrites };
+}
+
 async function jsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {
   try {
     return await c.req.json();
@@ -144,6 +160,31 @@ async function jsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unkno
 
 export function mountNeedsYouRoutes(app: Hono, options: NeedsYouRoutesOptions): void {
   const { store, cards } = options;
+
+  app.get('/api/needs-you/counts', async (c) => {
+    const runtimes = options.runtimes.list();
+    await Promise.allSettled(runtimes.map((runtime) => options.syncCards?.(runtime.host.id)));
+    const machine = new Map<string, CardRow>();
+    const blocking: { id: string; hostId: string | null; question: string }[] = [];
+    const hosts = runtimes.map((runtime) => {
+      const counts = hostCounts(store, runtime.host.id);
+      for (const card of counts.machine) machine.set(card.id, card);
+      for (const card of counts.own) {
+        if (card.blocking)
+          blocking.push({ id: card.id, hostId: card.hostId, question: card.question });
+      }
+      return { hostId: runtime.host.id, count: counts.own.length + counts.blockedWrites };
+    });
+    for (const card of machine.values()) {
+      if (card.blocking) blocking.push({ id: card.id, hostId: null, question: card.question });
+    }
+    return c.json({
+      total: machine.size + hosts.reduce((sum, host) => sum + host.count, 0),
+      machine: machine.size,
+      hosts,
+      blocking,
+    });
+  });
 
   app.get('/api/hosts/:hostId/needs-you', async (c) => {
     const hostId = c.req.param('hostId');

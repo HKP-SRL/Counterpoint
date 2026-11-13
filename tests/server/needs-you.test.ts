@@ -4,8 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
+import { answerCard } from '../../src/core/store/cards.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
+import { insertPlanningWrite, updatePlanningWrite } from '../../src/core/store/planning-writes.ts';
 import {
   addRunNotice,
   endRun,
@@ -225,5 +227,87 @@ describe('question cards through the API', () => {
       listed.cards.find((c) => c.id === id)?.options.map((o) => o.merges);
     expect(merges(step.id)).toEqual([true, false]);
     expect(merges(land.id)).toEqual([true, false]);
+  });
+});
+
+describe('GET /api/needs-you/counts', () => {
+  it("counts every project's waiting cards, the machine's once, and lists the blocking ones", async () => {
+    const other = await materializeFixtureRepo('synthetic');
+    const otherId = (
+      await registerHost(hostRegistryStore(db), {
+        cwd: other.root,
+        base: 'master',
+        detectFramework,
+      })
+    ).id;
+    const { CardDesk } = await import('../../src/server/cards.ts');
+    const desk = new CardDesk({ store: db, bus: new EventBus() });
+    let session = 0;
+    const ask = (host: string | null, question: string, blocking: boolean) =>
+      desk.raise({
+        hostId: host,
+        kind: 'ask',
+        source: 'session',
+        sessionId: `s-count-${++session}`,
+        question,
+        why: 'It matters.',
+        options: [
+          { label: 'Yes', consequence: 'Yes.' },
+          { label: 'No', consequence: 'No.' },
+        ],
+        recommended: 0,
+        reversible: true,
+        blocking,
+      });
+    const read = async () => {
+      const res = await app().request(`http://${HOST}/api/needs-you/counts`, {
+        headers: { host: HOST, cookie },
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as {
+        total: number;
+        machine: number;
+        hosts: Array<{ hostId: string; count: number }>;
+        blocking: Array<{ id: string; hostId: string | null; question: string }>;
+      };
+    };
+    const before = await read();
+    const countOf = (body: typeof before, id: string) =>
+      body.hosts.find((h) => h.hostId === id)?.count ?? -1;
+
+    const blocker = ask(otherId, 'Drop the old table?', true);
+    ask(otherId, 'Which colour for the menu?', false);
+    const restart = ask(null, 'Restart into the new install?', true);
+    const deferred = ask(hostId, 'Rename the button?', false);
+    desk.defer(deferred.id);
+    // An answer whose planning write is blocked waits on the owner too (Retry or Cancel).
+    const landed = ask(hostId, 'Write the decision down?', false);
+    answerCard(db, landed.id, { option: 0 });
+    const write = insertPlanningWrite(db, {
+      hostId,
+      cardId: landed.id,
+      message: 'Record the decision',
+      edits: [{ kind: 'tick', path: 'openspec/changes/ready-thing/tasks.md', task: '1.1' }],
+    });
+    updatePlanningWrite(db, write.id, { state: 'blocked', blocked: 'checks', reason: 'Red.' });
+
+    const after = await read();
+    expect(countOf(after, otherId)).toBe(countOf(before, otherId) + 2);
+    expect(countOf(after, hostId)).toBe(countOf(before, hostId) + 1);
+    expect(after.machine).toBe(before.machine + 1);
+    expect(after.total).toBe(before.total + 4);
+    expect(after.total).toBe(after.machine + after.hosts.reduce((sum, h) => sum + h.count, 0));
+    expect(after.blocking).toEqual(
+      expect.arrayContaining([
+        { id: blocker.id, hostId: otherId, question: 'Drop the old table?' },
+        { id: restart.id, hostId: null, question: 'Restart into the new install?' },
+      ]),
+    );
+    expect(after.blocking.filter((card) => card.id === restart.id)).toHaveLength(1);
+    // Behind the session guard like every /api route.
+    const anonymous = await app().request(`http://${HOST}/api/needs-you/counts`, {
+      headers: { host: HOST },
+    });
+    expect(anonymous.status).toBe(401);
   });
 });
