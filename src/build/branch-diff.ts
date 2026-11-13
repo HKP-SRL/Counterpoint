@@ -11,6 +11,7 @@
 // The diffs are between two commits (no renames, no external diff, no textconv), through the
 // hardened git runner, so no working-tree filter runs.
 import { basename, matchesGlob } from 'node:path';
+import { catBlob } from '../core/git/plumbing.ts';
 import { runGit } from '../core/git/run.ts';
 import type { RunChangeFlag } from '../core/store/runs.ts';
 
@@ -99,13 +100,19 @@ export interface PlanningEditFlag extends RunChangeFlag {
   path: string;
 }
 
-/** Every planning file the branch changed since `base` (none when the session commits held). */
+/**
+ * Every planning file the branch changed since `base` (none when the session commits held). The
+ * change's own task list is accepted when `taskList.accept` passes its two versions: the one
+ * planning edit a build branch may carry is Counterpoint's tick commit (build-ticks-and-owner-steps
+ * D-2).
+ */
 export async function planningEdits(input: {
   /** Any checkout of the host repository (the change's worktree). */
   repo: string;
   base: string;
   tip: string;
   isPlanningPath: (path: string) => boolean;
+  taskList?: { path: string; accept: (before: string, after: string) => boolean };
 }): Promise<PlanningEditFlag[]> {
   assertCommits(input.base, input.tip);
   const { stdout } = await runGit(
@@ -113,9 +120,22 @@ export async function planningEdits(input: {
     ['diff', '--name-status', '-z', ...DIFF_ARGS, input.base, input.tip, '--'],
     { timeoutMs: 60_000 },
   );
-  return parseNameStatus(stdout)
-    .filter(({ path }) => input.isPlanningPath(path))
-    .map(({ path }) => ({ kind: 'planning-edit', path }));
+  const flags: PlanningEditFlag[] = [];
+  for (const { status, path } of parseNameStatus(stdout)) {
+    if (!input.isPlanningPath(path)) continue;
+    if (status === 'modified' && path === input.taskList?.path) {
+      const [before, after] = await Promise.all([
+        catBlob(input.repo, input.base, path),
+        catBlob(input.repo, input.tip, path),
+      ]);
+      const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+      if (before !== null && after !== null && input.taskList.accept(text(before), text(after))) {
+        continue;
+      }
+    }
+    flags.push({ kind: 'planning-edit', path });
+  }
+  return flags;
 }
 
 /**

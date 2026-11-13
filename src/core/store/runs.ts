@@ -59,6 +59,18 @@ export interface RunChangeRow {
   testShare: StoredTestShare | null;
   /** How the base was fetched when the build started; null when nothing was fetched. */
   baseFetch: BaseFetchNote | null;
+  /** Where the delivered build's ticks are; null before delivery or before this was recorded. */
+  ticks: TicksPlace | null;
+}
+
+/**
+ * Where a delivered build's task ticks are (build-ticks-and-owner-steps D-3): in its PR, left out
+ * of it to land after the merge, or handed to the base after the merge.
+ */
+export type TicksPlace = 'pr' | 'after-merge' | 'base';
+
+function ticksPlace(value: SQLOutputValue | undefined): TicksPlace | null {
+  return value === 'pr' || value === 'after-merge' || value === 'base' ? value : null;
 }
 
 /**
@@ -270,6 +282,7 @@ function toRunChange(row: Record<string, SQLOutputValue>): RunChangeRow {
     questions: json<ChangeQuestion[]>(row.questions, []),
     testShare: json<StoredTestShare | null>(row.test_share, null),
     baseFetch: json<BaseFetchNote | null>(row.base_fetch, null),
+    ticks: ticksPlace(row.ticks),
   };
 }
 
@@ -327,6 +340,7 @@ export interface RunChangeUpdate {
   questions?: ChangeQuestion[];
   testShare?: StoredTestShare | null;
   baseFetch?: BaseFetchNote | null;
+  ticks?: TicksPlace | null;
 }
 
 const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
@@ -345,6 +359,7 @@ const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
   questions: 'questions',
   testShare: 'test_share',
   baseFetch: 'base_fetch',
+  ticks: 'ticks',
 };
 
 export function updateRunChange(db: Store, id: number, update: RunChangeUpdate): void {
@@ -531,13 +546,19 @@ export interface LatestPullRequest {
   change: string;
   prUrl: string;
   prState: PullRequestState | null;
+  /** Where its build's ticks are (null: delivered before build ticks were recorded). */
+  ticks: TicksPlace | null;
+  baseCommit: string | null;
+  branch: string | null;
+  worktree: string | null;
 }
 
 /** Each change's latest PR on a host (the newest run change row with a PR URL). */
 export function latestPullRequests(db: Store, hostId: string): LatestPullRequest[] {
   const rows = db
     .prepare(
-      `SELECT rc.id, rc.change, rc.pr_url, rc.pr_state
+      `SELECT rc.id, rc.change, rc.pr_url, rc.pr_state, rc.ticks, rc.base_commit, rc.branch,
+              rc.worktree
          FROM run_changes rc JOIN runs r ON r.id = rc.run_id
         WHERE r.host_id = ? AND rc.pr_url IS NOT NULL
           AND rc.id = (SELECT MAX(rc2.id) FROM run_changes rc2 JOIN runs r2 ON r2.id = rc2.run_id
@@ -553,6 +574,10 @@ export function latestPullRequests(db: Store, hostId: string): LatestPullRequest
       change: String(row.change),
       prUrl: String(row.pr_url),
       prState: state === 'open' || state === 'merged' || state === 'closed' ? state : null,
+      ticks: ticksPlace(row.ticks),
+      baseCommit: str(row.base_commit),
+      branch: str(row.branch),
+      worktree: str(row.worktree),
     };
   });
 }
@@ -560,6 +585,15 @@ export function latestPullRequests(db: Store, hostId: string): LatestPullRequest
 /** Records the PR state `gh` reported for a run change row. */
 export function setPullRequestState(db: Store, id: number, state: PullRequestState): void {
   db.prepare('UPDATE run_changes SET pr_state = ? WHERE id = ?').run(state, id);
+}
+
+/** The changes on a host whose latest PR merged, with that PR's URL. */
+export function mergedPullRequests(db: Store, hostId: string): Map<string, string> {
+  return new Map(
+    latestPullRequests(db, hostId)
+      .filter((pr) => pr.prState === 'merged')
+      .map((pr) => [pr.change, pr.prUrl]),
+  );
 }
 
 /** The changes on a host whose latest PR merged: built, whatever their task list says. */

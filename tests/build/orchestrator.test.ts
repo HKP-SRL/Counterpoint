@@ -7,11 +7,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRunner } from '../../src/agent/runner.ts';
 import { builderSessionKey, onBuilderAnswer } from '../../src/build/ask-session.ts';
+import { blocksMerge } from '../../src/build/branch-diff.ts';
 import type {
   BuilderSession,
   BuilderSessionResult,
   startBuilderSession,
 } from '../../src/build/builder-session.ts';
+import { createDeliver } from '../../src/build/deliver.ts';
 import type { GateRound, runGateRound } from '../../src/build/gates.ts';
 import { Governor, type SessionOutcome } from '../../src/build/governor.ts';
 import { DEFAULT_HOST_SETTINGS, writeHostSettings } from '../../src/build/host-settings.ts';
@@ -30,6 +32,7 @@ import { BaseFetcher } from '../../src/core/git/base-fetch.ts';
 import { createBaseResolver } from '../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { runGit } from '../../src/core/git/run.ts';
+import { hostDir } from '../../src/core/host/home.ts';
 import { runNeedsYou } from '../../src/core/runway/run-items.ts';
 import { approveChange, withdrawApproval } from '../../src/core/store/approvals.ts';
 import { findAskGrant } from '../../src/core/store/ask.ts';
@@ -44,11 +47,13 @@ import {
   latestRun,
   listGateResults,
   listRunChanges,
+  runChangeTicks,
   updateRunChange,
 } from '../../src/core/store/runs.ts';
 import { insertAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
 import { CardDesk } from '../../src/server/cards.ts';
+import { FakeGitHub } from '../helpers/fake-github.ts';
 import { commitChange, materializeOpenSpecHost } from '../helpers/fixture-repo.ts';
 import {
   commitAll,
@@ -290,7 +295,11 @@ describe('a run', () => {
     );
     expect(delivered).toEqual(['a-thing', 'b-thing']);
     const log = await runGit(ctx.repo.root, ['log', '--format=%s', 'cp/a-thing']);
-    expect(log.stdout.split('\n')[0]).toBe('cp: a-thing session 1');
+    // The session's commit, then Counterpoint's tick commit at delivery.
+    expect(log.stdout.split('\n').slice(0, 2)).toEqual([
+      'cp: a-thing ticks',
+      'cp: a-thing session 1',
+    ]);
     // The handoff left the worktree for the run folder.
     const worktree = listRunChanges(ctx.db, started.runId)[0]?.worktree as string;
     expect(existsSync(join(worktree, HANDOFF_FILE))).toBe(false);
@@ -1166,7 +1175,7 @@ describe('a merged build PR', () => {
     const started = await first.o.start('cena', SETTINGS);
     if (!started.ok) throw new Error(started.error);
     await first.o.idle();
-    // Builds keep task ticks out of their PR, so both changes still have open tasks at the base.
+    // Nothing merged yet, so both changes still have open tasks at the base.
     const views = createApprovalViews({ store: ctx.db });
     const onRunway = async () =>
       (await views.runway(ctx.runtime)).onRunway.map((entry) => entry.changeId);
@@ -1212,6 +1221,173 @@ describe('a merged build PR', () => {
     expect(listRunChanges(ctx.db, again.runId).map((c) => [c.change, c.state])).toEqual([
       ['b-thing', 'green'],
     ]);
+  });
+});
+
+/** Ticks one task in the worktree's change task list. */
+function tickOne(cwd: string, task: string): void {
+  const path = join(cwd, 'openspec', 'changes', basename(cwd), 'tasks.md');
+  writeFileSync(path, readFileSync(path, 'utf8').replace(`- [ ] ${task}`, `- [x] ${task}`));
+}
+
+const FOUR_TASKS = '# Tasks\n\n- [ ] 1.1 One\n- [ ] 1.2 Two\n- [ ] 1.3 Three\n- [ ] 1.4 Four\n';
+
+describe('build ticks (build-ticks-and-owner-steps)', () => {
+  it('counts ticks against the base commit when the branch already holds a tick commit', async () => {
+    const ctx = await host({ 'openspec/changes/a-thing/tasks.md': FOUR_TASKS }, ['a-thing']);
+    // An earlier delivery left Counterpoint's tick commit for 1.1 on the branch.
+    const tasksPath = 'openspec/changes/a-thing/tasks.md';
+    await gitIn(ctx.repo.root, ['switch', '-q', '-c', 'cp/a-thing']);
+    writeFileIn(ctx.repo.root, tasksPath, FOUR_TASKS.replace('- [ ] 1.1', '- [x] 1.1'));
+    await commitAll(ctx.repo.root, 'cp: a-thing ticks');
+    await gitIn(ctx.repo.root, ['switch', '-q', 'master']);
+
+    const sessions = fakeSessions((n, cwd) => {
+      if (n === 1) tickOne(cwd, '1.2 Two');
+      if (n === 2) tickOne(cwd, '1.3 Three');
+      if (n === 3) tickOne(cwd, '1.4 Four');
+      // The second session only ticks: no code, so the ticks are its whole progress.
+      return { tick: false, idle: n === 2 };
+    });
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(3);
+    const row = listRunChanges(ctx.db, started.runId)[0];
+    expect(row).toMatchObject({ state: 'green' });
+    expect(delivered).toEqual(['a-thing']);
+    expect(runChangeTicks(ctx.db, row?.id as number)).toEqual([
+      '1.1 One',
+      '1.2 Two',
+      '1.3 Three',
+      '1.4 Four',
+    ]);
+  });
+});
+
+const TASKS_13 =
+  '# Tasks\n\n- [ ] 13.1 Build it\n- [ ] 13.2 Test it\n- [ ] 13.3 Owner: check it on a real device\n- [ ] 13.4 Owner: audit the UI\n';
+const TASKS_PATH = 'openspec/changes/a-thing/tasks.md';
+
+/** A local bare remote for the host (fetched), the fake GitHub over it, and a real delivery. */
+async function remoteDelivery(ctx: Awaited<ReturnType<typeof host>>) {
+  const bare = makeScratchDir('cp-orch-bare');
+  await runGit(bare, ['init', '--bare', '--quiet']);
+  await gitIn(ctx.repo.root, ['remote', 'add', 'origin', bare]);
+  await gitIn(ctx.repo.root, ['push', '-q', 'origin', 'master']);
+  await gitIn(ctx.repo.root, ['fetch', '-q', 'origin']);
+  const github = new FakeGitHub(bare);
+  const deliver = createDeliver({
+    home: ctx.home,
+    consolePort: 4170,
+    adapterFor: () => ctx.runtime.adapter,
+    gh: github.gh,
+    pushTarget: async () => ({
+      remote: 'origin',
+      url: bare,
+      kind: 'ssh',
+      slug: { host: 'github.com', owner: 'alex', repo: 'Cena' },
+    }),
+    hasPreviewDeploys: async () => false,
+  });
+  /** A tick the owner's Done landed on the base: pushed, then fetched. */
+  const tickOnBase = async (task: string) => {
+    const path = join(ctx.repo.root, TASKS_PATH);
+    writeFileSync(path, readFileSync(path, 'utf8').replace(`- [ ] ${task}`, `- [x] ${task}`));
+    await commitAll(ctx.repo.root, `a-thing: owner step done`);
+    await gitIn(ctx.repo.root, ['push', '-q', 'origin', 'master']);
+    await gitIn(ctx.repo.root, ['fetch', '-q', 'origin']);
+  };
+  const pushed = async (ref: string) =>
+    (await runGit(bare, ['show', `${ref}:${TASKS_PATH}`])).stdout;
+  return { bare, github, deliver, tickOnBase, pushed };
+}
+
+describe('build ticks at delivery (build-ticks-and-owner-steps D-2, D-3)', () => {
+  it("pushes only Counterpoint's ticks of build tasks, in a PR that is not a draft", async () => {
+    const ctx = await host({ [TASKS_PATH]: TASKS_13 }, ['a-thing']);
+    const remote = await remoteDelivery(ctx);
+    const sessions = fakeSessions((n, cwd) => {
+      const path = join(cwd, TASKS_PATH);
+      if (n === 1) {
+        // Reworded and ticked: the session commit puts the list back.
+        writeFileSync(path, TASKS_13.replace('- [ ] 13.1 Build it', '- [x] 13.1 Build it well'));
+        return { tick: false };
+      }
+      // Its build tasks, and an owner step it had no business ticking.
+      for (const task of ['13.1 Build it', '13.2 Test it', '13.3 Owner: check it on a real device'])
+        tickOne(cwd, task);
+      return { tick: false };
+    });
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      deliver: remote.deliver,
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    const row = listRunChanges(ctx.db, started.runId)[0];
+    expect(row).toMatchObject({ state: 'green', ticks: 'pr' });
+    expect(row?.flags).toContainEqual({ kind: 'planning-restored', path: TASKS_PATH });
+    expect(blocksMerge(row?.flags ?? [])).toBe(false);
+    expect(await remote.pushed('cp/a-thing')).toBe(
+      TASKS_13.replace('- [ ] 13.1', '- [x] 13.1').replace('- [ ] 13.2', '- [x] 13.2'),
+    );
+    // The worktree's list is the committed one now.
+    expect(readFileSync(join(row?.worktree as string, TASKS_PATH), 'utf8')).toBe(
+      await remote.pushed('cp/a-thing'),
+    );
+    const create = remote.github.calls.find((call) => call[1] === 'create');
+    expect(create).not.toContain('--draft');
+    const body = readFileSync(
+      join(hostDir(ctx.home, 'cena'), 'runs', started.runId, 'a-thing', 'pr-body.md'),
+      'utf8',
+    );
+    expect(body).toContain('**Ticks:** in this PR.');
+  });
+
+  it('leaves the ticks out when the base ticked the neighbouring step meanwhile', async () => {
+    const ctx = await host({ [TASKS_PATH]: TASKS_13 }, ['a-thing']);
+    const remote = await remoteDelivery(ctx);
+    const sessions = fakeSessions((_n, cwd) => {
+      tickOne(cwd, '13.1 Build it');
+      tickOne(cwd, '13.2 Test it');
+      return { tick: false };
+    });
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      // While the gates run, the owner's Done on 13.3 lands on the base.
+      runGateRound: async () => {
+        await remote.tickOnBase('13.3 Owner: check it on a real device');
+        return { kind: 'pass', entries: [] } as GateRound;
+      },
+      deliver: remote.deliver,
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    const row = listRunChanges(ctx.db, started.runId)[0];
+    expect(row).toMatchObject({ state: 'green', ticks: 'after-merge' });
+    const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
+    expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+    expect(await remote.pushed('cp/a-thing')).toBe(TASKS_13);
+    const body = readFileSync(
+      join(hostDir(ctx.home, 'cena'), 'runs', started.runId, 'a-thing', 'pr-body.md'),
+      'utf8',
+    );
+    expect(body).toContain('**Ticks:** land on `master` after this PR merges');
+    // A trial merge of the branch into the base is clean.
+    const trial = await runGit(
+      ctx.repo.root,
+      ['merge-tree', '--write-tree', 'origin/master', 'cp/a-thing'],
+      { allowExitCodes: [0, 1] },
+    );
+    expect(trial.exitCode).toBe(0);
   });
 });
 

@@ -20,6 +20,13 @@ const path = z.string().min(1).max(400);
  */
 export const PlanningEdit = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('tick'), path, task: z.string().min(1).max(400) }),
+  // A build's ticks that land after its PR merged (build-ticks-and-owner-steps D-3), in one edit:
+  // each is made again like a tick, and a task no longer listed (or the list itself) is dropped.
+  z.strictObject({
+    kind: z.literal('ticks'),
+    path,
+    tasks: z.array(z.string().min(1).max(400)).min(1).max(1000),
+  }),
   z.strictObject({
     kind: z.literal('text'),
     path,

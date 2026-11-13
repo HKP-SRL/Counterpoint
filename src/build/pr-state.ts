@@ -1,7 +1,8 @@
 // Whether each change's latest build PR merged (runway: A merged build PR means built; design D-7).
 //
-// Builds keep task ticks out of their PR, so after a merge the change's tasks are still open on
-// the base branch. On each per-host fetch tick the daemon asks `gh` for the state of every
+// A build PR may merge without its ticks (they land after it when they would conflict, and PRs
+// delivered before build ticks carry none), so a merged PR is a fact of its own. On each per-host
+// fetch tick the daemon asks `gh` for the state of every
 // change's latest PR not yet known merged or closed, and records it on its run change row. The
 // runway and the change statuses read it from there. Not the branch being an ancestor of the
 // remote base: a squash merge breaks that.

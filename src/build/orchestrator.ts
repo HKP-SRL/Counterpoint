@@ -19,7 +19,8 @@
 //    when the attempt's sessions are used up (a partial change is never delivered as built);
 // 4. the gates run; a failure goes back to the next session until the host's `attempts`, then the
 //    change parks and the run moves on;
-// 5. green: the protected-path check, then delivery (push, PR, preview: group 11).
+// 5. green: the tick commit of the recorded build ticks (build-ticks.ts), the planning-file check,
+//    then delivery (push, PR, preview: group 11).
 // Before every session the approval is verified again: a change that leaves the runway stops at
 // its next handoff and is skipped (Needs You shows it as approved version changed).
 //
@@ -91,6 +92,7 @@ import {
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
 import { type AskServer, type BuilderAsk, openBuilderAsk } from './ask-session.ts';
 import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
+import { deliveryTicks, onlyBuildTicks } from './build-ticks.ts';
 import {
   type BuilderSessionResult,
   generatedHandoff,
@@ -983,6 +985,7 @@ export class Orchestrator {
           worktree,
           branch,
           changeDir,
+          baseCommit,
           attempt,
           feedback,
           gates: config.gates,
@@ -1026,14 +1029,37 @@ export class Orchestrator {
           continue;
         }
 
-        // 5. Green: the planning-file check, then delivery.
+        // 5. Green: the tick commit (or the ticks left out of the PR), the planning-file check,
+        // then delivery (build-ticks-and-owner-steps D-1 to D-3).
         this.#activity(active, { change: row.change, phase: 'delivering' });
+        const ticks = await deliveryTicks({
+          worktree,
+          branch,
+          change: facts,
+          rules: adapter,
+          baseCommit,
+          baseNow: await runtime.tip(),
+          ticked: runChangeTicks(db, row.id),
+          runId: active.id,
+          scratch: changeDir,
+        });
+        if (ticks.flag !== null) addRunChangeFlags(db, row.id, [ticks.flag]);
+        updateRunChange(db, row.id, { ticks: ticks.place });
         const tip = (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
+        const tasksPath = adapter.tasksPath(facts);
         const flags = await (this.#o.planningEdits ?? planningEdits)({
           repo: worktree,
           base: baseCommit,
           tip,
           isPlanningPath: (path) => adapter.isPlanningPath(path),
+          ...(tasksPath === null
+            ? {}
+            : {
+                taskList: {
+                  path: tasksPath,
+                  accept: (before, after) => onlyBuildTicks(adapter, before, after),
+                },
+              }),
         });
         addRunChangeFlags(db, row.id, flags);
         // The test share: measured, shown, never a reason to hold the change back (D-10).
@@ -1139,6 +1165,7 @@ export class Orchestrator {
       worktree: string;
       branch: string;
       changeDir: string;
+      baseCommit: string;
       attempt: number;
       feedback: GateFailure | null;
       gates: readonly GateConfig[];
@@ -1372,7 +1399,13 @@ export class Orchestrator {
    * the commit found (null without a planning adapter).
    */
   async #commit(
-    c: { row: RunChangeRow; facts: ChangeFacts; worktree: string; changeDir: string },
+    c: {
+      row: RunChangeRow;
+      facts: ChangeFacts;
+      worktree: string;
+      changeDir: string;
+      baseCommit: string;
+    },
     runtime: RunHost,
     number: number,
     result: BuilderSessionResult,
@@ -1390,6 +1423,7 @@ export class Orchestrator {
       changeDir: c.changeDir,
       session: number,
       runId,
+      baseCommit: c.baseCommit,
       interrupted,
     });
     if (commit.ticked.length > 0) updateRunChange(db, c.row.id, { taskTicks: commit.ticked });

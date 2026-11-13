@@ -43,6 +43,7 @@ import { runGit } from '../core/git/run.ts';
 import { assumedAnswers, listRunChangeAskCards } from '../core/store/cards.ts';
 import {
   builderSessionCount,
+  getRunChange,
   listGateResults,
   type RunChangeFlag,
   runChangeTicks,
@@ -169,6 +170,23 @@ export async function pushBranch(input: PushInput): Promise<void> {
   });
 }
 
+/**
+ * Pushes `commit` to the build branch `branch` on the remote, as a fast-forward only: a branch
+ * someone else pushed to meanwhile refuses it (build-ticks-and-owner-steps D-3, ticks taken back
+ * out of an open PR). No local ref is moved.
+ */
+export async function pushBranchCommit(input: PushPlanInput): Promise<void> {
+  if (!/^cp\/[a-z0-9][a-z0-9-]{0,63}$/.test(input.branch)) {
+    throw new DeliveryError(`Refusing to push ${input.branch}: not a Counterpoint branch.`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(input.commit)) throw new DeliveryError('Not a commit id.');
+  await pushRefspec({
+    ...input,
+    refspec: `${input.commit}:refs/heads/${input.branch}`,
+    what: input.branch,
+  });
+}
+
 export interface PushPlanInput extends Omit<PushInput, 'host'> {
   root: string;
   /** The planning write's commit, which no local branch holds. */
@@ -271,6 +289,13 @@ export interface PrBodyInput {
   taskList: string | null;
   /** Tasks this build ticked. */
   ticked: readonly string[];
+  /**
+   * Where the ticks are (build-ticks-and-owner-steps D-3): in this PR, or landing on the base
+   * after it merges; null says nothing.
+   */
+  ticksPlace?: 'pr' | 'after-merge' | null;
+  /** The base branch, named when the ticks land after the merge. */
+  baseBranch?: string;
   /** The builder's recorded assumptions (raw), or null. */
   assumptions: string | null;
   /** Questions the builder asked in Needs You that nobody answered: built on the recommendation. */
@@ -347,6 +372,13 @@ export function prBody(input: PrBodyInput): string {
       : `This build ticked ${input.ticked.length} ${input.ticked.length === 1 ? 'task' : 'tasks'}:`,
   );
   for (const task of input.ticked) out.push(`- [x] ${defuse(task).replace(/\n/g, ' ')}`);
+  if (input.ticked.length > 0 && input.ticksPlace === 'pr') out.push('', '**Ticks:** in this PR.');
+  if (input.ticked.length > 0 && input.ticksPlace === 'after-merge') {
+    out.push(
+      '',
+      `**Ticks:** land on \`${(input.baseBranch ?? 'the base').replaceAll('`', "'")}\` after this PR merges (the task list there changed next to them).`,
+    );
+  }
   if (input.taskList !== null && input.taskList.trim() !== '') {
     out.push(
       '',
@@ -645,6 +677,11 @@ export function createDeliver(
       branch: context.branch,
       taskList: tasksPath === null ? null : readSmallFile(join(context.worktree, tasksPath)),
       ticked: runChangeTicks(context.db, context.runChangeId),
+      ticksPlace: (() => {
+        const place = getRunChange(context.db, context.runChangeId)?.ticks ?? null;
+        return place === 'base' ? null : place;
+      })(),
+      baseBranch: context.host.baseBranch,
       assumptions: readSmallFile(join(context.changeDir, 'assumptions.md')),
       unanswered: assumedAnswers(
         listRunChangeAskCards(context.db, context.runId, context.change.id),

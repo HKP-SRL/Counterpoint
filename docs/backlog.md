@@ -27,6 +27,7 @@ Work deliberately deferred past the roadmap in `docs/decisions.md` (Direction, 2
 - **Build from the remote base** (2026-11-13, `run-as-owner` 8.3). Counterpoint reads the base branch from the owner's local checkout. After a PR merged on GitHub, Cena's local `master` was 2 commits behind, and a session had to fast-forward it by hand. Fetch and build from `origin/<base>` instead.
 - **A button for an out-of-date branch** (2026-11-13). When the base moves past an existing `cp/` branch, the change parks and fixing it takes a terminal step (merge the base in, or delete the branch). Needs You should offer both, or Counterpoint should merge the base in itself.
 - **No rebuild over an open green PR** (2026-11-13). A change whose PR is open and green still shows on the runway as ready, and one click rebuilds it. It stays there until the PR merges and its tasks are ticked on the base branch.
+- **Archive a change once every task is ticked on the base** (2026-11-13, `build-ticks-and-owner-steps`). A built change stays Built and unarchived after its last task, owner steps included, is ticked; its owner-step cards are gone by then. Archive it (merge its spec deltas) as a small planning write.
 - **Context budget overshoot** (2026-11-13). A builder session handed off at 459k tokens against a 400k budget (40% of 1M). The wrap-up turn comes too late; check when usage is read and how much a single turn can add.
 
 ### Design drafts

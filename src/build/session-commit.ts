@@ -7,13 +7,15 @@
 //    (opened without following symlinks and size-capped: the builder could plant a link to a file
 //    only Counterpoint can read, and these texts end up in prompts and the PR body);
 // 2. keeps planning files out of the branch. The change's task list, when it differs only in
-//    ticked boxes, stays in the worktree uncommitted, so the next session sees its progress, and
-//    the ticks are returned for the store. Any other planning edit, and any edit under `.claude/`,
-//    is put back as it was at HEAD and returned as a flag;
+//    ticked boxes, stays in the worktree uncommitted, so the next session sees its progress. Any
+//    other planning edit, and any edit under `.claude/`, is put back as it was at HEAD and
+//    returned as a flag;
 // 3. commits everything else as one commit `cp: <change> session <n>`, authored as the owner (see
 //    FALLBACK_IDENTITY) with a `Counterpoint-Run: <run> session <n>` trailer;
 // 4. reports the build tasks still open in the task list it kept, so the orchestrator can tell a
-//    finished change from a session that stopped with work left.
+//    finished change from a session that stopped with work left, and every task ticked since the
+//    build's base commit (build-ticks-and-owner-steps D-1): counted against the base commit, not
+//    HEAD, so the ticks of Counterpoint's own tick commit on the branch still count.
 import {
   appendFileSync,
   closeSync,
@@ -113,12 +115,14 @@ async function changedPaths(worktree: string): Promise<string[]> {
   return paths;
 }
 
-async function headText(worktree: string, path: string): Promise<string | null> {
-  const { stdout, exitCode } = await runGit(worktree, ['cat-file', '-p', `HEAD:${path}`], {
+async function textAt(worktree: string, rev: string, path: string): Promise<string | null> {
+  const { stdout, exitCode } = await runGit(worktree, ['cat-file', '-p', `${rev}:${path}`], {
     allowExitCodes: [0, 128],
   });
   return exitCode === 0 ? stdout : null;
 }
+
+const headText = (worktree: string, path: string) => textAt(worktree, 'HEAD', path);
 
 export interface SessionCommitInput {
   worktree: string;
@@ -129,6 +133,8 @@ export interface SessionCommitInput {
   session: number;
   /** The run the session belongs to, named in the commit's `Counterpoint-Run` trailer. */
   runId: string;
+  /** The commit the build started from: ticks are counted against its task list (D-1). */
+  baseCommit: string;
   /** The session ended before its turn finished (crash, kill or forced end). */
   interrupted?: boolean;
   /** Seam for tests: the identity lookup (default: the owner's, from git config). */
@@ -138,7 +144,7 @@ export interface SessionCommitInput {
 export interface SessionCommit {
   /** The new commit, or null when the session changed nothing outside planning files. */
   commit: string | null;
-  /** Every task ticked so far on this branch (cumulative, by text). */
+  /** Every task ticked since the build's base commit (cumulative, by text). */
   ticked: string[];
   /** Planning and `.claude/` paths the builder edited; put back as they were. */
   restored: string[];
@@ -190,7 +196,6 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
   const tasksPath = adapter.tasksPath(change);
   const keepUncommitted: string[] = [];
   const restored: string[] = [];
-  let ticked: string[] = [];
   for (const path of await changedPaths(worktree)) {
     const protectedPath =
       adapter.isPlanningPath(path) || path === '.claude' || path.startsWith('.claude/');
@@ -199,7 +204,6 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
     if (path === tasksPath && before !== null) {
       const after = readNote(join(worktree, path));
       if (after !== null && adapter.sameApartFromTicks(before, after)) {
-        ticked = adapter.tickedTasks(before, after);
         keepUncommitted.push(path);
         continue;
       }
@@ -229,11 +233,17 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
     );
     commit = (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   }
-  // 4. What is left: the task list as the next session will see it (kept ticks, or HEAD's).
+  // 4. What is left: the task list as the next session will see it (kept ticks, or HEAD's), and
+  // what it ticked since the base commit.
   let open: string[] | null = null;
+  let ticked: string[] = [];
   if (tasksPath !== null) {
     const list = readNote(join(worktree, tasksPath)) ?? (await headText(worktree, tasksPath));
-    if (list !== null) open = adapter.openTasks(list);
+    if (list !== null) {
+      open = adapter.openTasks(list);
+      const base = await textAt(worktree, input.baseCommit, tasksPath);
+      if (base !== null) ticked = adapter.tickedTasks(base, list);
+    }
   }
   return { commit, ticked, restored, handoff, assumptions, blocked, open };
 }
