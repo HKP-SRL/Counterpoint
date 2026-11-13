@@ -222,6 +222,106 @@ describe('streaming session (fake claude)', () => {
       .toBe(false);
   });
 
+  // A process the session started in a group of its own (a dev server, a database) outlives the
+  // group kill; it is swept by the session's tag when the session ends (first-unattended-run 3.3).
+  it('ends when claude exits and sweeps its tag, though a process that left its group holds the output', async () => {
+    const dir = makeScratchDir('cp-stream');
+    const events: KnownStreamEvent[] = [];
+    const swept: string[] = [];
+    let escaped = 0;
+    const sweeping = new ClaudeCliRunner({
+      binary: FAKE,
+      sweep: async (name, tag) => {
+        swept.push(`${name}=${tag}`);
+        process.kill(escaped, 'SIGKILL');
+        return { found: [{ pid: escaped, command: 'node dev-server' }], error: null };
+      },
+    });
+    const session = await sweeping.start({
+      argv: [],
+      cwd: dir,
+      timeoutMs: 20_000,
+      rawLogPath: join(dir, 'raw.jsonl'),
+      processTag: 'tag-escaped001',
+      onEvent: (event) => events.push(event as KnownStreamEvent),
+    });
+    try {
+      session.send('ESCAPE');
+      await waitFor(events, (e) => e.subtype === 'fake_escaped');
+      escaped = events.find((e) => e.subtype === 'fake_escaped')?.pid as number;
+      const started = Date.now();
+      session.endInput();
+      const end = await session.done;
+      expect(end.exitCode).toBe(0);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(swept).toEqual([`${AGENT_TAG_ENV}=tag-escaped001`]);
+      expect(end.survivors).toEqual([{ pid: escaped, command: 'node dev-server' }]);
+    } finally {
+      try {
+        process.kill(escaped, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  });
+
+  it('tags a one-shot session (an owner step) and sweeps its tag when it ends', async () => {
+    const dir = makeScratchDir('cp-stream');
+    const swept: string[] = [];
+    const oneShot = new ClaudeCliRunner({
+      binary: FAKE,
+      sweep: async (name, tag) => {
+        swept.push(`${name}=${tag}`);
+        return { found: [], error: null };
+      },
+    });
+    const run = await oneShot.run({
+      argv: [],
+      cwd: dir,
+      timeoutMs: 20_000,
+      rawLogPath: join(dir, 'raw.jsonl'),
+    });
+    expect(run.exitCode).toBe(0);
+    expect(swept).toHaveLength(1);
+    expect(swept[0]).toMatch(new RegExp(`^${AGENT_TAG_ENV}=[0-9a-f]{32}$`));
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'finds the escaped process by its tag with the live sweep',
+    async (ctx) => {
+      const { events, session } = await start('tag-livesweep01');
+      session.send('ESCAPE');
+      await waitFor(events, (e) => e.subtype === 'fake_escaped');
+      const escaped = events.find((e) => e.subtype === 'fake_escaped')?.pid as number;
+      try {
+        session.endInput();
+        const end = await session.done;
+        // Some sandboxed shells cannot read other processes' environments at all.
+        if (end.survivors?.length === 0 || end.sweepError) ctx.skip();
+        expect(end.survivors?.map((p) => p.pid)).toEqual([escaped]);
+        await expect
+          .poll(
+            () => {
+              try {
+                process.kill(escaped, 0);
+                return true;
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 5000 },
+          )
+          .toBe(false);
+      } finally {
+        try {
+          process.kill(escaped, 'SIGKILL');
+        } catch {
+          // gone
+        }
+      }
+    },
+  );
+
   it('escalates to SIGKILL when SIGTERM is ignored', async () => {
     const { session, events } = await start();
     session.send('HANG SLOW');

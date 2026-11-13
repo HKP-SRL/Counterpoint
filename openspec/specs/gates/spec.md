@@ -13,11 +13,19 @@ Gates SHALL be commands defined in the gates section of the host's Counterpoint 
 - **THEN** the gates that run are still the ones at the commit the build started from
 
 ### Requirement: Exit code is the only verdict
-A gate SHALL pass only when its command exits 0. A non-zero exit, a signal or a timeout SHALL fail it with a distinct stored reason. Each gate SHALL run in its own process group, killed as a group on timeout or stop.
+A gate SHALL pass only when its command exits 0. A non-zero exit, a signal or a timeout SHALL fail it with a distinct stored reason. Each gate SHALL run in its own process group, killed as a group on timeout or stop. A gate SHALL end when its command exits, even if a process it started still holds its output; that process SHALL then be ended. A stop SHALL always end a running gate, even one already ending on its timeout.
 
 #### Scenario: Gate times out
 - **WHEN** a gate exceeds its timeout
 - **THEN** its whole process group is killed and the gate fails with reason timeout
+
+#### Scenario: A process the gate started keeps its output open
+- **WHEN** a gate's command exits 0 while a server it started in a process group of its own still holds the gate's output
+- **THEN** the gate passes when its command exits, and the server is ended
+
+#### Scenario: Stop while a gate times out
+- **WHEN** the owner stops the run while a gate that timed out ignores the request to end
+- **THEN** the gate is killed at once and the run stops
 
 #### Scenario: Agent claims success
 - **WHEN** the builder reports the work is done but the unit gate exits 1
@@ -56,8 +64,19 @@ A service program that cannot be started during a run SHALL park the change at o
 - **THEN** the change parks at once with that reason and zero attempts spent
 
 #### Scenario: Migration breaks the reset
-- **WHEN** a service's reset command runs and exits 1 on the change's own migration
+- **WHEN** a service's reset command runs and exits 1 on the change's own migration, and the service's start command still succeeds
 - **THEN** the failure goes back to the builder as a gate failure and counts one attempt
+
+### Requirement: A service that will not start stops the run
+A service whose start command runs and fails or times out SHALL NOT count as a judgment of the change: the gate round SHALL end without spending an attempt, the run SHALL stop, and Needs You SHALL show a card naming the service with its last output lines, whose recommended option resumes the run. When a service's reset fails, Counterpoint SHALL run its start command again; if that fails too, the service SHALL count as not starting.
+
+#### Scenario: Docker is not running
+- **WHEN** `supabase start` exits 1 because Docker is not running
+- **THEN** no attempt is counted, the run stops, and Needs You asks to resume once the supabase service is running, showing its last lines
+
+#### Scenario: Docker stopped mid-run
+- **WHEN** a service's reset fails and its start command then fails too
+- **THEN** the run stops the same way, and no attempt is counted
 
 ### Requirement: Zero-test guard
 A test gate that ran zero tests SHALL fail.
