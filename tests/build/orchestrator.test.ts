@@ -434,6 +434,45 @@ describe('a run', () => {
     });
   });
 
+  it("parks a change with claude's error after two failed sessions in a row that moved nothing", async () => {
+    const ctx = await host();
+    const badModel: SessionOutcome = {
+      kind: 'failed',
+      detail:
+        "There's an issue with the selected model (opus-9). It may not exist (model_not_found)",
+    };
+    // Session 1 fails but commits work; sessions 2 and 3 fail with nothing to show.
+    const sessions = fakeSessions((n) => ({
+      reason: 'error',
+      outcome: badModel,
+      tick: false,
+      idle: n > 1,
+    }));
+    const g = gates([]);
+    const { o } = orchestrator(ctx, { startBuilderSession: sessions.start, runGateRound: g.round });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(3);
+    expect(g.calls).toEqual([]);
+    const change = listRunChanges(ctx.db, started.runId)[0];
+    expect(change).toMatchObject({
+      state: 'parked',
+      reason:
+        "Not built: 2 sessions in a row ended on an error from claude without a commit. The last one said: There's an issue with the selected model (opus-9). It may not exist (model_not_found). The branch cp/a-thing keeps the work so far.",
+    });
+    // Each session's error is kept with it, not only its kind.
+    const usage = ctx.db
+      .prepare('SELECT usage FROM agent_sessions WHERE run_change_id = ? ORDER BY id')
+      .all(change?.id ?? -1)
+      .map((row) => JSON.parse(String(row.usage)));
+    expect(usage).toEqual([
+      { outcome: 'failed', detail: badModel.detail },
+      { outcome: 'failed', detail: badModel.detail },
+      { outcome: 'failed', detail: badModel.detail },
+    ]);
+  });
+
   it("parks a change with tasks still open when the attempt's sessions are used up", async () => {
     const ctx = await host();
     writeHostSettings(ctx.db, 'cena', { ...DEFAULT_HOST_SETTINGS, sessionsPerAttempt: 2 });

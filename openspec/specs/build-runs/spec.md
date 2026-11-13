@@ -90,6 +90,13 @@ A change SHALL go to its gates only after a session ends by itself with no task 
 - **WHEN** a session ends by itself with build tasks open, having committed nothing and ticked nothing
 - **THEN** the change parks with the reason instead of spending another session
 
+### Requirement: Failing sessions park the change with claude's error
+Counterpoint SHALL keep the error each session ended on. When two sessions of a change in a row end on an error from claude (an unknown model, a turn or budget cap, a refused request) without committing or ticking anything, the change SHALL park with that error in its reason instead of using up the attempt's sessions.
+
+#### Scenario: Unknown model name
+- **WHEN** every session fails because claude does not know the run's model
+- **THEN** the change parks after its second session, and Needs You shows claude's error
+
 ### Requirement: Builders work through everything they can do
 The builder SHALL keep working until no task it can do is left, and SHALL never stop early to leave work for a later session: the context budget is Counterpoint's to call. It SHALL install the packages, use the network and start the local services a task needs. Only a task that waits on the owner (an `Owner:` step or an ask-first question) SHALL be skipped and named with exactly what it needs, and the work SHALL go on with every task that does not wait on it.
 

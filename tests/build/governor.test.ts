@@ -240,6 +240,18 @@ describe('classifySession', () => {
     ).toMatchObject({ kind: 'failed', detail: 'error_max_turns' });
   });
 
+  it("names claude's error code beside its message for a failed session", () => {
+    expect(
+      classifySession([
+        assistantError('model_not_found'),
+        result({ is_error: true, result: "There's an issue with the selected model (opus-9)." }),
+      ]),
+    ).toEqual({
+      kind: 'failed',
+      detail: "There's an issue with the selected model (opus-9). (model_not_found)",
+    });
+  });
+
   it('does not fail a session the orchestrator interrupted', () => {
     const interrupted = result({ subtype: 'error_during_execution', is_error: true, result: '' });
     expect(classifySession([interrupted], { interrupted: true })).toEqual({ kind: 'ok' });

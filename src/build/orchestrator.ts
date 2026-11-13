@@ -140,6 +140,11 @@ import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.t
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 /** How long a run waits before trying a failed base fetch again (D-4). */
 export const FETCH_RETRY_MS = 5_000;
+/**
+ * Sessions in a row that end on claude's error (a bad model name, a turn or budget cap) without
+ * committing or ticking anything before the change parks with that error.
+ */
+export const FAILED_SESSIONS_TO_PARK = 2;
 /** The least time between two context-fill events of one session. */
 const FILL_EVENT_MS = 20_000;
 /** How far ahead a stop time may be. */
@@ -1245,6 +1250,7 @@ export class Orchestrator {
     if (adapter === null) throw new RunEnd('error', 'The project has no planning framework.');
     let transient = 0;
     let auth = 0;
+    let failed = 0;
     let gateFeedback = c.feedback;
     // Build tasks left open after the latest session (null: the change has no task list).
     let open: string[] | null = null;
@@ -1364,7 +1370,11 @@ export class Orchestrator {
       endAgentSession(db, sessionId, {
         reason: result.reason,
         peakContextTokens: result.peakTokens,
-        usage: { outcome: result.outcome.kind },
+        // The error itself is kept, not only its kind: the run report and a park reason name it.
+        usage:
+          result.outcome.kind === 'ok'
+            ? { outcome: 'ok' }
+            : { outcome: result.outcome.kind, detail: result.outcome.detail.slice(0, 500) },
       });
 
       // Every session's work is committed, whatever ended it.
@@ -1420,9 +1430,31 @@ export class Orchestrator {
           inAttempt -= 1;
           continue;
         }
+        case 'failed': {
+          // The same error again and again (a model name claude does not know fails every
+          // session) parks the change with that error instead of using up the attempt's sessions.
+          transient = 0;
+          auth = 0;
+          const moved = done !== null && (done.commit !== null || done.ticked.length > ticksBefore);
+          failed = moved ? 0 : failed + 1;
+          if (failed >= FAILED_SESSIONS_TO_PARK && !active.stop.signal.aborted) {
+            const detail = result.outcome.detail
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 300)
+              .replace(/([^.!?])$/, '$1.');
+            return this.#parkOpen(
+              active,
+              c,
+              `${failed} sessions in a row ended on an error from claude without a commit. The last one said: ${detail}`,
+            );
+          }
+          break;
+        }
         default:
           transient = 0;
           auth = 0;
+          failed = 0;
       }
       if (active.stop.signal.aborted || result.reason === 'stop-handoff') return 'stopped';
       open = done === null ? null : done.open;

@@ -302,7 +302,12 @@ export function classifySession(
   ) {
     return { kind: 'transient', detail: text || 'API error' };
   }
-  return { kind: 'failed', detail: text || subtype || 'error' };
+  // claude's error code beside its message, so a park reason names what failed (model_not_found).
+  const code = assistantError ?? (subtype === '' ? null : subtype);
+  if (text !== '' && code !== null && !text.includes(code)) {
+    return { kind: 'failed', detail: `${text} (${code})` };
+  }
+  return { kind: 'failed', detail: text || code || 'error' };
 }
 
 /** Backoff before retrying a session after a transient error: 1, 2, 4, ... minutes, at most 30. */
