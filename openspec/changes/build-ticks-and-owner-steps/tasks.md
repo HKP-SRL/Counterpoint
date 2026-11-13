@@ -1,6 +1,6 @@
 # Tasks
 
-Decisions D-1 to D-5 are in design.md. Tests go only where a mistake would stop a run or lose the owner's work.
+Decisions D-1 to D-6 are in design.md. Tests go only where a mistake would stop a run or lose the owner's work.
 
 ## 1. Ticks in the build PR
 

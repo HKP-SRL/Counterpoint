@@ -49,6 +49,10 @@ The card set also takes changes whose status is Built and that are not archived.
 
 *Alternative:* hide Do it for me on built changes (inconsistent until the marking question is settled).
 
+**D-6. No catch-up for changes merged before this ships** (owner, 2026-11-13).
+D-3's after-merge write covers only PRs delivered by this version. Cena's `owner-ui-on-astryx`, the only change affected, was caught up once by hand: Cena PR #17 ticks its 28 build tasks from Counterpoint's record.
+*Alternatives:* a card per such change offering to tick them; landing them on their own at the first start.
+
 ## Risks / Trade-offs
 
 - [The after-merge write lands with no click] → It carries only ticks the PR body listed, starts only on the owner's merge, and a blocked one asks with Retry and Cancel.
@@ -62,12 +66,3 @@ The card set also takes changes whose status is Built and that are not archived.
 1. Build in the order of tasks.md. One nullable column on run changes (where the ticks are: in the PR, or to land after the merge); null on older rows means "delivered before this change".
 2. Reinstall and restart with no run active.
 3. Rollback: git revert and reinstall. First, on the stopped store, drop the column and set `user_version` back by one. Ticks already merged stay on the base.
-
-## Open Questions
-
-- **Changes merged before this ships** (Cena's `owner-ui-on-astryx`: 30 recorded ticks, `master` at 2/32). D-3's after-merge write covers only PRs delivered by this version. The options:
-  - **(a)** One card per such change: "Tick its 30 build tasks on `master`?" with Tick them and Leave. Tick them lands one small write.
-  - **(b)** Land those ticks on its own at the first start (a write to the base that no PR showed).
-  - **(c)** Leave them; the change shows Built either way.
-
-  **Recommendation: (a).** If chosen, it adds one task to group 2.
