@@ -19,6 +19,7 @@ import {
   resolveCard,
   resolveMissingCards,
   setCardOutcome,
+  setCardWhy,
 } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { type EventBus, publishEvent } from '../core/store/events.ts';
@@ -174,6 +175,12 @@ export class CardDesk {
   outcome(card: Pick<CardRow, 'id' | 'hostId'>, text: string): void {
     setCardOutcome(this.#o.store, card.id, text, this.#now());
     this.#publish(card.hostId, { cardId: card.id, outcome: true });
+  }
+
+  /** Rewrites a recomputed card's why line. */
+  setWhy(card: Pick<CardRow, 'id' | 'hostId'>, why: string): void {
+    setCardWhy(this.#o.store, card.id, why, this.#now());
+    this.#publish(card.hostId, { cardId: card.id, why: true });
   }
 
   /** Puts a card back in the inbox, unanswered, with an optional line on why. */

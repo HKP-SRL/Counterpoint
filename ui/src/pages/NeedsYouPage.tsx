@@ -99,6 +99,8 @@ export type QuestionCard = {
   write: CardWrite | null;
   /** The diff a Land it card shows (an owner step Counterpoint did, D-8). */
   diff: string | null;
+  /** The merged build PR a step after the build links to. */
+  prUrl: string | null;
   createdAt: number;
 };
 
@@ -183,6 +185,7 @@ function parseCard(value: unknown): QuestionCard | null {
     outcome: typeof value.outcome === 'string' ? value.outcome : null,
     write: parseWrite(value.write),
     diff: typeof value.diff === 'string' && value.diff !== '' ? value.diff : null,
+    prUrl: typeof value.prUrl === 'string' && PR_URL_RE.test(value.prUrl) ? value.prUrl : null,
     createdAt: count(value.createdAt),
   };
 }
@@ -378,9 +381,16 @@ export function CardBlock(props: {
               </Text>
             </HStack>
             <Text weight="semibold">{card.question}</Text>
-            <Text type="supporting" color="secondary">
-              {card.why}
-            </Text>
+            <HStack gap={2} vAlign="center" wrap="wrap">
+              <Text type="supporting" color="secondary">
+                {card.why}
+              </Text>
+              {card.prUrl === null ? null : (
+                <Link href={card.prUrl} target="_blank" rel="noreferrer">
+                  {`PR #${card.prUrl.split('/').pop()}`}
+                </Link>
+              )}
+            </HStack>
             {card.outcome === null ? null : <Text type="supporting">{card.outcome}</Text>}
           </VStack>
           {card.diff === null ? null : (

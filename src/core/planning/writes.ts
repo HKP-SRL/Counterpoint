@@ -189,6 +189,12 @@ export async function composeWrite(
         };
       }
       files.set(edit.path, ticked);
+    } else if (edit.kind === 'ticks') {
+      // A build's ticks after its PR merged: what is gone is dropped, not a conflict.
+      if (current === null) continue;
+      let list = current;
+      for (const task of edit.tasks) list = rules.tickTask(list, task) ?? list;
+      files.set(edit.path, list);
     } else {
       if (current !== edit.before) {
         return { ok: false, reason: 'conflict', detail: `${edit.path} changed since.` };

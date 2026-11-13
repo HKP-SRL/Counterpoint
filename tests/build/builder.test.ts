@@ -208,13 +208,13 @@ async function worktreeWithChange() {
     '- [ ] 1.1 Add the table\n- [ ] 1.2 Show it\n',
   );
   writeFileIn(root, 'src/app.ts', 'export {};\n');
-  await commitAll(root);
-  return { dir, root, changeDir: join(dir, 'run', 'add-menu') };
+  const base = await commitAll(root);
+  return { dir, root, base, changeDir: join(dir, 'run', 'add-menu') };
 }
 
 describe('commitSession', () => {
   it('commits code, keeps tick-only task edits uncommitted, restores other planning edits', async () => {
-    const { root, changeDir } = await worktreeWithChange();
+    const { root, base, changeDir } = await worktreeWithChange();
     writeFileIn(root, 'src/app.ts', 'export const menu = 1;\n');
     writeFileIn(root, 'src/new.ts', 'export {};\n');
     writeFileIn(
@@ -234,6 +234,7 @@ describe('commitSession', () => {
       changeDir,
       session: 1,
       runId: '20261111-1739-1cb727',
+      baseCommit: base,
       identity: async () => ({ name: 'Owner Name', email: 'owner@example.com' }),
     });
     expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
@@ -280,7 +281,7 @@ describe('commitSession', () => {
   });
 
   it('restores a task list edited beyond ticks, and commits nothing when nothing else changed', async () => {
-    const { root, changeDir } = await worktreeWithChange();
+    const { root, base, changeDir } = await worktreeWithChange();
     writeFileIn(root, 'openspec/changes/add-menu/tasks.md', '- [x] 1.1 Add the table\n');
     const result = await commitSession({
       worktree: root,
@@ -289,6 +290,7 @@ describe('commitSession', () => {
       changeDir,
       session: 2,
       runId: 'r1',
+      baseCommit: base,
     });
     expect(result.commit).toBeNull();
     expect(result.ticked).toEqual([]);
@@ -298,7 +300,7 @@ describe('commitSession', () => {
   });
 
   it('moves a blocked-task note out of the worktree and counts no owner step as open', async () => {
-    const { root, changeDir } = await worktreeWithChange();
+    const { root, base, changeDir } = await worktreeWithChange();
     writeFileIn(
       root,
       'openspec/changes/add-menu/tasks.md',
@@ -312,6 +314,7 @@ describe('commitSession', () => {
       changeDir,
       session: 3,
       runId: 'r1',
+      baseCommit: base,
       identity: async () => null,
     });
     expect(result.blocked).toEqual({
@@ -339,13 +342,14 @@ describe('commitSession', () => {
       changeDir: ownerOnly.changeDir,
       session: 1,
       runId: 'r1',
+      baseCommit: ownerOnly.base,
       identity: async () => null,
     });
     expect(none.open).toEqual([]);
   });
 
   it('never follows a handoff symlink', async () => {
-    const { dir, root, changeDir } = await worktreeWithChange();
+    const { dir, root, base, changeDir } = await worktreeWithChange();
     writeFileSync(join(dir, 'secret'), 'top secret\n');
     symlinkSync(join(dir, 'secret'), join(root, HANDOFF_FILE));
     const result = await commitSession({
@@ -355,6 +359,7 @@ describe('commitSession', () => {
       changeDir,
       session: 1,
       runId: 'r1',
+      baseCommit: base,
       identity: async () => null,
       interrupted: true,
     });

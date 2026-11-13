@@ -33,6 +33,7 @@ import {
   getPlanningWrite,
   PLAN_WRITE_ID_RE,
 } from '../../core/store/planning-writes.ts';
+import { mergedPullRequests } from '../../core/store/runs.ts';
 import { getAgentSession } from '../../core/store/sessions.ts';
 import type { CardDesk } from '../cards.ts';
 import type { HostRuntimes } from '../hosts.ts';
@@ -82,6 +83,15 @@ function diffView(store: Store, card: CardRow): string | null {
   return landCardResult(store, card.id)?.diff ?? null;
 }
 
+/**
+ * The merged build PR an owner-step card of a built change links to (build-ticks-and-owner-steps
+ * D-5); null for every other card.
+ */
+function prView(store: Store, card: CardRow): string | null {
+  if (card.kind !== 'owner-step' || card.change === null || card.hostId === null) return null;
+  return mergedPullRequests(store, card.hostId).get(card.change) ?? null;
+}
+
 /** A card as the console sees it: actions stay on the server, the console sees only that one runs. */
 export function cardView(card: CardRow, store?: Store) {
   return {
@@ -108,6 +118,7 @@ export function cardView(card: CardRow, store?: Store) {
     outcome: card.outcome,
     write: store === undefined ? null : writeView(store, card),
     diff: store === undefined ? null : diffView(store, card),
+    prUrl: store === undefined ? null : prView(store, card),
     createdAt: card.createdAt,
   };
 }

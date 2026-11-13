@@ -22,6 +22,7 @@ import type { Hono } from 'hono';
 import { ClaudeCliRunner } from '../agent/runner.ts';
 import { createActionRunner } from '../build/actions.ts';
 import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../build/ask-session.ts';
+import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
 import { createDeliver } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
@@ -287,6 +288,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const runtimes = createHostRuntimes({ store });
   // Planning writes land as small PRs (owner-inbox D-11); the minute tick moves them along.
   let lane: PlanningLane | undefined;
+  // Build ticks of open and merged build PRs (build-ticks-and-owner-steps D-3), on the same tick.
+  let buildTicks: BuildTicks | undefined;
   // The base fetcher (host-planning: When the base is fetched): every host's base branch from its
   // remote, once a minute and at each run and build start. A change in what the console shows
   // about it (a failed fetch, unpushed local commits) is announced like a new base tip.
@@ -302,6 +305,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       if (merged.length > 0) {
         publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
       }
+      await buildTicks?.tick(host.id, env);
       await lane?.tick(host.id, env);
     },
   });
@@ -379,6 +383,13 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       const card = row.cardId === null ? undefined : getCard(store, row.cardId);
       const text = writeOutcome(row);
       if (card !== undefined && text !== null) desk.outcome(card, text);
+      // No click started a build's after-merge ticks: Cancel closes their card, nothing to redo.
+      if (card?.kind === BUILD_TICKS_KIND && row.state === 'cancelled') {
+        desk.resolve(
+          card,
+          `Cancelled; the tasks stay open on ${runtimes.get(row.hostId)?.host.baseBranch ?? 'the base'}.`,
+        );
+      }
       publishEvent(store, bus, {
         hostId: row.hostId,
         family: 'needs-you',
@@ -392,6 +403,16 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
         });
       }
     },
+    log,
+  });
+  buildTicks = new BuildTicks({
+    db: store,
+    home: options.home,
+    runtime: (hostId) => runtimes.get(hostId),
+    fetchBase: (host, env) => fetcher.fetch(host, env),
+    raise: (card) => desk.raise(card),
+    answer: (cardId) => desk.answer(cardId, { option: 0 }),
+    submit: (hostId, write, cardId) => lane?.submit(hostId, write, cardId),
     log,
   });
   const governor = new Governor({ db: store });

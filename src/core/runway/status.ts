@@ -17,7 +17,7 @@ export interface DerivedStatus {
   notReadyReason: NotReadyReason | null;
 }
 
-/** Builds keep task ticks out of their PR, so a merged build PR is a fact of its own. */
+/** A build PR can merge before its ticks reach the base, so a merged build PR is a fact of its own. */
 export interface MergedFact {
   /** The change's latest build PR merged (runway: A merged build PR means built). */
   merged?: boolean;

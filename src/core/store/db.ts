@@ -344,6 +344,12 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX owner_step_results_by_card ON owner_step_results(land_card_id)
     WHERE land_card_id IS NOT NULL;
   `,
+  // 14: where a delivered build's task ticks are (build-ticks-and-owner-steps D-3): `pr` (in the
+  // build PR), `after-merge` (left out of it; they land after the merge) or `base` (handed to the
+  // base after the merge). Null for a row delivered before this version, or not delivered.
+  `
+  ALTER TABLE run_changes ADD COLUMN ticks TEXT CHECK (ticks IN ('pr', 'after-merge', 'base'));
+  `,
 ];
 
 /** Path of the state database under a home. */

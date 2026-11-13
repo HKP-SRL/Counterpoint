@@ -116,6 +116,7 @@ export async function recoverRuns(input: {
         changeDir,
         session: Math.max(1, number),
         runId: run.id,
+        baseCommit: change.baseCommit,
         interrupted: true,
       });
       if (committed.ticked.length > 0)

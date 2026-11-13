@@ -53,6 +53,14 @@ The card set also takes changes whose status is Built and that are not archived.
 D-3's after-merge write covers only PRs delivered by this version. Cena's `owner-ui-on-astryx`, the only change affected, was caught up once by hand: Cena PR #17 ticks its 28 build tasks from Counterpoint's record.
 *Alternatives:* a card per such change offering to tick them; landing them on their own at the first start.
 
+## Added during apply
+
+Small pieces the decisions needed, recorded here (2026-11-13):
+- **Delivery takes earlier ticks back out too.** When the list now conflicts and an earlier delivery's tick commit is already on the branch, the delivery adds the commit that puts back the branch-point list, as the minute tick would (D-3).
+- **The after-merge write rides on a card.** It is started with a `build-ticks` card created already answered, so it shows under Landing with Retry and Cancel like any write. Cancel closes that card; the ticks stay open on the base. It is one planning edit of a new kind, `ticks`, that drops tasks that are gone. The run change's column takes a third value, `base`, once the ticks were handed to the base, so the write starts only once.
+- **"At Counterpoint's last push"** is the PR head (`gh pr view --json headRefOid`) equal to the local `cp/<change>` tip, which is what Counterpoint pushed. The take-out commit is pushed as a fast-forward only, then the local branch follows it.
+- **Owner-step cards get their new why line.** A card is found by its key, so a change that turns Built has its open cards' why line rewritten.
+
 ## Risks / Trade-offs
 
 - [The after-merge write lands with no click] → It carries only ticks the PR body listed, starts only on the owner's merge, and a blocked one asks with Retry and Cancel.

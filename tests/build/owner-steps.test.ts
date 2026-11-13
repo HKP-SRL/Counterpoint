@@ -6,7 +6,7 @@
 // files lands nothing and gives the step back.
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -24,6 +24,12 @@ import { openStore, upsertHost } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
 import { landCardResult } from '../../src/core/store/owner-step-results.ts';
 import { cardPlanningWrite } from '../../src/core/store/planning-writes.ts';
+import {
+  insertRun,
+  insertRunChange,
+  setPullRequestState,
+  updateRunChange,
+} from '../../src/core/store/runs.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
 import { CardDesk } from '../../src/server/cards.ts';
 import { createHostRuntimes } from '../../src/server/hosts.ts';
@@ -174,6 +180,44 @@ describe('owner steps as cards', () => {
     await steps.sync('cena');
     expect(getCard(store, cook?.id as string)?.state).toBe('open');
     expect(listWaitingCards(store, 'cena')).toHaveLength(2);
+  });
+
+  it("keeps a built change's open steps as cards naming its merged PR, until it is archived", async () => {
+    const { repo, bare, store, steps } = await setup();
+    await steps.sync('cena');
+    // The build PR merged: built, both owner steps still open.
+    const prUrl = 'https://github.com/alex/Cena/pull/16';
+    insertRun(store, { id: 'r1', hostId: 'cena', settings: {}, stopAt: null });
+    const row = insertRunChange(store, { runId: 'r1', change: 'a-thing', position: 0 });
+    updateRunChange(store, row, { state: 'green', prUrl });
+    setPullRequestState(store, row, 'merged');
+    await steps.sync('cena');
+    const cards = listWaitingCards(store, 'cena');
+    const why = 'a-thing is merged (PR #16). A step after the build only you can sign off.';
+    expect(cards.map((card) => [card.question, card.why])).toEqual([
+      ['tell the cook', why],
+      ['check the menu', why],
+    ]);
+    expect(cards.map((card) => cardView(card, store).prUrl)).toEqual([prUrl, prUrl]);
+    expect(cards[0]?.options.map((option) => option.label)).toEqual(['Done', 'Do it for me']);
+
+    // Archived on the base: no card is left.
+    const clone = makeScratchDir('owner-steps-archive');
+    await runGit(clone, ['clone', '--quiet', bare, '.']);
+    await runGit(clone, ['config', 'user.email', 'o@example.invalid']);
+    await runGit(clone, ['config', 'user.name', 'Other']);
+    mkdirSync(join(clone, 'openspec/changes/archive'), { recursive: true });
+    await runGit(clone, [
+      'mv',
+      'openspec/changes/a-thing',
+      'openspec/changes/archive/2026-11-13-a-thing',
+    ]);
+    await runGit(clone, ['commit', '--quiet', '-m', 'archive a-thing']);
+    await runGit(clone, ['push', '--quiet', 'origin', 'HEAD:master']);
+    const env = { PATH: process.env.PATH ?? '' };
+    await fetchBaseBranch({ repo: repo.root, baseBranch: 'master', remote: 'origin', env });
+    await steps.sync('cena');
+    expect(listWaitingCards(store, 'cena')).toEqual([]);
   });
 });
 

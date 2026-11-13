@@ -336,6 +336,15 @@ export function setCardOutcome(db: Store, id: string, outcome: string, now = Dat
   );
 }
 
+/** Rewrites a recomputed card's why line (its cause is the same; what it says about it changed). */
+export function setCardWhy(db: Store, id: string, why: string, now = Date.now()): void {
+  db.prepare('UPDATE cards SET why = ?, updated_at = ? WHERE id = ?').run(
+    why.trim().slice(0, MAX_LINE),
+    now,
+    id,
+  );
+}
+
 /** Puts an answered card back as it was before the answer (a cancelled planning write). */
 export function reopenCard(db: Store, id: string, now = Date.now()): void {
   db.prepare(

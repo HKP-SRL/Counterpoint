@@ -1,8 +1,9 @@
 // Owner steps as cards (owner-inbox 4.2, 4.3; owner-steps: Owner steps are cards, Do it for me,
 // Land it).
 //
-// Every unchecked `Owner:` step of a change that is planned (ready to approve) or on the runway is
-// a card: Done ticks the step through a planning write (planning-lane.ts: a small PR the same click
+// Every unchecked `Owner:` step of a change that is planned (ready to approve), on the runway, or
+// built and not archived (build-ticks-and-owner-steps D-5: a step after the build stays a card,
+// naming the merged build PR, until it is ticked on the base) is a card: Done ticks the step through a planning write (planning-lane.ts: a small PR the same click
 // merges), Do it for me runs the step in a worktree (D-8), Later is the card's own L. The cards are
 // recomputed from the base as last fetched whenever Needs You is read: a step ticked on the base,
 // or no longer in the plan, resolves its card; a step that comes back reopens it.
@@ -29,7 +30,12 @@ import { runGit } from '../core/git/run.ts';
 import { hostDir } from '../core/host/home.ts';
 import { readHostConfig } from '../core/host/host-config.ts';
 import { checkWrite, composeWrite, type PlanningHost } from '../core/planning/writes.ts';
-import { deriveChangeStatus, ownerSteps, withMerged } from '../core/runway/status.ts';
+import {
+  deriveChangeStatus,
+  type MergedFact,
+  ownerSteps,
+  withMerged,
+} from '../core/runway/status.ts';
 import { type CardAction, type CardRow, getCardByKey, type NewCard } from '../core/store/cards.ts';
 import {
   getOwnerStepResult,
@@ -40,6 +46,7 @@ import {
   updateOwnerStepResult,
 } from '../core/store/owner-step-results.ts';
 import { cardPlanningWrite, type PlanningEdit } from '../core/store/planning-writes.ts';
+import { mergedPullRequests } from '../core/store/runs.ts';
 import type { ApprovalViews } from '../server/approval-views.ts';
 import type { CardDesk } from '../server/cards.ts';
 import type { HostRuntime, HostRuntimes } from '../server/hosts.ts';
@@ -74,9 +81,23 @@ const clip = (text: string, max: number): string => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
-/** The card for one owner step. */
-export function ownerStepCard(hostId: string, change: string, step: string): NewCard {
+/** The PR number in a PR URL, or null. */
+function prNumber(prUrl: string): string | null {
+  return /\/pull\/(\d+)$/.exec(prUrl)?.[1] ?? null;
+}
+
+/**
+ * The card for one owner step. `merged` is the change's merged build PR, for a built change: the
+ * card says so (D-5).
+ */
+export function ownerStepCard(
+  hostId: string,
+  change: string,
+  step: string,
+  merged: { prUrl: string | null } | null = null,
+): NewCard {
   const id = stepId(step);
+  const number = merged?.prUrl == null ? null : prNumber(merged.prUrl);
   return {
     hostId,
     key: ownerStepKey(hostId, change, step),
@@ -84,7 +105,10 @@ export function ownerStepCard(hostId: string, change: string, step: string): New
     source: 'change',
     change,
     question: clip(step.replace(/^Owner:\s*/, ''), 500),
-    why: `A step of ${change} only you can sign off.`,
+    why:
+      merged === null
+        ? `A step of ${change} only you can sign off.`
+        : `${change} is ${number === null ? 'built' : `merged (PR #${number})`}. A step after the build only you can sign off.`,
     options: [
       {
         label: 'Done',
@@ -103,18 +127,25 @@ export function ownerStepCard(hostId: string, change: string, step: string): New
   };
 }
 
-/** The owner steps that are cards now: those of planned and runway changes. */
+/**
+ * The owner steps that are cards now: those of planned, runway and built changes that are not
+ * archived. `mergedPrs` maps a change whose build PR merged to that PR's URL.
+ */
 export function ownerStepCards(
   hostId: string,
-  changes: readonly ChangeFacts[],
+  changes: readonly (ChangeFacts & MergedFact)[],
   onRunway: ReadonlySet<string>,
+  mergedPrs: ReadonlyMap<string, string> = new Map(),
 ): NewCard[] {
   const cards: NewCard[] = [];
   for (const change of changes) {
     if (change.archived) continue;
     const { status } = deriveChangeStatus(change, onRunway.has(change.id) ? 'on-runway' : null);
-    if (status !== 'ready' && status !== 'on-runway') continue;
-    for (const step of ownerSteps(change)) cards.push(ownerStepCard(hostId, change.id, step));
+    if (status !== 'ready' && status !== 'on-runway' && status !== 'built') continue;
+    const merged = status === 'built' ? { prUrl: mergedPrs.get(change.id) ?? null } : null;
+    for (const step of ownerSteps(change)) {
+      cards.push(ownerStepCard(hostId, change.id, step, merged));
+    }
   }
   return cards;
 }
@@ -304,7 +335,12 @@ export class OwnerSteps {
       [...states].filter(([, state]) => state.state === 'on-runway').map(([id]) => id),
     );
     const changes = withMerged(view.snapshot.changes, this.#o.approvals.merged(hostId));
-    const cards = ownerStepCards(hostId, changes, onRunway);
+    const cards = ownerStepCards(
+      hostId,
+      changes,
+      onRunway,
+      mergedPullRequests(this.#o.desk.store, hostId),
+    );
     const keep = new Set(cards.map((card) => card.key ?? ''));
     const prefix = keyPrefix(hostId);
     const unreadable = changes.filter((change) => change.unreadable !== null);
@@ -318,6 +354,10 @@ export class OwnerSteps {
           input.key == null ? undefined : getCardByKey(this.#o.desk.store, input.key);
         if (existing?.state === 'resolved') this.#o.desk.reopen(existing);
         else this.#o.desk.raise(input);
+        // A change that turned Built keeps its cards; their why line says it is merged (D-5).
+        if (existing !== undefined && existing.why !== input.why) {
+          this.#o.desk.setWhy(existing, input.why);
+        }
       } catch {
         // a step the card model refuses is left out, never a failed read
       }
