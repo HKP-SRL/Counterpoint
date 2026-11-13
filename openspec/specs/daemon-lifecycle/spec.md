@@ -42,6 +42,17 @@ Counterpoint SHALL run at most one daemon per machine. Running `counterpoint` in
 - **WHEN** the owner runs `counterpoint status` while the daemon runs
 - **THEN** each host prints as `{host}  running on 127.0.0.1:{port}  runway {n}  needs you {m}`
 
+### Requirement: Stop on a signal
+When the daemon receives SIGTERM or SIGINT it SHALL stop as `counterpoint stop` does: a running run first stops at its next clean point and writes its run report, then the daemon exits. If the run does not reach its clean point within a time limit, its sessions and gates SHALL be ended, keeping their work on the branch, and the daemon SHALL exit; a run that still did not end SHALL be finished at the next start. A second signal SHALL stop the daemon at once.
+
+#### Scenario: Signal during a gate
+- **WHEN** the daemon gets SIGTERM while a run's gate is running
+- **THEN** the gate is stopped, the run ends with its report written, and the daemon exits
+
+#### Scenario: Session does not wrap up in time
+- **WHEN** the daemon gets SIGTERM while a builder session is mid-task and the session does not wrap up within the time limit
+- **THEN** the session is ended, its work so far stays on the branch, and the daemon exits
+
 ### Requirement: Home must exist before start
 Counterpoint SHALL keep its state in a home folder taken from `COUNTERPOINT_HOME`, else the platform's application-data folder. If that folder does not exist, every command except `counterpoint init` SHALL refuse with a clear message and create nothing. `counterpoint init` SHALL create the home with owner-only permissions.
 
