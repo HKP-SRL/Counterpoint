@@ -6,6 +6,7 @@
 // source `session`, which the store refuses to give an action. Answering a card never runs
 // anything the card's text says: only the option's catalog action, and only Counterpoint attached
 // one.
+import { ASK_NOT_READ } from '../core/store/ask.ts';
 import {
   addDoneForYou,
   answerCard,
@@ -158,9 +159,10 @@ export class CardDesk {
     }
     const action = card.options[card.answer ?? -1]?.action;
     if (action === undefined) {
-      // A listener may have said where the answer went (the asking session had ended).
+      // A listener may have said where the answer went (the asking session had ended). Otherwise
+      // it waits for the session: "Read by the session" once a wait or check_answer reads it.
       if (card.source === 'session' && getCard(this.#o.store, id)?.outcome == null) {
-        this.outcome(card, 'Sent to the session that asked.');
+        this.outcome(card, ASK_NOT_READ);
       }
       return getCard(this.#o.store, id) as CardRow;
     }

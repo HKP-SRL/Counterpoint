@@ -57,7 +57,8 @@ Only Counterpoint's own code paths create cards with actions. Cards from `ask_ow
 - **Tools:**
   - `ask_owner({question, why, options[2-4], recommended, reversible, wait})`;
   - `check_answer({card})`.
-  `wait` blocks at most 10 minutes per call (MCP calls must not hang a session indefinitely), then returns "still open" with the card id.
+  `wait` blocks at most 10 minutes per call (MCP calls must not hang a session indefinitely), then returns "still open" with the card id. Builders never wait (fix, 2026-11-13): a builder's `wait` returns at once with the recommendation assumed.
+- **Fixes (2026-11-13):** an interactive session's cards always notify, and its tool replies tell it to repeat a waiting question in the chat; answered session cards say "Not read yet" until the session reads them; an interactive session whose MCP server's input ends closes its unanswered cards as "Session ended" and loses its capability.
 - **Answers reach later sessions:** an answer arriving after a builder session ended is written into the next session's prompt for that change.
 
 **D-6. The unanswered rules generalise council's.**

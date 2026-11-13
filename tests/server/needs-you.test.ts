@@ -153,7 +153,7 @@ describe('question cards through the API', () => {
       state: 'answered',
       answer: 1,
       note: 'the old site',
-      outcome: 'Sent to the session that asked.',
+      outcome: 'Not read yet',
     });
     expect((await post(`/api/hosts/${hostId}/cards/${card.id}/answer`, { option: 0 })).status).toBe(
       409,

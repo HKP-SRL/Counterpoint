@@ -34,7 +34,7 @@ A parked change SHALL offer to retry with the failure as a note to the builder, 
 - **THEN** the change is queued for the next run and its first session receives the hint
 
 ### Requirement: Notified when a card blocks work
-When a card that blocks work arrives, Counterpoint SHALL notify the owner on this machine: a macOS notification naming the question, the count in the tab title, and a browser notification when the console is open and the owner has allowed it. Notifications SHALL carry no secret and no host file content beyond the card's question.
+When a card that blocks work arrives, Counterpoint SHALL notify the owner on this machine; a question from the owner's own interactive session counts as blocking, since that session is waiting in the chat. The notification is a macOS notification naming the question, the count in the tab title, and a browser notification when the console is open and the owner has allowed it. Notifications SHALL carry no secret and no host file content beyond the card's question.
 
 #### Scenario: Owner in another app
 - **WHEN** a run parks a change while the owner works in another app

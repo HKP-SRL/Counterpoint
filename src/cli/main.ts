@@ -544,7 +544,7 @@ async function mcpAsk(): Promise<void> {
           withCapability,
         );
   await serveAskMcp(process.stdin, process.stdout, (notify) =>
-    createAskMcp({ version: packageVersion(), notify, transport }),
+    createAskMcp({ version: packageVersion(), notify, transport, interactive: capability === '' }),
   );
 }
 
