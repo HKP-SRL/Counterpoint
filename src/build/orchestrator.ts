@@ -862,8 +862,12 @@ export class Orchestrator {
       }
       let waitMs = 0;
       if (outcome?.kind === 'usage-limit') {
-        // The governor paused every lane; the next calibration waits for the reset.
+        // The governor paused every lane; the next calibration waits for the reset. A reset that
+        // is already past still waits the governor's 30 minutes, so this never spins.
         this.#o.governor.noteOutcome(outcome);
+        if (this.#o.governor.holdUntil() === null) {
+          this.#o.governor.pauseForLimit(null, outcome.detail);
+        }
       } else if (outcome?.kind === 'transient' && transient < CALIBRATION_RETRIES) {
         transient += 1;
         waitMs = transientBackoffMs(transient);
