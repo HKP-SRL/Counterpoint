@@ -168,4 +168,62 @@ describe('question cards through the API', () => {
     expect(after.cards.map((c) => c.id)).not.toContain(card.id);
     expect(after.answered.map((c) => c.id)).toContain(card.id);
   });
+
+  it('marks the options that merge into the base, so Enter never picks them', async () => {
+    const { CardDesk } = await import('../../src/server/cards.ts');
+    const desk = new CardDesk({ store: db, bus: new EventBus() });
+    const step = desk.raise({
+      hostId,
+      kind: 'owner-step',
+      source: 'change',
+      change: 'ready-thing',
+      question: 'Rotate the API key',
+      why: 'A step only you can sign off.',
+      options: [
+        {
+          label: 'Done',
+          consequence: 'Ticked in a small PR and merged.',
+          action: { type: 'tick-owner-step', change: 'ready-thing', step: '0123456789ab' },
+        },
+        {
+          label: 'Do it for me',
+          consequence: 'Done in a worktree; you see the result first.',
+          action: { type: 'perform-owner-step', change: 'ready-thing', step: '0123456789ab' },
+        },
+      ],
+      recommended: 0,
+      reversible: true,
+      blocking: false,
+    });
+    const land = desk.raise({
+      hostId,
+      kind: 'owner-step-result',
+      source: 'change',
+      change: 'ready-thing',
+      question: 'Land this file?',
+      why: 'README.md',
+      options: [
+        {
+          label: 'Land it',
+          consequence: 'One small PR, merged at once.',
+          action: { type: 'land-owner-step', resultId: 'r-0123456789abcdef' },
+        },
+        {
+          label: 'Discard',
+          consequence: 'Nothing lands.',
+          action: { type: 'discard-owner-step', resultId: 'r-0123456789abcdef' },
+        },
+      ],
+      recommended: 0,
+      reversible: true,
+      blocking: false,
+    });
+    const listed = (await (await needsYou()).json()) as {
+      cards: Array<{ id: string; options: Array<{ merges: boolean }> }>;
+    };
+    const merges = (id: string) =>
+      listed.cards.find((c) => c.id === id)?.options.map((o) => o.merges);
+    expect(merges(step.id)).toEqual([true, false]);
+    expect(merges(land.id)).toEqual([true, false]);
+  });
 });

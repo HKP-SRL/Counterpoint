@@ -19,6 +19,7 @@ import { builderSessionOf } from '../../build/ask-session.ts';
 import { HOST_ID_RE } from '../../core/ids.ts';
 import { runNeedsYou } from '../../core/runway/run-items.ts';
 import {
+  type CardActionType,
   CardRefusal,
   type CardRow,
   getCard,
@@ -76,6 +77,15 @@ function writeView(store: Store, card: CardRow) {
 
 const LANDING = new Set(['pending', 'landing', 'waiting', 'blocked']);
 
+/**
+ * Actions that merge into the host's base branch (an owner step ticked, a Land it diff). The
+ * console never picks these with Enter: they need their digit or a click.
+ */
+const MERGING_ACTIONS: ReadonlySet<CardActionType> = new Set([
+  'tick-owner-step',
+  'land-owner-step',
+]);
+
 /** The diff a waiting Land it card shows (owner-inbox D-8); null for every other card. */
 function diffView(store: Store, card: CardRow): string | null {
   if (card.kind !== 'owner-step-result') return null;
@@ -107,6 +117,7 @@ export function cardView(card: CardRow, store?: Store) {
       label: option.label,
       consequence: option.consequence,
       acts: option.action !== undefined,
+      merges: option.action !== undefined && MERGING_ACTIONS.has(option.action.type),
     })),
     recommended: card.recommended,
     reversible: card.reversible,
