@@ -104,6 +104,15 @@ function ReasonBanners({ change }: { change: ChangeDetail }) {
         }
       />,
     );
+  } else if (change.status === 'owner-steps') {
+    banners.push(
+      <Banner
+        key="owner-steps-left"
+        status="info"
+        title="Only owner steps are left"
+        description={`Every other task in ${change.id} is checked, so there is nothing to build. It shows Built once the owner steps below are checked too. Approval is not offered.`}
+      />,
+    );
   } else if (change.status === 'not-planned') {
     banners.push(
       <Banner

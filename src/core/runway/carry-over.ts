@@ -9,7 +9,7 @@ import { type FrameworkAdapter, findChange, type GitFileReader } from '../framew
 import { isChangeId } from '../ids.ts';
 import { approveChange, finishCarryOver, pendingCarryOver } from '../store/approvals.ts';
 import type { Store } from '../store/db.ts';
-import { isBuilt } from './status.ts';
+import { nothingToBuild } from './status.ts';
 
 /** Where earlier versions committed approvals. */
 export const LEGACY_APPROVALS_DIR = '.counterpoint/approvals';
@@ -43,7 +43,7 @@ export async function carryOverHost(
       for (const change of names) {
         const facts = findChange(snapshot.changes, change);
         if (facts === undefined || facts === null) continue;
-        if (facts.archived || facts.unreadable !== null || isBuilt(facts)) continue;
+        if (facts.archived || facts.unreadable !== null || nothingToBuild(facts)) continue;
         approveChange(db, { hostId: host.hostId, change, baseCommit: tip, carriedOver: true }, now);
         approved.push(change);
       }

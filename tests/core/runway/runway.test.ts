@@ -124,6 +124,25 @@ describe('an approval stays with the change', () => {
     expect(listApprovals(db, 'cena')).toEqual([]);
   });
 
+  it('ends it when only owner steps are left, and refuses to approve such a change', async () => {
+    const { repo, db, runtime, views } = await setup();
+    await views.approve(runtime, 'a-thing');
+    await commitChange(
+      repo.root,
+      'openspec/changes/a-thing/tasks.md',
+      '- [x] 1.1 Do it\n- [x] 1.2 Test it\n- [ ] 1.3 Owner: audit the UI\n',
+    );
+    expect((await views.runway(runtime)).count).toBe(0);
+    // Nothing is left to build: the approval has ended.
+    expect(listApprovals(db, 'cena')).toEqual([]);
+    expect(await views.approve(runtime, 'a-thing')).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringMatching(/only owner steps left/),
+    });
+    expect(await views.approveAll(runtime)).toEqual(['b-thing']);
+  });
+
   it('leaves an unreadable change off the runway but keeps its approval', async () => {
     const { repo, db, runtime, views } = await setup();
     await views.approve(runtime, 'a-thing');
@@ -178,6 +197,9 @@ describe('the derivation', () => {
     });
     expect(approvalStateOf(row, undefined)).toMatchObject({ reason: 'missing' });
     expect(approvalStateOf(row, facts({ archived: true }))).toMatchObject({ reason: 'built' });
+    expect(
+      approvalStateOf(row, facts({ tasks: { total: 2, done: 1, ownerSteps: ['Owner: x'] } })),
+    ).toMatchObject({ reason: 'owner-steps' });
     expect(approvalStateOf(row, facts({}))).toEqual({
       state: 'on-runway',
       approvedAt: 5,

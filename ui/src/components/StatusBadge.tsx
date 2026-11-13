@@ -4,12 +4,19 @@
 // Icons come from the theme's icon registry only (no second icon set, Registry Safety). The
 // registry has exact matches for circle-check (`success`), triangle-alert (`warning`), check and
 // circle-x (`error`); it has no circle-dashed or circle-dot, so `Not ready` uses `clock` (not
-// started yet) and `Ready to approve` uses `info`.
+// started yet), `Ready to approve` uses `info` and `Owner steps left` uses `wrench` (only the owner
+// can do what is left).
 import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import type { IconName } from '@astryxdesign/core/Icon';
 import { Icon } from '@astryxdesign/core/Icon';
 
-export type ChangeStatus = 'unreadable' | 'built' | 'on-runway' | 'ready' | 'not-planned';
+export type ChangeStatus =
+  | 'unreadable'
+  | 'built'
+  | 'owner-steps'
+  | 'on-runway'
+  | 'ready'
+  | 'not-planned';
 
 interface StatusLook {
   label: string;
@@ -21,6 +28,7 @@ export const CHANGE_STATUS: Readonly<Record<ChangeStatus, StatusLook>> = {
   'not-planned': { label: 'Not ready', variant: 'neutral', icon: 'clock' },
   ready: { label: 'Ready to approve', variant: 'info', icon: 'info' },
   'on-runway': { label: 'On runway', variant: 'success', icon: 'success' },
+  'owner-steps': { label: 'Owner steps left', variant: 'neutral', icon: 'wrench' },
   built: { label: 'Built', variant: 'neutral', icon: 'check' },
   unreadable: { label: "Couldn't read", variant: 'error', icon: 'error' },
 };

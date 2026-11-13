@@ -829,6 +829,8 @@ export class Orchestrator {
         return 'Its approval was withdrawn.';
       case 'built':
         return 'It is built already.';
+      case 'owner-steps':
+        return 'Only owner steps are left: there is nothing to build.';
       case 'unreadable':
         return 'Its planning files cannot be read at the base-branch tip.';
       case 'missing':

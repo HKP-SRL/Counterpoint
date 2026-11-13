@@ -63,7 +63,7 @@ A change whose files cannot be read or parsed SHALL show as unreadable with the 
 - **THEN** the change shows as unreadable with that reason
 
 ### Requirement: Change statuses
-Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, every task checked, or its latest build PR merged); On runway (the owner approved it); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve changes SHALL offer approval, and only On runway changes SHALL offer withdrawing it.
+Each change SHALL show one status derived at read time, in this precedence: Unreadable; Built (archived, every task checked, or its latest build PR merged); Owner steps left; On runway (the owner approved it); Ready to approve (a proposal and at least one task); otherwise Not ready, with the reason (no proposal or no tasks). Only Ready to approve changes SHALL offer approval, and only On runway changes SHALL offer withdrawing it.
 
 #### Scenario: Missing tasks
 - **WHEN** a change has a proposal but no tasks.md
@@ -76,6 +76,13 @@ Each change SHALL show one status derived at read time, in this precedence: Unre
 #### Scenario: Approved change edited
 - **WHEN** an On runway change's proposal is edited on the base branch
 - **THEN** it still shows On runway
+
+### Requirement: Only owner steps left
+A change with a proposal whose every unchecked task is an owner step SHALL show Owner steps left: there is nothing to build. It SHALL NOT be offered for approval or be on the runway, its owner steps SHALL still be shown, and it SHALL show Built once every task is checked.
+
+#### Scenario: Built outside Counterpoint with owner steps open
+- **WHEN** every task of a change is checked on the base branch except two `Owner:` steps
+- **THEN** it shows Owner steps left, is not offered for approval and is not on the runway, and its owner steps are still listed
 
 ### Requirement: Change detail
 The console SHALL show a change's detail page with its title, why, dependencies, artifacts, task progress, owner steps (unchecked tasks whose text starts with `Owner:`), base-branch tip and approval state.

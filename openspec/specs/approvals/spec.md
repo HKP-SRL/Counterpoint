@@ -17,7 +17,7 @@ The console SHALL offer Approve on every Ready to approve change, and one action
 - **THEN** all three are on the runway
 
 ### Requirement: Approval stays with the change
-An approval SHALL stay valid when the change's planning files or the host's gate config change afterwards. A build SHALL use the change as committed at the base-branch tip when the build starts. An approval SHALL end only when the change is built or the owner withdraws it.
+An approval SHALL stay valid when the change's planning files or the host's gate config change afterwards. A build SHALL use the change as committed at the base-branch tip when the build starts. An approval SHALL end only when the change is built, when only owner steps are left in it, or when the owner withdraws it.
 
 #### Scenario: Plan revised after approval
 - **WHEN** the owner revises an approved change's tasks and commits them to the base branch

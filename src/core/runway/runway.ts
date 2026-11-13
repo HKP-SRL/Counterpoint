@@ -5,14 +5,14 @@
 // change, not to a version of its files, so revising the plan or the gate config afterwards keeps
 // it. The runway is derived at read time from the approvals and the planning snapshot at the
 // base-branch tip: the approved changes that are readable and not built, in build order. An
-// approved change that is built (archived, or every task checked) has nothing left to run: its
-// approval has ended.
+// approved change that is built (archived, or every task checked), or that has only owner steps
+// left, has nothing left to run: its approval has ended.
 import type { ChangeFacts } from '../framework/port.ts';
 import type { ApprovalRow } from '../store/approvals.ts';
-import { isBuilt } from './status.ts';
+import { isBuilt, onlyOwnerSteps } from './status.ts';
 
 /** Why an approved change is not on the runway now (or that it is not approved). */
-export type OffRunwayReason = 'not-approved' | 'built' | 'unreadable' | 'missing';
+export type OffRunwayReason = 'not-approved' | 'built' | 'owner-steps' | 'unreadable' | 'missing';
 
 export type ApprovalState =
   | { state: 'on-runway'; approvedAt: number; baseCommit: string | null }
@@ -45,6 +45,7 @@ export function approvalStateOf(
   if (change === undefined || change === null) return { state: 'off-runway', reason: 'missing' };
   if (change.unreadable !== null) return { state: 'off-runway', reason: 'unreadable' };
   if (isBuilt(change)) return { state: 'off-runway', reason: 'built' };
+  if (onlyOwnerSteps(change)) return { state: 'off-runway', reason: 'owner-steps' };
   return { state: 'on-runway', approvedAt: approval.approvedAt, baseCommit: approval.baseCommit };
 }
 
@@ -73,7 +74,7 @@ export function computeRunway(
   return runway;
 }
 
-/** Approved changes that are built at the tip: their approvals have ended. */
+/** Approved changes that are built, or have only owner steps left, at the tip: their approvals have ended. */
 export function endedApprovals(
   approvals: readonly ApprovalRow[],
   changes: readonly ChangeFacts[],
@@ -85,7 +86,8 @@ export function endedApprovals(
   return approvals
     .filter((row) => {
       const change = active.get(row.change);
-      if (change !== undefined) return change.unreadable === null && isBuilt(change);
+      if (change !== undefined)
+        return change.unreadable === null && (isBuilt(change) || onlyOwnerSteps(change));
       return archived.has(row.change);
     })
     .map((row) => row.change);

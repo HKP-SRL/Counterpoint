@@ -143,9 +143,11 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
           error:
             why === 'built'
               ? `${changeId} is already built.`
-              : why === 'unreadable'
-                ? `${changeId}'s planning files cannot be read.`
-                : `${changeId} is not ready to approve: it needs a proposal and at least one task.`,
+              : why === 'owner-steps'
+                ? `${changeId} has only owner steps left: there is nothing to build.`
+                : why === 'unreadable'
+                  ? `${changeId}'s planning files cannot be read.`
+                  : `${changeId} is not ready to approve: it needs a proposal and at least one task.`,
         };
       }
       return {
