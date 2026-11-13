@@ -1,6 +1,8 @@
 // The base-tip watcher (host-planning: Live refresh from the base branch). Planning truth is
-// committed content on the base branch, so the watcher polls each registered host's
-// `refs/heads/{base}` (polling, not filesystem events: the source is a ref, not a working tree).
+// committed content on the base branch, so the watcher polls each registered host's base ref as
+// the resolver reads it: the remote-tracking branch, which the base fetcher moves about once a
+// minute, or the local branch of a host with no remote (polling, not filesystem events: the
+// source is a ref, not a working tree).
 // When the tip moves it refreshes the host's snapshot and publishes a `planning` event
 // `{ hostId, tip }`; open consoles refetch. A debounced re-read that settles publishes
 // `{ hostId, tip, settled: true }`.
@@ -69,7 +71,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
 
   const checkTip = async (runtime: HostRuntime): Promise<string | null> => {
     const { id } = runtime.host;
-    // The ref is `refs/heads/{base}`; the runtime resolves it through the git reader.
+    // The runtime resolves the base through the base-ref resolver.
     const tip = await runtime.tip();
     // On the first look at a host, the baseline is what the console was last served: the base
     // branch may have moved between a page load and this host's first poll.
@@ -107,7 +109,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     } catch (error) {
       log('watch-tip-failed', {
         hostId: id,
-        ref: `refs/heads/${baseBranch}`,
+        base: baseBranch,
         message: (error as Error).message,
       });
       return;

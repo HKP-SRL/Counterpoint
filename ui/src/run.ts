@@ -350,6 +350,8 @@ export interface RunReport {
   notForMerge: ReportChange[];
   parked: ReportChange[];
   notBuilt: ReportChange[];
+  /** Changes built from the base as last fetched, because the fetch at their build start failed. */
+  olderBase?: { change: string; base: string; fetchedAt: number | null; error: string }[];
   waiting: string[];
   assumptions: { change: string; text: string }[];
   flags: {

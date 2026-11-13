@@ -18,19 +18,27 @@
 //    or deleted, any flags, and the gates. Builder-written text is untrusted: it is quoted,
 //    @mentions are defused, and the body is capped.
 import {
-  accessSync,
   closeSync,
   constants,
   fstatSync,
   openSync,
   readSync,
-  realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { execa } from 'execa';
 import type { ChangeFacts, FrameworkAdapter } from '../core/framework/port.ts';
+import {
+  parseRemoteUrl,
+  programOnPath,
+  REMOTE_NAME_RE,
+  type RemoteKind,
+  type RepoSlug,
+  remoteCredentials,
+  remoteNames,
+  trackedRemote,
+} from '../core/git/remote.ts';
 import { runGit } from '../core/git/run.ts';
 import {
   builderSessionCount,
@@ -49,8 +57,6 @@ const GH_TIMEOUT_MS = 2 * 60 * 1000;
 /** GitHub refuses PR bodies above 65,536 characters. */
 const MAX_BODY_CHARS = 60_000;
 const MAX_FILE_BYTES = 256 * 1024;
-const REMOTE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-const SLUG_PART_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const PR_URL_RE = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
 
 export class DeliveryError extends Error {
@@ -62,62 +68,12 @@ export class DeliveryError extends Error {
 
 /** The absolute real path of a program on PATH. */
 export function findOnPath(name: string, path = process.env.PATH ?? ''): string {
-  for (const dir of path.split(delimiter)) {
-    if (dir === '' || !isAbsolute(dir)) continue;
-    const candidate = join(dir, name);
-    try {
-      accessSync(candidate, constants.X_OK);
-      return realpathSync(candidate);
-    } catch {
-      // not here
-    }
-  }
-  throw new DeliveryError(`${name} was not found on PATH.`);
+  const found = programOnPath(name, path);
+  if (found === null) throw new DeliveryError(`${name} was not found on PATH.`);
+  return found;
 }
 
-export interface RepoSlug {
-  host: string;
-  owner: string;
-  repo: string;
-}
-
-export type RemoteKind = 'https' | 'ssh';
-
-/** The transport and GitHub repository of a remote URL; null for anything Counterpoint won't push to. */
-export function parseRemoteUrl(url: string): { kind: RemoteKind; slug: RepoSlug } | null {
-  const trimmed = url.trim();
-  let kind: RemoteKind;
-  let host: string;
-  let path: string;
-  const scp = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):(?!\/)(.+)$/.exec(trimmed);
-  if (scp !== null) {
-    kind = 'ssh';
-    host = scp[2] as string;
-    path = scp[3] as string;
-  } else {
-    let parsed: URL;
-    try {
-      parsed = new URL(trimmed);
-    } catch {
-      return null;
-    }
-    if (parsed.protocol === 'https:') kind = 'https';
-    else if (parsed.protocol === 'ssh:') kind = 'ssh';
-    else return null;
-    if (parsed.search !== '' || parsed.hash !== '') return null;
-    host = parsed.hostname;
-    path = parsed.pathname.replace(/^\/+/, '');
-  }
-  const parts = path
-    .replace(/\/+$/, '')
-    .replace(/\.git$/, '')
-    .split('/');
-  if (parts.length !== 2) return null;
-  const [owner, repo] = parts as [string, string];
-  if (!SLUG_PART_RE.test(owner) || !SLUG_PART_RE.test(repo)) return null;
-  if (!/^[A-Za-z0-9.-]+$/.test(host)) return null;
-  return { kind, slug: { host: host.toLowerCase(), owner, repo } };
-}
+export { parseRemoteUrl, type RemoteKind, type RepoSlug };
 
 /** `gh --repo` form: `owner/repo` on github.com, `host/owner/repo` elsewhere. */
 export function ghRepoArg(slug: RepoSlug): string {
@@ -135,15 +91,11 @@ export interface PushTarget {
 
 /** The remote the base branch tracks (else `origin`), its push URL and its GitHub repository. */
 export async function pushTarget(repo: string, baseBranch: string): Promise<PushTarget> {
-  const configured = await runGit(repo, ['config', '--get', `branch.${baseBranch}.remote`], {
-    allowExitCodes: [0, 1],
-  });
-  const remote = configured.exitCode === 0 ? configured.stdout.trim() : 'origin';
+  const remote = await trackedRemote(repo, baseBranch);
   if (!REMOTE_NAME_RE.test(remote)) {
     throw new DeliveryError(`The base branch tracks "${remote.slice(0, 40)}", not a named remote.`);
   }
-  const remotes = (await runGit(repo, ['remote'])).stdout.split('\n').map((r) => r.trim());
-  if (!remotes.includes(remote)) {
+  if (!(await remoteNames(repo)).includes(remote)) {
     throw new DeliveryError(`The repository has no remote named ${remote}.`);
   }
   const url = (await runGit(repo, ['remote', 'get-url', '--push', remote])).stdout.trim();
@@ -167,32 +119,7 @@ export interface PushInput {
 }
 
 /** The extra `-c` flags and variables that let this one push use the owner's credentials. */
-export function pushCredentials(input: {
-  kind: RemoteKind;
-  gh: string;
-  ssh: string;
-  env: NodeJS.ProcessEnv;
-}): { config: string[]; env: Record<string, string> } {
-  if (input.kind === 'https') {
-    return {
-      config: [
-        '-c',
-        'credential.helper=',
-        '-c',
-        `credential.helper=!'${input.gh.replaceAll("'", "'\\''")}' auth git-credential`,
-        '-c',
-        'credential.useHttpPath=false',
-      ],
-      env: {},
-    };
-  }
-  const env: Record<string, string> = {
-    GIT_SSH_COMMAND: `'${input.ssh.replaceAll("'", "'\\''")}' -o BatchMode=yes`,
-  };
-  const sock = input.env.SSH_AUTH_SOCK;
-  if (sock !== undefined && isAbsolute(sock)) env.SSH_AUTH_SOCK = sock;
-  return { config: [], env };
-}
+export const pushCredentials = remoteCredentials;
 
 /** Pushes `branch` to the target remote with the owner's credentials, for this call only. */
 export async function pushBranch(input: PushInput): Promise<void> {

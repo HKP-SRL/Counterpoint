@@ -24,10 +24,13 @@ import { createDeliver } from '../build/deliver.ts';
 import { Governor } from '../build/governor.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
+import { readOwnerEnv } from '../build/owner-env.ts';
+import { checkPullRequests } from '../build/pr-state.ts';
 import { recoverRuns } from '../build/recovery.ts';
 import { factsFromRuntime, writeRunReport } from '../build/run-report.ts';
 import { detectFramework } from '../compose.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
+import { BaseFetcher } from '../core/git/base-fetch.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { carryOverApprovals } from '../core/runway/carry-over.ts';
 import { runNeedsYou } from '../core/runway/run-items.ts';
@@ -241,6 +244,23 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
+  // The base fetcher (host-planning: When the base is fetched): every host's base branch from its
+  // remote, once a minute and at each run and build start. A change in what the console shows
+  // about it (a failed fetch, unpushed local commits) is announced like a new base tip.
+  const fetcher = new BaseFetcher({
+    ownerEnv: async () => (await readOwnerEnv()).env,
+    log,
+    onChange: (hostId) => {
+      publishEvent(store, bus, { hostId, family: 'planning', payload: { base: true } });
+    },
+    // A merged build PR means built (runway): its change leaves the runway and shows Built.
+    afterFetch: async (host, env) => {
+      const merged = await checkPullRequests({ db: store, host, env, log });
+      if (merged.length > 0) {
+        publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
+      }
+    },
+  });
   // Approvals given before one-click approval carry over once (approvals: Earlier approvals
   // carry over).
   await carryOverApprovals(
@@ -254,6 +274,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
             baseBranch: runtime.host.baseBranch,
             reader: runtime.reader,
             adapter: runtime.adapter,
+            tip: runtime.tip,
           };
     },
     log,
@@ -290,6 +311,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     approvals,
     governor,
     runnerFactory,
+    fetcher,
     consolePort: bound,
     publish: publish('run'),
     onRunEnd: async (runId) => {
@@ -348,6 +370,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     home: options.home,
     approvals,
     onApprovalChanged: (hostId) => void watcher?.nudge(hostId),
+    baseFetch: (hostId) => fetcher.state(hostId),
     run: {
       orchestrator,
       claudeVersion,
@@ -364,6 +387,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     stopping = true;
     log('stopping', { reason });
     watcher?.stop();
+    fetcher.stop();
     await previews.stopAll();
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
@@ -407,6 +431,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // Base-tip polling (host-planning: Live refresh from the base branch): a commit to a host's base
   // branch reaches open consoles within ~2 s.
   watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
+  // The base fetch loop: a PR merged on GitHub reaches open consoles within about a minute.
+  fetcher.start(() => runtimes.list().map((runtime) => runtime.host));
 
   if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 

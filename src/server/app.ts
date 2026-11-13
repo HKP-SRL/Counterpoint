@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import type { BaseFetchState } from '../core/git/base-fetch.ts';
 import { hostGuard, mutationGuard, securityHeaders, sessionGuard } from '../core/security/guard.ts';
 import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/security/login.ts';
 import { listHosts, type Store } from '../core/store/db.ts';
@@ -40,6 +41,8 @@ export interface AppOptions {
   approvals?: ApprovalViews;
   /** Called after the owner approves or withdraws (the daemon nudges the watcher). */
   onApprovalChanged?: (hostId: string) => void;
+  /** The base fetcher's state for a host (when its base was fetched, the latest error). */
+  baseFetch?: (hostId: string) => BaseFetchState | null;
   /** The build lane's owner actions (runs, settings, stop); mounted when given with a home. */
   run?: Omit<RunRoutesOptions, 'home' | 'store' | 'runtimes' | 'approvals'>;
 }
@@ -125,7 +128,11 @@ export function createApp(options: AppOptions): Hono {
 
   const runtimes = options.runtimes ?? createHostRuntimes({ store: options.store });
   const approvals = options.approvals ?? createApprovalViews({ store: options.store });
-  mountChangeRoutes(app, { runtimes, approvals });
+  mountChangeRoutes(app, {
+    runtimes,
+    approvals,
+    ...(options.baseFetch === undefined ? {} : { baseFetch: options.baseFetch }),
+  });
   mountApprovalRoutes(app, {
     runtimes,
     approvals,

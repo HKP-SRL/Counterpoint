@@ -6,21 +6,42 @@
 // steps are derived here by core (src/core/runway/status.ts). Ids are checked against the strict id
 // rules before any lookup (no path or option injection).
 //
+// The tip is the base as the resolver reads it: the remote base as last fetched, or the local
+// branch of a host with no remote. `base` says which, when it was fetched, the latest fetch's error
+// and how many local commits are not on the remote (host-planning: Base branch read from the
+// remote).
+//
 // Approvals come from Counterpoint's store (src/server/approval-views.ts): a change the owner
 // approved shows On runway while it is readable and not built.
 import { basename } from 'node:path';
 import type { Hono } from 'hono';
 import { type ChangeFacts, findChange } from '../../core/framework/port.ts';
+import type { BaseFetchState } from '../../core/git/base-fetch.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
 import type { ApprovalState } from '../../core/runway/runway.ts';
 import { deriveChangeStatus, ownerSteps } from '../../core/runway/status.ts';
 import type { ApprovalViews } from '../approval-views.ts';
-import type { HostRuntime, HostRuntimes } from '../hosts.ts';
+import type { HostRuntime, HostRuntimes, HostView } from '../hosts.ts';
 
 export interface ChangeRoutesOptions {
   runtimes: HostRuntimes;
   /** Approval views; without them no approval is shown and no overlay applied. */
   approvals?: ApprovalViews;
+  /** The base fetcher's state for a host; without it nothing is said about fetching. */
+  baseFetch?: (hostId: string) => BaseFetchState | null;
+}
+
+/** Which base the view was read from, and how its fetch went. */
+function baseFacts(view: HostView, fetched: BaseFetchState | null) {
+  return {
+    ref: view.base.label,
+    remote: view.base.remote,
+    localOnly: view.base.localOnly,
+    fetchedAt: fetched?.fetchedAt ?? null,
+    error: fetched?.error ?? null,
+    failedAt: fetched?.failedAt ?? null,
+    localAhead: view.base.localOnly ? 0 : (fetched?.localAhead ?? 0),
+  };
 }
 
 /** Approval states by change id; an empty map when they cannot be computed. */
@@ -36,12 +57,16 @@ async function approvalStates(
   }
 }
 
-function changeRow(change: ChangeFacts, approval: ApprovalState | undefined) {
+function changeRow(
+  change: ChangeFacts,
+  approval: ApprovalState | undefined,
+  merged: ReadonlySet<string>,
+) {
   // An archived change is done; an approval of the same name belongs to the active one, if any.
   const own = change.archived ? undefined : approval;
   const onRunway = own?.state === 'on-runway' ? own : null;
   const { status, notReadyReason } = deriveChangeStatus(
-    change,
+    { ...change, merged: !change.archived && merged.has(change.id) },
     onRunway === null ? null : 'on-runway',
   );
   return {
@@ -63,6 +88,7 @@ function changeRow(change: ChangeFacts, approval: ApprovalState | undefined) {
 
 export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void {
   const { runtimes, approvals } = options;
+  const fetchState = (hostId: string) => options.baseFetch?.(hostId) ?? null;
 
   app.get('/api/hosts/:hostId/changes', async (c) => {
     const hostId = c.req.param('hostId');
@@ -73,13 +99,15 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
     const view = await runtime.view();
     const changes = view.snapshot?.changes ?? [];
     const states = await approvalStates(approvals, runtime);
+    const merged = approvals?.merged(runtime.host.id) ?? new Set<string>();
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
+      base: baseFacts(view, fetchState(hostId)),
       unreadable: view.snapshot?.unreadable ?? null,
-      changes: changes.map((change) => changeRow(change, states.get(change.id))),
+      changes: changes.map((change) => changeRow(change, states.get(change.id), merged)),
     });
   });
 
@@ -97,12 +125,13 @@ export function mountChangeRoutes(app: Hono, options: ChangeRoutesOptions): void
       return c.json({ error: 'not found' }, 404);
     }
     const states = await approvalStates(approvals, runtime);
+    const merged = approvals?.merged(runtime.host.id) ?? new Set<string>();
     return c.json({
       hostId,
       hostName: basename(runtime.host.root),
       baseBranch: runtime.host.baseBranch,
       tip: view.tip,
-      ...changeRow(change, states.get(change.id)),
+      ...changeRow(change, states.get(change.id), merged),
       why: change.why,
       ownerSteps: ownerSteps(change),
     });

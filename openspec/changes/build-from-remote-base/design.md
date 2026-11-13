@@ -44,6 +44,10 @@ If the base branch has no remote, or the remote-tracking ref does not exist yet,
 **D-6. The console says which base it reads, and speaks up only when something is off.**
 The Changes page line becomes "Read from origin/master at abc1234". One extra line appears only for: a failed fetch ("Last fetch failed 12 min ago: <reason>. Showing origin/master as fetched at 09:14."), a local-only host, or local commits not on the remote ("master has 2 commits not on origin; they are not built."). That count is `rev-list --count <remote-ref>..refs/heads/<base>`, taken after each fetch.
 
+**D-7. A merged build PR means built, asked of `gh`.**
+Builds keep task ticks out of the PR (planning files stay out of the branch), so a merged change still has open tasks on the base. On each per-host fetch tick, after the fetch, Counterpoint runs `gh pr view <url> --json state` for each change's latest stored PR that is not known merged or closed, and records the answer on that run row (store migration, one nullable column). A change whose latest PR merged counts as built beside archived and every task checked: it shows Built, its approval ends, and no run builds it. The status code takes it as one more fact; core stays framework-agnostic.
+*Alternatives:* the branch is an ancestor of `<remote>/<base>` (a squash merge breaks it); tick the tasks on the base after a merge (a planning write to the base, settled in `owner-inbox`).
+
 ## Risks / Trade-offs
 
 - [The base moves more often, so an existing `cp/` branch falls behind more often and parks with "merge the base in or delete it"] → That is the out-of-date-branch backlog item; this change makes it more pressing.
@@ -54,9 +58,9 @@ The Changes page line becomes "Read from origin/master at abc1234". One extra li
 
 ## Migration Plan
 
-1. Build in the order of tasks.md. One nullable column on run changes for the fetch note; no data moves.
-2. Reinstall and restart (no run active). On Cena, leave local `master` behind and check that the console and the next build use `origin/master`.
-3. Rollback: git revert and reinstall. The extra column is ignored by the old version.
+1. Build in the order of tasks.md. Two nullable columns on run changes (the fetch note, the PR state); no data moves.
+2. Reinstall and restart (no run active). On Cena, leave local `master` behind and check that the console uses `origin/master` and the merged change shows Built.
+3. Rollback: git revert and reinstall. The old version refuses a store at a newer schema version, and no backup is taken before a migration, so first run `ALTER TABLE run_changes DROP COLUMN pr_state; ALTER TABLE run_changes DROP COLUMN base_fetch; PRAGMA user_version = 7;` on the stopped store.
 
 ## Open Questions
 

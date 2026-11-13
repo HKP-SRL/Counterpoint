@@ -2,6 +2,7 @@
 // Approvals outlast restarts; Earlier approvals carry over).
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
+import { createBaseResolver } from '../../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../../src/core/git/reader.ts';
 import { carryOverApprovals, carryOverHost } from '../../../src/core/runway/carry-over.ts';
 import {
@@ -102,6 +103,7 @@ describe('earlier approvals carry over', () => {
       baseBranch: 'master',
       reader: createGitFileReader(repo.root),
       adapter: createOpenSpecAdapter(),
+      tip: createBaseResolver(repo.root, 'master').tip,
     };
     await carryOverApprovals(db, () => host);
     expect(listApprovals(db, 'cena')).toEqual([
@@ -134,12 +136,11 @@ describe('earlier approvals carry over', () => {
       () => ({
         hostId: 'cena',
         baseBranch: 'master',
-        reader: {
-          resolve: async () => {
-            throw new Error('git is busy');
-          },
-        } as never,
+        reader: {} as never,
         adapter: createOpenSpecAdapter(),
+        tip: async () => {
+          throw new Error('git is busy');
+        },
       }),
       (event) => failures.push(event),
     );
@@ -149,8 +150,9 @@ describe('earlier approvals carry over', () => {
     await carryOverHost(db, {
       hostId: 'cena',
       baseBranch: 'master',
-      reader: { resolve: async () => null } as never,
+      reader: {} as never,
       adapter: createOpenSpecAdapter(),
+      tip: async () => null,
     });
     expect(pendingCarryOver(db)).toEqual([]);
   });

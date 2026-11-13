@@ -5,6 +5,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import type { ChangeFacts } from '../../../src/core/framework/port.ts';
+import { createBaseResolver } from '../../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../../src/core/git/reader.ts';
 import { approvalStateOf, computeRunway, endedApprovals } from '../../../src/core/runway/runway.ts';
 import { approveChange, listApprovals } from '../../../src/core/store/approvals.ts';
@@ -42,6 +43,7 @@ async function setup() {
     host: { id: 'cena', baseBranch: 'master' },
     reader: createGitFileReader(repo.root),
     adapter: createOpenSpecAdapter(),
+    tip: createBaseResolver(repo.root, 'master').tip,
   };
   return { repo, db, runtime, views: createApprovalViews({ store: db }) };
 }

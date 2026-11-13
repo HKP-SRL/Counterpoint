@@ -19,9 +19,13 @@ import {
   type OrchestratorOptions,
   type RunHost,
 } from '../../src/build/orchestrator.ts';
+import { checkPullRequests } from '../../src/build/pr-state.ts';
 import { BLOCKED_FILE, HANDOFF_FILE } from '../../src/build/prompt.ts';
 import { recoverRuns } from '../../src/build/recovery.ts';
+import { buildRunReport, reportMarkdown } from '../../src/build/run-report.ts';
 import { missingRunTools } from '../../src/build/tools.ts';
+import { BaseFetcher } from '../../src/core/git/base-fetch.ts';
+import { createBaseResolver } from '../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { runGit } from '../../src/core/git/run.ts';
 import { runNeedsYou } from '../../src/core/runway/run-items.ts';
@@ -40,7 +44,13 @@ import {
 import { insertAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
 import { commitChange, materializeOpenSpecHost } from '../helpers/fixture-repo.ts';
-import { makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
+import {
+  commitAll,
+  gitIn,
+  makeScratchDir,
+  removeScratchDirs,
+  writeFileIn,
+} from '../helpers/scratch.ts';
 
 const cleanup: string[] = [];
 afterAll(() => {
@@ -85,6 +95,7 @@ async function host(extra: Record<string, string> = {}, approved = ['a-thing', '
     host: row,
     reader: createGitFileReader(repo.root),
     adapter: createOpenSpecAdapter(),
+    tip: createBaseResolver(repo.root, 'master').tip,
   };
   return { repo, home, db, runtime };
 }
@@ -1021,5 +1032,179 @@ describe('crash recovery', () => {
     expect(latestRun(ctx.db, 'cena')).toMatchObject({ id: 'go-on', endReason: 'finished' });
     expect(listGateResults(ctx.db, id)).toEqual([]);
     expect(readFileSync(join(ctx.repo.root, '.gitignore'), 'utf8')).toBe('node_modules\n');
+  });
+});
+
+describe('the remote base', () => {
+  /**
+   * The host as the owner has it: a clone of a bare remote. Returns the clone as the run's host
+   * and a way to merge a commit on the remote (as a PR merged on GitHub would).
+   */
+  async function cloned(extra: Record<string, string> = {}) {
+    const ctx = await host(extra);
+    const dir = makeScratchDir('remote');
+    const remote = join(dir, 'remote.git');
+    await gitIn(dir, ['clone', '-q', '--bare', ctx.repo.root, remote]);
+    const clone = join(makeScratchDir('owner'), 'clone');
+    await gitIn(dir, ['clone', '-q', remote, clone]);
+    cleanup.push(`${clone}-worktrees`);
+    const row = { ...ctx.runtime.host, root: clone, gitCommonDir: join(clone, '.git') };
+    upsertHost(ctx.db, { ...row, adapter: 'openspec' });
+    const runtime: RunHost = {
+      host: row,
+      reader: createGitFileReader(clone),
+      adapter: createOpenSpecAdapter(),
+      tip: createBaseResolver(clone, 'master').tip,
+    };
+    await gitIn(ctx.repo.root, ['remote', 'add', 'origin', remote]);
+    const merge = async (path: string, content: string) => {
+      writeFileIn(ctx.repo.root, path, content);
+      const commit = await commitAll(ctx.repo.root, `merge ${path}`);
+      await gitIn(ctx.repo.root, ['push', '-q', 'origin', 'master']);
+      return commit;
+    };
+    return { ...ctx, runtime, clone, merge };
+  }
+
+  const fetcherFor = (now?: () => number) =>
+    new BaseFetcher({ ownerEnv: async () => OWNER_ENV, ...(now === undefined ? {} : { now }) });
+
+  it('builds from the remote tip with the config read there while the local base branch is behind', async () => {
+    const ctx = await cloned();
+    const localMaster = (await gitIn(ctx.clone, ['rev-parse', 'master'])).trim();
+    const merged = await ctx.merge(
+      '.counterpoint/config.yaml',
+      'gates:\n  - { name: merged-gate, command: [pnpm, test] }\nattempts: 2\n',
+    );
+    const seen: Array<{ base: string; gates: string[] }> = [];
+    const g = gates([]);
+    const { o } = orchestrator(ctx, {
+      fetcher: fetcherFor(),
+      startBuilderSession: fakeSessions().start,
+      runGateRound: async (input) => {
+        seen.push({ base: input.baseCommit, gates: input.config.gates.map((gate) => gate.name) });
+        return g.round(input);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+
+    const row = listRunChanges(ctx.db, started.runId)[0];
+    expect(row).toMatchObject({ state: 'green', baseCommit: merged });
+    expect(row?.baseFetch).toEqual({
+      base: 'origin/master',
+      fetchedAt: expect.any(Number),
+      error: null,
+    });
+    expect(seen).toEqual([{ base: merged, gates: ['merged-gate'] }]);
+    // The owner's local base branch is untouched.
+    expect((await gitIn(ctx.clone, ['rev-parse', 'master'])).trim()).toBe(localMaster);
+  });
+
+  it('builds from the base as last fetched when the fetch fails, goes on, and the report says so', async () => {
+    const ctx = await cloned(INDEPENDENT);
+    const fetchedAt = Date.UTC(2026, 10, 13, 9, 14);
+    const fetcher = fetcherFor(() => fetchedAt);
+    const lastFetched = (await fetcher.fetch(ctx.runtime.host)).error;
+    expect(lastFetched).toBeNull();
+    const before = (await gitIn(ctx.clone, ['rev-parse', 'origin/master'])).trim();
+    // The remote moves on, then cannot be reached.
+    await ctx.merge('src/later.ts', 'export const later = 1;\n');
+    await gitIn(ctx.clone, ['remote', 'set-url', 'origin', join(ctx.clone, 'gone.git')]);
+
+    const logs: string[] = [];
+    const { o } = orchestrator(ctx, {
+      fetcher,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      log: (event) => logs.push(event),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+
+    expect(getRun(ctx.db, started.runId)).toMatchObject({ endReason: 'finished' });
+    const rows = listRunChanges(ctx.db, started.runId);
+    expect(rows.map((r) => [r.change, r.state, r.baseCommit])).toEqual([
+      ['a-thing', 'green', before],
+      ['b-thing', 'green', before],
+    ]);
+    for (const row of rows) {
+      expect(row.baseFetch).toEqual({
+        base: 'origin/master',
+        fetchedAt,
+        error: expect.stringMatching(/gone\.git' does not appear to be a git repository/),
+      });
+    }
+    // Run start and each build start: one retry each.
+    expect(logs.filter((event) => event === 'base-fetch-retry')).toHaveLength(3);
+
+    const report = await buildRunReport({ home: ctx.home, db: ctx.db, runId: started.runId });
+    if (report === null) throw new Error('no report');
+    const text = reportMarkdown(report);
+    const at = new Date(fetchedAt).toLocaleString('en-GB', { hour12: false });
+    expect(text).toContain('## Built from an older base (2)');
+    expect(text).toMatch(new RegExp(`\`a-thing\`: built from origin/master as fetched at ${at}`));
+    expect(text).toMatch(new RegExp(`\`b-thing\`: built from origin/master as fetched at ${at}`));
+  });
+});
+
+describe('a merged build PR', () => {
+  it('takes the change off the runway as Built, and no later run builds it again', async () => {
+    const ctx = await host();
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const started = await first.o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await first.o.idle();
+    // Builds keep task ticks out of their PR, so both changes still have open tasks at the base.
+    const views = createApprovalViews({ store: ctx.db });
+    const onRunway = async () =>
+      (await views.runway(ctx.runtime)).onRunway.map((entry) => entry.changeId);
+    expect(await onRunway()).toEqual(['a-thing', 'b-thing']);
+
+    // The owner merges a-thing's PR (pull/1) on GitHub; the next fetch tick asks gh.
+    const asked: string[] = [];
+    const tick = () =>
+      checkPullRequests({
+        db: ctx.db,
+        host: { id: 'cena', root: ctx.runtime.host.root },
+        env: {},
+        gh: async (args) => {
+          const url = args[2] ?? '';
+          asked.push(url);
+          const state = url.endsWith('/pull/1') ? 'MERGED' : 'OPEN';
+          return { exitCode: 0, stdout: JSON.stringify({ state }), stderr: '' };
+        },
+      });
+    expect(await tick()).toEqual(['a-thing']);
+    expect(asked).toEqual(['https://github.com/x/y/pull/1', 'https://github.com/x/y/pull/2']);
+    expect(views.merged('cena')).toEqual(new Set(['a-thing']));
+    expect(await onRunway()).toEqual(['b-thing']);
+    expect(await views.state(ctx.runtime, 'a-thing')).toEqual({
+      state: 'off-runway',
+      reason: 'not-approved',
+    });
+    // A merged PR is not asked about again; an open one is.
+    asked.length = 0;
+    expect(await tick()).toEqual([]);
+    expect(asked).toEqual(['https://github.com/x/y/pull/2']);
+
+    // A run of the merged change is refused; a run of the whole runway builds only the other.
+    const second = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const refused = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    expect(refused).toMatchObject({ ok: false });
+    const again = await second.o.start('cena', SETTINGS);
+    if (!again.ok) throw new Error(again.error);
+    await second.o.idle();
+    expect(listRunChanges(ctx.db, again.runId).map((c) => [c.change, c.state])).toEqual([
+      ['b-thing', 'green'],
+    ]);
   });
 });

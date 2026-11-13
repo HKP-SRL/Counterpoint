@@ -1,7 +1,8 @@
 // Run report (`/h/{hostId}/runs/{runId}`, run-report: Report at the end of every run): what the
 // run left for the morning, in the order the owner needs it. Why it ended, then Ready to merge
 // (PR and preview), Not for merge (planning edits), Parked (the last failing gate's lines),
-// Not built, Waiting on you, Assumed decisions and Flags. The daemon builds it from the store on
+// Not built, Built from an older base (the fetch at a build start failed), Waiting on you, Assumed
+// decisions and Flags. The daemon builds it from the store on
 // each request (so a preview found after the run shows up); `run` events refetch it. Everything
 // builder-written is shown as plain text.
 import { Badge } from '@astryxdesign/core/Badge';
@@ -132,6 +133,7 @@ function Plain({ text }: { text: string }) {
 
 function Report({ hostId, report }: { hostId: string; report: RunReport }) {
   const s = report.settings;
+  const olderBase = report.olderBase ?? [];
   const builder = [
     s.model,
     s.effort === null ? null : `${effortLabel(s.effort).toLowerCase()} effort`,
@@ -218,6 +220,27 @@ function Report({ hostId, report }: { hostId: string; report: RunReport }) {
                 key={change.change}
                 label={change.change}
                 description={change.reason ?? undefined}
+              />
+            ))}
+          </List>
+        </Section>
+      ) : null}
+
+      {olderBase.length > 0 ? (
+        <Section title="Built from an older base" count={olderBase.length}>
+          <Text type="supporting" color="secondary">
+            The fetch at their build start failed, so they were built from the base as last fetched.
+          </Text>
+          <List hasDividers={olderBase.length > 1}>
+            {olderBase.map((item) => (
+              <ListItem
+                key={item.change}
+                label={item.change}
+                description={
+                  <Text type="supporting" color="secondary">
+                    {`Built from ${item.base} as ${item.fetchedAt === null ? 'last fetched' : `fetched at ${new Date(item.fetchedAt).toLocaleString('en-GB', { hour12: false })}`}. The fetch failed: ${item.error}`}
+                  </Text>
+                }
               />
             ))}
           </List>
