@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { type ChangeFacts, type ChangeSnapshot, findChange } from '../core/framework/port.ts';
 import { hostDir } from '../core/host/home.ts';
 import { runNeedsYou } from '../core/runway/run-items.ts';
+import { assumedAnswers, listRunChangeAskCards } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import {
   type GateResultRow,
@@ -199,7 +200,9 @@ export async function buildRunReport(input: {
       });
     }
     const assumed = readSmallFile(join(runDir, row.change, 'assumptions.md'));
-    const text = assumed === null ? '' : defuse(assumed);
+    const text = [assumed === null ? '' : defuse(assumed).trim(), unansweredText(input.db, row)]
+      .filter((part) => part !== '')
+      .join('\n\n');
     if (text !== '') report.assumptions.push({ change: row.change, text });
     if (row.flags.length > 0) report.flags.push({ change: row.change, flags: row.flags });
   }
@@ -214,6 +217,19 @@ export async function buildRunReport(input: {
     );
   }
   return report;
+}
+
+/**
+ * The change's questions nobody answered in Needs You, built on the recommended option (D-6), or
+ * '' when there are none.
+ */
+function unansweredText(db: Store, row: RunChangeRow): string {
+  const assumed = assumedAnswers(listRunChangeAskCards(db, row.runId, row.change));
+  if (assumed.length === 0) return '';
+  return [
+    'Questions you did not answer, built on the recommended option:',
+    ...assumed.map((a) => `- ${line(defuse(a.question))} Assumed: ${line(defuse(a.answer))}`),
+  ].join('\n');
 }
 
 const END_TEXT: Record<RunEndReason, string> = {

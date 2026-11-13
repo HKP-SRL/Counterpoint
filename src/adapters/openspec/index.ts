@@ -37,7 +37,7 @@ import {
 import { parseMetadata, reasonFrom } from './metadata.ts';
 import { orderChanges } from './order.ts';
 import { parseProposal } from './proposal.ts';
-import { countTasks, normalizeTasks, openBuildTasks, tickedTasks } from './tasks.ts';
+import { countTasks, normalizeTasks, openBuildTasks, tickedTasks, tickTask } from './tasks.ts';
 
 const ADAPTER_ID = 'openspec';
 
@@ -229,6 +229,7 @@ export function createOpenSpecAdapter(): FrameworkAdapter {
     isPlanningPath: (path) => path === 'openspec' || path.startsWith('openspec/'),
     tasksPath: (change) => (change.artifacts.tasks ? `${change.dir}/tasks.md` : null),
     tickedTasks,
+    tickTask,
     openTasks: openBuildTasks,
     sameApartFromTicks: (before, after) => normalizeTasks(before) === normalizeTasks(after),
     buildInstructions,

@@ -124,3 +124,31 @@ export function tickedTasks(before: string, after: string): string[] {
   }
   return ticked;
 }
+
+/** An open checkbox and everything before it, for ticking one task. */
+const OPEN_BOX_RE = /^(\s*(?:[-*+]|\d{1,9}[.)])\s*)\[[^\]]*\]/;
+
+/**
+ * The task list with the open task `task` ticked: matched by its text with or without its number
+ * (as `ownerSteps` lists it), the first open one when it is listed twice. Unchanged when that task
+ * is already done; null when the list has no such task. Only the checkbox changes, so an edit made
+ * to the list meanwhile is kept.
+ */
+export function tickTask(text: string, task: string): string | null {
+  const wanted = clip(task);
+  const lines = text.split('\n');
+  let done = false;
+  for (const [index, line] of lines.entries()) {
+    const match = TASK_LINE_RE.exec(line);
+    if (!match) continue;
+    const description = clip(match[2] ?? '');
+    if (description !== wanted && description.replace(TASK_NUMBER_RE, '') !== wanted) continue;
+    if ((match[1] ?? '').toLowerCase() === 'x') {
+      done = true;
+      continue;
+    }
+    lines[index] = line.replace(OPEN_BOX_RE, '$1[x]');
+    return lines.join('\n');
+  }
+  return done ? text : null;
+}

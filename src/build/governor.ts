@@ -38,7 +38,7 @@ export const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
 /** Default utilization ceiling: no new session starts while a warned window is at or above it. */
 export const DEFAULT_CEILING = 0.95;
 
-export type SpawnKind = 'calibration' | 'builder';
+export type SpawnKind = 'calibration' | 'builder' | 'owner-step';
 
 export interface WindowState {
   status: string;

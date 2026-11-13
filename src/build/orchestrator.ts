@@ -56,6 +56,12 @@ import {
 } from '../core/host/host-config.ts';
 import { isChangeId } from '../core/ids.ts';
 import type { ApprovalState, Runway } from '../core/runway/runway.ts';
+import {
+  listRunChangeAskCards,
+  markChangeNotesUsed,
+  waitingChangeNotes,
+  waitingIrreversible,
+} from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import {
   activeRun,
@@ -83,6 +89,7 @@ import {
   updateRunChange,
 } from '../core/store/runs.ts';
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
+import { type AskServer, type BuilderAsk, openBuilderAsk } from './ask-session.ts';
 import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
 import {
   type BuilderSessionResult,
@@ -101,6 +108,7 @@ import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts
 import { type OwnerEnv, readOwnerEnv } from './owner-env.ts';
 import { builderPrompt, type GateFailure } from './prompt.ts';
 import { parseQuestions } from './questions.ts';
+import { askParkWhy } from './run-cards.ts';
 import {
   createServiceSession,
   describeMissingPrograms,
@@ -271,6 +279,8 @@ export interface OrchestratorOptions {
   now?: () => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   log?: (event: string, fields?: Record<string, unknown>) => void;
+  /** How builder sessions start the ask tool (`counterpoint mcp ask`); without it they get none. */
+  askServer?: AskServer;
   /** Seams for tests. */
   startBuilderSession?: typeof startBuilderSession;
   runGateRound?: typeof runGateRound;
@@ -1171,7 +1181,10 @@ export class Orchestrator {
         doneTasks: runChangeTicks(db, c.row.id),
         gates: c.gates,
         testBudget: c.testBudget,
+        ownerNotes: waitingChangeNotes(db, active.hostId, c.row.change),
+        askTool: this.#o.askServer !== undefined,
       });
+      markChangeNotesUsed(db, active.hostId, c.row.change, this.#now());
       const processTag = randomBytes(16).toString('hex');
       const rawLogPath = join(c.changeDir, `session-${number}.jsonl`);
       const sessionId = insertAgentSession(db, {
@@ -1194,7 +1207,20 @@ export class Orchestrator {
       const meter = new ContextMeter();
       let lastFillEvent = 0;
       let result: BuilderSessionResult;
+      let ask: BuilderAsk | null = null;
       try {
+        if (this.#o.askServer !== undefined) {
+          ask = openBuilderAsk({
+            db,
+            home: this.#o.home,
+            server: this.#o.askServer,
+            dir: c.changeDir,
+            agentSessionId: sessionId,
+            hostId: active.hostId,
+            runId: active.id,
+            change: c.row.change,
+          });
+        }
         const session = await (this.#o.startBuilderSession ?? startBuilderSession)({
           runner: governedRunner(this.#o.governor, runner, {
             hostId: active.hostId,
@@ -1203,7 +1229,8 @@ export class Orchestrator {
           }),
           model: settings.model,
           cwd: c.worktree,
-          env: active.env,
+          env: ask === null ? active.env : { ...active.env, ...ask.env },
+          ...(ask === null ? {} : { ask: { mcpConfig: ask.mcpConfig, tools: ask.tools } }),
           rawLogPath,
           processTag,
           prompt,
@@ -1236,6 +1263,7 @@ export class Orchestrator {
         throw error;
       } finally {
         active.wrapUp = null;
+        ask?.close();
       }
       endAgentSession(db, sessionId, {
         reason: result.reason,
@@ -1287,6 +1315,10 @@ export class Orchestrator {
       open = done === null ? null : done.open;
       // budget-handoff, forced, timeout, failed: the next session continues from the handoff.
       if (result.reason !== 'finished') continue;
+      // An irreversible question nobody answered holds back only this change (D-6). Its card stays
+      // answerable; the answer reaches the change's next session.
+      const held = waitingIrreversible(listRunChangeAskCards(db, active.id, c.row.change));
+      if (held.length > 0) return this.#parkOpen(active, c, askParkWhy(held.length));
       // The session ended by itself. The change is built only when no build task is left open.
       if (done === null || open === null || open.length === 0) return 'built';
       if (done.blocked !== null) {

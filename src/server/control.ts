@@ -17,6 +17,8 @@ import { HOST_ID_RE } from '../core/ids.ts';
 import { mintLoginCode } from '../core/security/login.ts';
 import { hostRegistryStore, listHosts, type Store } from '../core/store/db.ts';
 import { EVENT_FAMILIES, type EventBus, publishEvent } from '../core/store/events.ts';
+import { createAskRoutes } from './ask.ts';
+import type { CardDesk } from './cards.ts';
 
 export interface ControlAppOptions {
   store: Store;
@@ -38,6 +40,13 @@ export interface ControlAppOptions {
   needsYouCount?: (hostId: string) => Promise<number | null>;
   /** The build orchestrator: `counterpoint run`, `run stop`, `run status`. */
   orchestrator?: Orchestrator;
+  /** The card desk: with it, sessions can ask the owner under `/control/ask/` (owner-inbox D-5). */
+  desk?: CardDesk;
+  /**
+   * A successor daemon asks to take over (owner-inbox D-10): true when the nonce names this
+   * daemon's pending self-restart, which then stops once the answer has gone out.
+   */
+  handover?: (nonce: string) => boolean;
 }
 
 /** How long `/control/status` waits for a runway figure before leaving it out. */
@@ -76,6 +85,8 @@ const RegisterBody = z.object({
   base: z.string().min(1).max(200).optional(),
 });
 
+const HandoverBody = z.strictObject({ nonce: z.string().regex(/^[0-9a-f]{64}$/) });
+
 const NotifyBody = z.strictObject({
   hostId: z.string().regex(HOST_ID_RE),
   family: z.enum(EVENT_FAMILIES),
@@ -85,7 +96,15 @@ export function createControlApp(options: ControlAppOptions): Hono {
   const app = new Hono();
   const pid = options.pid ?? process.pid;
 
+  // The ask tool's four calls carry a session capability instead of the control token; their
+  // routes check it themselves and reach nothing else.
+  const ASK_PREFIX = '/control/ask/';
+  if (options.desk !== undefined) {
+    app.route('/control/ask', createAskRoutes({ store: options.store, desk: options.desk }));
+  }
+
   app.use('*', async (c, next) => {
+    if (c.req.path.startsWith(ASK_PREFIX)) return next();
     if (!bearerMatches(c.req.header('authorization'), options.tokenHash)) {
       return c.json({ error: 'unauthorized' }, 401);
     }
@@ -223,6 +242,22 @@ export function createControlApp(options: ControlAppOptions): Hono {
     const hostId = c.req.query('hostId') ?? '';
     if (!HOST_ID_RE.test(hostId)) return c.json({ error: 'invalid host id' }, 400);
     return c.json({ run: options.orchestrator.view(hostId) });
+  });
+
+  // A planned self-restart: the new install has loaded and asks to take over.
+  app.post('/control/handover', async (c) => {
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: 'The request body must be JSON.' }, 400);
+    }
+    const parsed = HandoverBody.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'Invalid handover request.' }, 400);
+    if (options.handover?.(parsed.data.nonce) !== true) {
+      return c.json({ error: 'No restart is waiting for that.' }, 409);
+    }
+    return c.json({ handingOver: true }, 202);
   });
 
   app.post('/control/stop', (c) => {

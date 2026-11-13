@@ -272,6 +272,17 @@ describe('prBody', () => {
     expect(body).toContain('| related | skipped (no matching files changed) | 0 s |');
   });
 
+  it('lists the questions nobody answered in Needs You as assumed (D-6)', () => {
+    const body = prBody(
+      bodyInput({
+        assumptions: null,
+        unanswered: [{ question: 'Keep the old table?', answer: 'Keep it for a release' }],
+      }),
+    );
+    expect(body).not.toContain('The builder recorded none.');
+    expect(body).toContain('- Keep the old table? Assumed: **Keep it for a release**');
+  });
+
   it('says so when the builder assumed nothing', () => {
     expect(prBody(bodyInput({ assumptions: null }))).toContain('The builder recorded none.');
   });

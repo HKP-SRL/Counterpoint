@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import type { AgentRunner } from '../../src/agent/runner.ts';
+import { builderSessionKey, onBuilderAnswer } from '../../src/build/ask-session.ts';
 import type {
   BuilderSession,
   BuilderSessionResult,
@@ -22,6 +23,7 @@ import {
 import { checkPullRequests } from '../../src/build/pr-state.ts';
 import { BLOCKED_FILE, HANDOFF_FILE } from '../../src/build/prompt.ts';
 import { recoverRuns } from '../../src/build/recovery.ts';
+import { runCards } from '../../src/build/run-cards.ts';
 import { buildRunReport, reportMarkdown } from '../../src/build/run-report.ts';
 import { missingRunTools } from '../../src/build/tools.ts';
 import { BaseFetcher } from '../../src/core/git/base-fetch.ts';
@@ -30,7 +32,10 @@ import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { runGit } from '../../src/core/git/run.ts';
 import { runNeedsYou } from '../../src/core/runway/run-items.ts';
 import { approveChange, withdrawApproval } from '../../src/core/store/approvals.ts';
+import { findAskGrant } from '../../src/core/store/ask.ts';
+import { getCard, insertCard, listWaitingCards } from '../../src/core/store/cards.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
+import { EventBus } from '../../src/core/store/events.ts';
 import {
   activeRun,
   getRun,
@@ -43,6 +48,7 @@ import {
 } from '../../src/core/store/runs.ts';
 import { insertAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
+import { CardDesk } from '../../src/server/cards.ts';
 import { commitChange, materializeOpenSpecHost } from '../helpers/fixture-repo.ts';
 import {
   commitAll,
@@ -1206,5 +1212,152 @@ describe('a merged build PR', () => {
     expect(listRunChanges(ctx.db, again.runId).map((c) => [c.change, c.state])).toEqual([
       ['b-thing', 'green'],
     ]);
+  });
+});
+
+describe('questions nobody answered (owner-inbox D-6)', () => {
+  /** A builder of the running run asks the owner through the ask tool, without waiting. */
+  const ask = (ctx: Awaited<ReturnType<typeof host>>, cwd: string, reversible: boolean) =>
+    insertCard(ctx.db, {
+      hostId: 'cena',
+      kind: 'ask',
+      source: 'session',
+      runId: latestRun(ctx.db, 'cena')?.id ?? null,
+      change: basename(cwd),
+      sessionId: `s-${basename(cwd)}`,
+      question: reversible ? 'Keep the old table?' : 'Drop the hosted orders table now?',
+      why: 'It decides the migration.',
+      options: [
+        { label: 'Keep it for a release', consequence: 'Safe.' },
+        { label: 'Drop it', consequence: 'Gone for good.' },
+      ],
+      recommended: 0,
+      reversible,
+      blocking: !reversible,
+    });
+
+  it('builds on the recommendation of a reversible one, and the run report lists it as assumed', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions((_n, cwd) => {
+      if (basename(cwd) === 'a-thing') ask(ctx, cwd, true);
+      return {};
+    });
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(delivered).toEqual(['a-thing', 'b-thing']);
+    const report = await buildRunReport({ home: ctx.home, db: ctx.db, runId: started.runId });
+    expect(report?.assumptions).toEqual([
+      {
+        change: 'a-thing',
+        text: expect.stringContaining('- Keep the old table? Assumed: Keep it for a release'),
+      },
+    ]);
+    // The card stays answerable.
+    expect(listWaitingCards(ctx.db, 'cena').map((card) => card.question)).toEqual([
+      'Keep the old table?',
+    ]);
+  });
+
+  it('parks only the change behind an irreversible one, and the run goes on with the rest', async () => {
+    const ctx = await host(INDEPENDENT);
+    const sessions = fakeSessions((_n, cwd) => {
+      if (basename(cwd) !== 'a-thing') return {};
+      ask(ctx, cwd, false);
+      return { tick: false };
+    });
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(delivered).toEqual(['b-thing']);
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+    const [a] = listRunChanges(ctx.db, started.runId);
+    expect(a).toMatchObject({ change: 'a-thing', state: 'parked' });
+    expect(a?.reason).toMatch(/Waits on your answer to a question its builder asked/);
+    // Its own card is the one question in Needs You: no second "parked, retry it?" card.
+    expect(runCards(ctx.db, 'cena')).toEqual([]);
+    expect(listWaitingCards(ctx.db, 'cena').map((card) => card.question)).toEqual([
+      'Drop the hosted orders table now?',
+    ]);
+  });
+});
+
+describe("a builder's ask tool (owner-inbox D-5)", () => {
+  it('gives each session its own capability and hands a later answer to the next session', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const desk = new CardDesk({ store: ctx.db, bus: new EventBus() });
+    desk.onAnswered((card) => onBuilderAnswer(ctx.db, desk, card));
+    const configs: string[] = [];
+    let cardId = '';
+    const sessions = fakeSessions((n) => {
+      const [running] = openAgentSessions(ctx.db);
+      if (n === 1 && running !== undefined) {
+        cardId = insertCard(ctx.db, {
+          hostId: 'cena',
+          kind: 'ask',
+          source: 'session',
+          runId: latestRun(ctx.db, 'cena')?.id ?? null,
+          change: 'a-thing',
+          sessionId: builderSessionKey(running.id),
+          question: 'Prices in euros or lei?',
+          why: 'Diners see them.',
+          options: [
+            { label: 'Euros', consequence: 'As the mock.' },
+            { label: 'Lei', consequence: 'Local.' },
+          ],
+          recommended: 0,
+          reversible: true,
+          blocking: false,
+        }).card.id;
+      }
+      // The owner answers while session 2 runs: session 1, which asked, has ended.
+      if (n === 2) void desk.answer(cardId, { option: 1, note: 'Show both later.' });
+      return n < 3 ? { reason: 'budget-handoff', tick: false } : {};
+    });
+    const start = sessions.start;
+    const { o } = orchestrator(ctx, {
+      askServer: { command: '/usr/bin/false', args: ['mcp', 'ask'] },
+      startBuilderSession: async (input) => {
+        const config = input.ask?.mcpConfig ?? '';
+        configs.push(readFileSync(config, 'utf8'));
+        expect(input.ask?.tools).toEqual([
+          'mcp__counterpoint__ask_owner',
+          'mcp__counterpoint__check_answer',
+        ]);
+        expect(input.env?.MCP_TOOL_TIMEOUT).toBe('660000');
+        return start(input);
+      },
+      runGateRound: gates([]).round,
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+
+    // One capability per session, revoked when it ended; Counterpoint's home goes with it.
+    const servers = configs.map(
+      (text) =>
+        (JSON.parse(text) as { mcpServers: Record<string, { env: Record<string, string> }> })
+          .mcpServers.counterpoint?.env ?? {},
+    );
+    expect(servers).toHaveLength(3);
+    expect(new Set(servers.map((env) => env.COUNTERPOINT_ASK_CAPABILITY)).size).toBe(3);
+    for (const env of servers) {
+      expect(env.COUNTERPOINT_HOME).toBe(ctx.home);
+      expect(findAskGrant(ctx.db, env.COUNTERPOINT_ASK_CAPABILITY ?? '')).toBeUndefined();
+    }
+    expect(sessions.prompts[0]).toContain('ask_owner');
+    expect(sessions.prompts[2]).toContain(
+      'You asked the owner: "Prices in euros or lei?". The owner answered: Lei.',
+    );
+    expect(sessions.prompts[2]).toContain("The owner's note: Show both later.");
+    expect(getCard(ctx.db, cardId)?.outcome).toBe('The next session on a-thing gets this answer.');
   });
 });

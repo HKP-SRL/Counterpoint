@@ -77,6 +77,8 @@ export function eventHostId(data: unknown): string | null {
 export function keysForEvent(family: EventFamily, data: unknown): readonly QueryKey[] {
   if (family === 'host') return FAMILY_TO_KEYS.host('');
   const hostId = eventHostId(data);
+  // A machine card (a restart, a one-time setup) belongs to every project's inbox.
+  if (family === 'needs-you' && hostId === null) return [['host']];
   return hostId === null ? [] : FAMILY_TO_KEYS[family](hostId);
 }
 

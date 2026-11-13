@@ -1,4 +1,5 @@
-// The single serialized path for planning writes (planning-writes: Single serialized write path).
+// Planning writes on a host with no remote land on its local base branch (planning-writes: Local-only
+// hosts write locally), one at a time across processes.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -6,7 +7,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { runGit } from '../../../src/core/git/run.ts';
 import {
-  PlanningWrites,
+  landLocally,
+  type PlanningWrite,
   planningWriteLockFile,
   withPlanningWriteLock,
 } from '../../../src/core/planning/writes.ts';
@@ -24,23 +26,31 @@ async function setup() {
     'src/app.ts': 'export {}\n',
   });
   const home = makeScratchDir('planning-home');
-  const writes = new PlanningWrites({
-    home,
-    isPlanningPath: (_host, path) => adapter.isPlanningPath(path),
-  });
   const host = { id: 'cena', root: repo.root, baseBranch: 'master' };
+  const rules = { isPlanningPath: adapter.isPlanningPath, tickTask: adapter.tickTask };
+  const writes = {
+    write: (_host: unknown, write: PlanningWrite) => landLocally(home, host, write, rules),
+  };
   return { repo, home, writes, host };
 }
 
 const tip = async (root: string) => (await runGit(root, ['rev-parse', 'master'])).stdout.trim();
 const status = async (root: string) => (await runGit(root, ['status', '--porcelain'])).stdout;
 
-describe('PlanningWrites', () => {
+const put = (path: string, after: string, before: string | null = null) => ({
+  kind: 'text' as const,
+  path,
+  before,
+  after,
+});
+const TASKS = 'openspec/changes/a-thing/tasks.md';
+
+describe('landLocally', () => {
   it("lands one commit on the base branch and places the file in the owner's checkout", async () => {
     const { repo, writes, host } = await setup();
     const result = await writes.write(host, {
       message: 'counterpoint: tick 1.1 of a-thing',
-      files: [{ path: 'openspec/changes/a-thing/tasks.md', content: '- [x] 1.1 Do it\n' }],
+      edits: [{ kind: 'tick', path: TASKS, task: '1.1 Do it' }],
     });
     expect(result).toMatchObject({ ok: true, changed: true, placedIn: [repo.root] });
     if (!result.ok) return;
@@ -63,11 +73,11 @@ describe('PlanningWrites', () => {
     const [first, second] = await Promise.all([
       writes.write(host, {
         message: 'first',
-        files: [{ path: 'openspec/changes/a-thing/notes.md', content: 'one\n' }],
+        edits: [put('openspec/changes/a-thing/notes.md', 'one\n')],
       }),
       writes.write(host, {
         message: 'second',
-        files: [{ path: 'openspec/changes/b-thing/notes.md', content: 'two\n' }],
+        edits: [put('openspec/changes/b-thing/notes.md', 'two\n')],
       }),
     ]);
     expect(first?.ok && second?.ok).toBe(true);
@@ -85,7 +95,7 @@ describe('PlanningWrites', () => {
       '../x.md',
       'openspec/../src/app.ts',
     ]) {
-      const result = await writes.write(host, { message: 'bad', files: [{ path, content: 'x' }] });
+      const result = await writes.write(host, { message: 'bad', edits: [put(path, 'x')] });
       expect(result).toMatchObject({ ok: false, reason: 'not-planning' });
     }
     expect(await tip(repo.root)).toBe(repo.commit);
@@ -97,7 +107,7 @@ describe('PlanningWrites', () => {
     writeFileSync(file, '- [ ] 1.1 Do it, carefully\n');
     const result = await writes.write(host, {
       message: 'tick',
-      files: [{ path: 'openspec/changes/a-thing/tasks.md', content: '- [x] 1.1 Do it\n' }],
+      edits: [{ kind: 'tick', path: TASKS, task: '1.1 Do it' }],
     });
     expect(result).toMatchObject({ ok: false, reason: 'occupied' });
     expect(await tip(repo.root)).toBe(repo.commit);
@@ -108,7 +118,7 @@ describe('PlanningWrites', () => {
     const { repo, writes, host } = await setup();
     const result = await writes.write(host, {
       message: 'same',
-      files: [{ path: 'openspec/changes/a-thing/tasks.md', content: '- [ ] 1.1 Do it\n' }],
+      edits: [put(TASKS, '- [ ] 1.1 Do it\n', '- [ ] 1.1 Do it\n')],
     });
     expect(result).toEqual({ ok: true, commit: repo.commit, changed: false, placedIn: [] });
   });
@@ -122,7 +132,7 @@ describe('PlanningWrites', () => {
     const pending = writes
       .write(host, {
         message: 'after the lock',
-        files: [{ path: 'openspec/changes/a-thing/notes.md', content: 'x\n' }],
+        edits: [put('openspec/changes/a-thing/notes.md', 'x\n')],
       })
       .then((result) => {
         landed = true;

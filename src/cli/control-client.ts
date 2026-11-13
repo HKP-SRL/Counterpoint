@@ -1,5 +1,6 @@
 // The CLI side of the control socket: HTTP over `run/daemon.sock` with the bearer token read from
-// the 0600 token file. The token never travels through argv or the environment.
+// the 0600 token file. The token never travels through argv or the environment. `mcp ask` presents
+// its session's ask capability instead, which only the `/control/ask/` routes accept.
 import { existsSync, readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { homePaths } from '../core/host/home.ts';
@@ -40,11 +41,16 @@ export function controlRequest(
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; bearer?: string; signal?: AbortSignal } = {},
 ): Promise<ControlResponse> {
   const { socket } = homePaths(home);
   if (!existsSync(socket)) return Promise.reject(new DaemonUnreachableError('no control socket'));
-  const token = readToken(home);
+  let token: string;
+  try {
+    token = options.bearer ?? readToken(home);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const payload = body === undefined ? undefined : JSON.stringify(body);
 
   return new Promise((resolve, reject) => {
@@ -55,6 +61,7 @@ export function controlRequest(
         method,
         agent: false,
         timeout: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         headers: {
           authorization: `Bearer ${token}`,
           host: 'counterpoint.control',

@@ -29,7 +29,7 @@ import { hostsQuery } from '../api';
 import { useApprovalActions } from '../approvals';
 import { RunCard } from '../components/RunCard';
 import { changesText, type RunwaySnapshot, runwayQuery, tasksCountText } from '../runway';
-import { NeedsYouEmpty, NeedsYouLoading, needsYouQuery } from './NeedsYouPage';
+import { NeedsYouEmpty, NeedsYouLoading, needsYouCount, needsYouQuery } from './NeedsYouPage';
 
 const TABULAR = { fontVariantNumeric: 'tabular-nums' } as const;
 
@@ -126,16 +126,16 @@ function NeedsYouCard({ hostId }: { hostId: string }) {
   let body: ReactNode = null;
   if (snapshot === undefined) {
     body = query.isError ? null : <NeedsYouLoading rows={2} />;
-  } else if (snapshot.runItems.length === 0) {
+  } else if (needsYouCount(snapshot) === 0) {
     body = <NeedsYouEmpty headingLevel={3} />;
   } else {
-    // What the last run left: the inbox shows it in full.
+    // The first question; the inbox answers them all from the keyboard.
+    const waiting = needsYouCount(snapshot);
     body = (
       <VStack gap={2}>
-        <Text>
-          {snapshot.runItems.length === 1
-            ? 'The last run left 1 item for you.'
-            : `The last run left ${snapshot.runItems.length} items for you.`}
+        <Text>{snapshot.cards[0]?.question}</Text>
+        <Text type="supporting" color="secondary">
+          {waiting === 1 ? '1 question waits on you.' : `${waiting} questions wait on you.`}
         </Text>
         <Link href={allHref}>Open Needs You</Link>
       </VStack>

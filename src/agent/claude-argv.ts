@@ -4,8 +4,9 @@
 // - `--setting-sources user,project`: the owner's own settings, and the host's CLAUDE.md/AGENTS.md,
 //   skills, commands and agents, which only the project source loads. `local` stays out: the
 //   worktree has no uncommitted settings file of the owner's.
-// - `--strict-mcp-config`: no MCP servers (D-3). The owner's account has many connectors; loading
-//   them would add their tool lists to every session and could hang a headless start on a sign-in.
+// - `--strict-mcp-config`: only the MCP servers Counterpoint passes with `--mcp-config` (a builder
+//   gets the ask tool, owner-inbox D-5). The owner's account has many connectors; loading them would
+//   add their tool lists to every session and could hang a headless start on a sign-in.
 // - `--permission-mode auto` + `--permission-prompts none` (owner decisions 2026-11-10 and
 //   2026-11-12): Claude Code's auto-mode classifier reviews each action, and anything that would
 //   still wait for a person is denied at once, so a session never waits.
@@ -44,6 +45,8 @@ export interface ClaudeArgvInput {
   streamInput?: boolean;
   /** Extra directories (absolute). Nothing passes any yet. */
   addDirs?: readonly string[];
+  /** An MCP config file (absolute path), the only MCP servers the session loads. */
+  mcpConfig?: string;
 }
 
 export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
@@ -75,6 +78,9 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
   for (const dir of addDirs) {
     if (!isAbsolute(dir)) throw new Error('Every --add-dir must be an absolute path.');
   }
+  if (input.mcpConfig !== undefined && !isAbsolute(input.mcpConfig)) {
+    throw new Error('The MCP config must be an absolute path.');
+  }
 
   const argv = [
     '-p',
@@ -92,6 +98,8 @@ export function buildClaudeArgv(input: ClaudeArgvInput): string[] {
     String(maxBudgetUsd),
     '--setting-sources',
     AGENT_SETTING_SOURCES,
+    // Variadic: the flag after it ends its list.
+    ...(input.mcpConfig === undefined ? [] : ['--mcp-config', input.mcpConfig]),
     '--strict-mcp-config',
     '--permission-mode',
     AGENT_PERMISSION_MODE,
