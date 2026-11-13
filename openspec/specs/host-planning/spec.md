@@ -99,6 +99,10 @@ The console SHALL show a change's detail page with its title, why, dependencies,
 - **WHEN** a ready change has an unchecked task `Owner: create the Supabase project`
 - **THEN** the detail page shows it prominently, and the change can still be approved
 
+#### Scenario: Built by its merged PR with owner steps open
+- **WHEN** the owner opens a change that is Built because its build PR merged, with two owner steps unchecked
+- **THEN** the page says its build PR merged, links the PR, and still shows both owner steps
+
 ### Requirement: Live refresh from the base branch
 When the base-branch tip on the remote moves, the change list, statuses and runway SHALL refresh in the console within about a minute without a reload, and within a few seconds of Counterpoint fetching it.
 
