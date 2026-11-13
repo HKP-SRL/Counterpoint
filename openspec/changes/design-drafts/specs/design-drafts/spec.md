@@ -1,69 +1,104 @@
 # design-drafts Spec Delta
 
 ## Purpose
-Standalone screen drafts the owner can review and steer before a change is built: rendered in the host's own design system with fixture data, commented on element by element, revised, varied and finally signed off as the builder's reference.
+Screen drafts the owner reviews before a change is built: fast low-fi rounds to settle a direction, one hi-fi draft in the host's own design system to refine it, and a sign-off that becomes the builder's reference.
 
 ## ADDED Requirements
 
-### Requirement: Drafts for a change
-The owner SHALL be able to request screen drafts for a change. Drafts SHALL be standalone local HTML with fixture data, styled in the host's own design system, and served from an origin isolated from the console API so draft scripts cannot reach console cookies.
+### Requirement: Drafts per screen
+The owner SHALL be able to start drafts for a change. Counterpoint SHALL list the screens the change needs from its planning, and the owner SHALL be able to add or drop a screen before the first round.
 
-#### Scenario: Request drafts
-- **WHEN** the owner requests drafts for a change with two screens
-- **THEN** two standalone HTML drafts are served on the draft origin, not the console origin
+#### Scenario: Start drafts
+- **WHEN** the owner starts drafts for a change whose plan describes two screens
+- **THEN** both screens are listed, and the owner can add a third or drop one before the first round
 
-### Requirement: Viewport and state toggles
-Each draft SHALL toggle between mobile and desktop viewports and between empty, loading, error and long-text states.
+### Requirement: Static drafts
+Every draft SHALL be a static HTML page: no scripts run in it, and nothing in it moves or responds to input. Each state of a screen SHALL be its own page. Drafts SHALL be served on a loopback origin separate from the console API.
 
-#### Scenario: Long-text state
-- **WHEN** the owner switches a draft to the long-text state
-- **THEN** the draft renders with long fixture text
+#### Scenario: A draft runs no scripts
+- **WHEN** a generated draft contains a script
+- **THEN** the script does not run when the draft is shown
 
-### Requirement: Wire then full render
-Drafts SHALL be explored in a low-fi wire mode (neutral palette, real layout and components); the chosen draft SHALL be re-rendered as a hi-fi full render with the host's tokens and fixtures.
+#### Scenario: States are pages
+- **WHEN** a hi-fi screen has an empty state and an error state
+- **THEN** each state is its own static page
 
-#### Scenario: Promote a wire draft
-- **WHEN** the owner chooses a wire draft
-- **THEN** a full render of it is produced with the host's tokens
+### Requirement: Low-fi rounds
+A low-fi round SHALL bring 3 drafts of a screen side by side, in a neutral low-fi style with real layout and real text. Each draft SHALL show as soon as it is ready, without waiting for the others. A low-fi round SHALL NOT build or run the host application.
 
-### Requirement: Element-pinned comments
-The owner SHALL be able to click any element of a draft and pin a comment to it. Pins SHALL stay anchored across redraws through stable element ids, falling back to text matching, and SHALL show as detached rather than disappear when no anchor is found. The draft file on disk SHALL stay unmodified by the overlay.
+#### Scenario: First round
+- **WHEN** the owner starts drafts for a screen
+- **THEN** 3 low-fi drafts appear side by side, each as soon as it is ready
 
-#### Scenario: Pin survives a redraw
-- **WHEN** a draft is redrawn and the pinned element keeps its id
-- **THEN** the pin is still attached to that element
+### Requirement: Select and comment parts
+On a low-fi draft, the owner SHALL be able to select a part as the direction to keep, or comment on a part to change it, on any of the round's drafts. Selections and comments SHALL collect until the owner asks for the next round, which brings 3 new drafts built from them.
 
-### Requirement: Batched revisions
-The owner SHALL be able to batch several pins and send them as one revision; the agent SHALL change only the targeted parts.
+#### Scenario: Mix two drafts
+- **WHEN** the owner selects the header of draft A and the list of draft C and asks for the next round
+- **THEN** the 3 new drafts each keep A's header and C's list
 
-#### Scenario: Two pins in one revision
-- **WHEN** the owner sends two pins as one revision
-- **THEN** the revised draft changes only those two regions
+### Requirement: Lock a direction
+The owner SHALL be able to lock one low-fi draft as the screen's direction, which ends the low-fi rounds and starts the hi-fi draft. The owner SHALL be able to unlock, returning to low-fi rounds that start from the locked draft.
 
-### Requirement: Comment threads
-Comments SHALL be threads the owner can resolve or reopen.
+#### Scenario: Lock
+- **WHEN** the owner locks draft B
+- **THEN** low-fi rounds end and a hi-fi draft of B is made
 
-#### Scenario: Resolve a thread
-- **WHEN** the owner resolves a pin's thread
-- **THEN** it shows as resolved and can be reopened
+#### Scenario: Unlock
+- **WHEN** the owner unlocks a locked screen
+- **THEN** the next low-fi round starts from the locked draft
 
-### Requirement: Redraw with a steering note
-The owner SHALL be able to redraw a whole draft with a steering note.
+### Requirement: Hi-fi refinement
+The hi-fi draft SHALL follow the locked direction and use the host's own components, styles and sample data, with one page for each state the screen needs. The owner SHALL be able to comment on parts of it; comments SHALL collect until the owner sends them, and the revised draft SHALL change only the parts commented on. A comment SHALL show as addressed once a revision has handled it, and as detached, not removed, when the part it was on can no longer be found.
 
-#### Scenario: Redraw
-- **WHEN** the owner asks for a redraw with the note "denser, fewer cards"
-- **THEN** a new version of the draft is produced following the note
+#### Scenario: Two comments in one revision
+- **WHEN** the owner comments on two parts of a hi-fi draft and sends them
+- **THEN** the revised draft changes only those two parts, and both comments show as addressed
 
-### Requirement: Variants and More like B
-The owner SHALL be able to ask for 2-3 variants side by side, pick one, or say "More like B" (optionally with a steering note) to get a new round anchored on B. A breadcrumb trail (A/B/C, then B, then B2) SHALL show the path and let the owner back up.
+#### Scenario: Part gone
+- **WHEN** a revision removes the part a comment was on
+- **THEN** the comment shows as detached
 
-#### Scenario: Back up the trail
-- **WHEN** the owner is on round B2 and clicks B in the breadcrumb
-- **THEN** round B is shown again and a new round can start from it
+### Requirement: Full-screen review
+The owner SHALL be able to open any draft full-screen at phone or desktop width, and select and comment there as in the side-by-side view.
+
+#### Scenario: Comment full-screen
+- **WHEN** the owner opens a hi-fi draft full-screen at phone width and comments on a part
+- **THEN** the comment is collected with the others for the next revision
 
 ### Requirement: Sign-off guides the build
-The owner SHALL sign off a chosen full render in one click. The signed-off render SHALL be committed into the change's folder and given to the builder as the reference for that screen.
+The owner SHALL be able to sign off a screen's hi-fi pages in one click. The signed-off pages SHALL land in the change's folder on the base branch through a planning write, and the builder SHALL get them as the reference for that screen. Low-fi rounds and earlier hi-fi versions SHALL stay in Counterpoint and SHALL NOT be written to the host's repository.
 
 #### Scenario: Build a signed-off screen
-- **WHEN** the owner signs off a full render and the change is built
-- **THEN** the builder's session gets the render as the reference for that screen
+- **WHEN** the owner signs off a screen and the change is built
+- **THEN** the builder's session gets the signed-off pages as the reference for that screen
+
+#### Scenario: Rounds stay out of git
+- **WHEN** a screen went through four low-fi rounds before sign-off
+- **THEN** only the signed-off hi-fi pages are in the change's folder
+
+### Requirement: Drafts hold the build
+A change whose drafts were started SHALL NOT start building until every one of its screens is signed off and the signed-off pages are on the base branch. A run SHALL skip a held change, and Needs You SHALL show a card that names the screens still waiting and links to the change's drafts. The change SHALL show as waiting for sign-off wherever it is listed. The owner SHALL be able to drop a change's drafts, which ends the hold. A change whose drafts were never started SHALL build as before.
+
+#### Scenario: Run skips a held change
+- **WHEN** a run starts with an approved change whose Home screen is still in low-fi
+- **THEN** the run does not build that change, and Needs You shows a card naming Home with a link to its drafts
+
+#### Scenario: Sign-off not landed yet
+- **WHEN** the owner has signed off every screen but the planning write with the pages has not merged
+- **THEN** the change is still held
+
+#### Scenario: Signed off and landed
+- **WHEN** every screen is signed off and the pages are on the base branch
+- **THEN** the next run builds the change with the signed-off pages as its reference
+
+#### Scenario: Drop drafts
+- **WHEN** the owner drops a held change's drafts
+- **THEN** the change is no longer held and builds without drafts
+
+### Requirement: Design rules
+Each host SHALL be able to have a design-rules file of layout and density rules. Every draft and every builder session SHALL be given the host's design rules.
+
+#### Scenario: Rules reach the builder
+- **WHEN** a host's design rules say forms group related fields
+- **THEN** low-fi drafts, hi-fi drafts and builder sessions for that host all get that rule

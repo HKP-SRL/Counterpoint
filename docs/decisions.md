@@ -37,6 +37,8 @@ After the change (Cena, 2026-11-13, the same Astryx change rebuilt from scratch,
 
 Dropped: `passkey-approvals`, `morning-review-signed-merge`, `council-meetings-backlog`. Moved to `docs/backlog.md`: the visual gate, a scheduled full run, parallel builds with rebase, the owner's MCP servers in sessions.
 
+2026-11-13: `design-drafts` moves ahead of `quiet-console` and `one-screen-plans`, and Counterpoint builds it on itself (`.counterpoint/config.yaml`). Its first real use drafts `quiet-console`. Drafts hold the build: a change with drafts builds only after every screen is signed off.
+
 ### Standing risk
 
 An unattended session has the owner's full rights. It could edit files outside its worktree, use the owner's `gh` login, reach the console, or act on text it read on the web. The owner accepts this, as in daily Claude Code use. What limits it: auto mode's classifier reviews each action, sessions start in the worktree and are told to stay there, and work reaches the base branch only through a pull request the owner merges. Branch protection on GitHub is the optional hard stop.

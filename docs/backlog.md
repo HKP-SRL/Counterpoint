@@ -20,11 +20,9 @@ Work deliberately deferred past the roadmap in `docs/decisions.md` (Direction, 2
 ### Build lane
 - **Parallel builds with rebase** (from the dropped `morning-review-signed-merge`). Several changes build at once, each worktree with its own ports and database. When the base branch moves and conflicts, the builder rebases, re-runs every gate, and parks the change if it cannot.
 - **The owner's MCP servers in sessions** (2026-11-12). Sessions run with `--strict-mcp-config` and none of the owner's connectors, to keep context small and avoid a headless start hanging on a sign-in. When a build needs one, the host config lists it.
-- **Run trailer.** Agent commits carry a `Counterpoint-Run:` trailer linking to the run log.
-- **Quick changes.** A small instruction ("rename this button", "bump this config") becomes a minimal change, signed and built in minutes, without a full proposal, design and tasks. It reuses the revision-round machinery from `pr-revisions` for work not tied to an open PR, including follow-ups after a merge.
-- **Notifications.** A macOS notification when something lands in Needs You. More useful in daytime runs, when PRs and finished revision rounds arrive one at a time.
+- **Quick changes.** A small instruction ("rename this button", "bump this config") becomes a minimal change, approved and built in minutes, without a full proposal, design and tasks. It reuses the revision-round machinery from `pr-revisions` for work not tied to an open PR, including follow-ups after a merge.
+- **Notifications for news.** Blocking cards already notify (`owner-inbox`). Also notify when a PR is ready or a revision round lands, which matters most in daytime runs.
 - **Open in editor.** Open a change's worktree in the owner's editor from the console.
-- **Build from the remote base** (2026-11-13, `run-as-owner` 8.3). Counterpoint reads the base branch from the owner's local checkout. After a PR merged on GitHub, Cena's local `master` was 2 commits behind, and a session had to fast-forward it by hand. Fetch and build from `origin/<base>` instead.
 - **A button for an out-of-date branch** (2026-11-13). When the base moves past an existing `cp/` branch, the change parks and fixing it takes a terminal step (merge the base in, or delete the branch). Needs You should offer both, or Counterpoint should merge the base in itself.
 - **No rebuild over an open green PR** (2026-11-13). A change whose PR is open and green still shows on the runway as ready, and one click rebuilds it. It stays there until the PR merges and its tasks are ticked on the base branch.
 - **Archive a change once every task is ticked on the base** (2026-11-13, `build-ticks-and-owner-steps`). A built change stays Built and unarchived after its last task, owner steps included, is ticked; its owner-step cards are gone by then. Archive it (merge its spec deltas) as a small planning write.
@@ -37,11 +35,6 @@ Work deliberately deferred past the roadmap in `docs/decisions.md` (Direction, 2
 - **Gamification panel.** Runway length trend, questions resolved, rounds to converge and more. v1 has only the runway and a few honest counters.
 
 ### Platform
-- **Self-hosting: Counterpoint builds Counterpoint.** After `first-unattended-run`, register this repository as a second host.
-  - Add `.counterpoint/config.yaml` with gates (`pnpm lint`, `pnpm typecheck` and related tests on every attempt; `pnpm test` and `pnpm build` as final gates).
-  - Check that every test gate uses a scratch home and port, so it can run next to the live daemon. Live tests that start real `claude` sessions stay out of the gates.
-  - Run the daemon from an installed copy only (see the `first-unattended-run` design).
-  - A rehearsal run on a change outside the protected paths is a good first use.
 - **"No framework" adapter.** A plain markdown or YAML list. The adapter boundary is already in core; only the OpenSpec adapter ships.
 - **Public npm release.** Publish as `@hkp/counterpoint`, so `npx @hkp/counterpoint` works. Re-check the Claude Code terms before publishing. Run `publint` and `@arethetypeswrong/cli` first.
 - **Preview-deploy comments.** Ingest comments left on the host's preview deploys. They are not an owner channel, so each one becomes a revision note only after the owner confirms it.

@@ -1,0 +1,64 @@
+# Counterpoint's config for Counterpoint itself: how a build of an approved change is judged.
+#
+# Counterpoint reads this file at the commit the build started from (the base-branch tip), so a
+# builder that edits it in its worktree changes nothing about how its own change is judged.
+# Gates run in order, as you, from the worktree, with your environment. Exit code 0 is the only
+# pass. `every` gates (the default) run after each attempt and stay fast; `final` gates run once,
+# only after the `every` gates pass.
+#
+# The daemon that runs the build is the installed copy, never this repository's code. Every test
+# gives its daemons a scratch home, and a test daemon that finds the port taken moves to another
+# one, so gates run next to the live daemon (checked 2026-11-13: 722 tests passed in 64 s with it
+# running on 4170, and it was unaffected). The e2e project starts browsers and daemons and is left
+# out of the gates.
+
+gates:
+  - name: types
+    command: [node_modules/.bin/tsc, -p, tsconfig.json, --noEmit]
+    timeout: 5m
+
+  - name: types-ui
+    command: [node_modules/.bin/tsc, -p, ui/tsconfig.json, --noEmit]
+    timeout: 5m
+
+  - name: lint
+    command: [node_modules/.bin/biome, ci, .]
+    timeout: 5m
+
+  # The unit tests that import a changed file, plus changed test files. Counterpoint replaces
+  # `{changed}` with the change's added and modified files, narrowed by `paths`; with none left
+  # the gate is skipped. No related test is a pass here; `unit` runs everything at the end.
+  - name: related
+    command:
+      - node_modules/.bin/vitest
+      - related
+      - --run
+      - --project
+      - unit
+      - --passWithNoTests
+      - "{changed}"
+    paths: ["**/*.ts", "**/*.tsx"]
+    timeout: 10m
+
+  - name: build-node
+    command: [node_modules/.bin/tsdown]
+    when: final
+    timeout: 10m
+
+  - name: build-ui
+    command: [node_modules/.bin/vite, build, --config, ui/vite.config.ts]
+    when: final
+    timeout: 10m
+
+  - name: unit
+    command: [node_modules/.bin/vitest, run, --project, unit]
+    when: final
+    timeout: 20m
+    testCount: 'Tests\s+(\d+) passed'
+
+attempts: 3
+
+worktree:
+  # Copied from your checkout into each new worktree (APFS clone), which is faster than an
+  # install. A change that adds a dependency installs it in its own worktree.
+  clone: [node_modules]
