@@ -48,6 +48,7 @@ import {
   listGateResults,
   listRunChanges,
   runChangeTicks,
+  setPullRequestState,
   updateRunChange,
 } from '../../src/core/store/runs.ts';
 import { insertAgentSession, openAgentSessions } from '../../src/core/store/sessions.ts';
@@ -351,6 +352,14 @@ describe('a run', () => {
     // A setting saved later applies to the next run only; a CLI flag overrides for one run.
     writeHostSettings(ctx.db, 'cena', { ...DEFAULT_HOST_SETTINGS, effort: 'low' });
     expect(getRun(ctx.db, started.runId)?.settings).toMatchObject({ effort: 'max' });
+    // Built from scratch again (a branch with every task done would go straight to its gates).
+    await gitIn(ctx.repo.root, [
+      'worktree',
+      'remove',
+      '--force',
+      `${ctx.repo.root}-worktrees/a-thing`,
+    ]);
+    await gitIn(ctx.repo.root, ['branch', '-D', 'cp/a-thing']);
     const next = await o.start('cena', { changes: ['a-thing'], stopAt: null, effort: 'medium' });
     if (!next.ok) throw new Error(next.error);
     await o.idle();
@@ -1388,6 +1397,241 @@ describe('build ticks at delivery (build-ticks-and-owner-steps D-2, D-3)', () =>
       { allowExitCodes: [0, 1] },
     );
     expect(trial.exitCode).toBe(0);
+  });
+});
+
+describe('a change built again (build-runs: One worktree and branch per change)', () => {
+  /** The base moves on: a commit on master, as a merged PR would make it. */
+  const moveBase = async (ctx: Awaited<ReturnType<typeof host>>, files: Record<string, string>) => {
+    for (const [path, content] of Object.entries(files)) writeFileIn(ctx.repo.root, path, content);
+    return commitAll(ctx.repo.root, 'merged elsewhere');
+  };
+
+  it('merges the moved base into its branch and continues from the previous run', async () => {
+    const ctx = await host({}, ['a-thing']);
+    // Run 1: the gate fails on both attempts, so the change parks.
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates(['fail', 'fail']).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    expect(listRunChanges(ctx.db, one.runId)[0]).toMatchObject({
+      state: 'parked',
+      gateFailure: { gate: 'unit', attempt: 2, tail: 'FAIL menu.test.ts' },
+    });
+    const moved = await moveBase(ctx, { 'src/later.ts': 'export const later = 1;\n' });
+
+    // Run 2: the base is merged in; the session gets the last handoff and the failing gate.
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    const row = listRunChanges(ctx.db, two.runId)[0];
+    expect(row).toMatchObject({ state: 'green', baseCommit: moved, gateFailure: null });
+    expect(sessions.count()).toBe(1);
+    expect(sessions.prompts[0]).toContain('Session 2 handoff.');
+    expect(sessions.prompts[0]).toMatch(/The gate "unit" failed on attempt 2/);
+    expect(sessions.prompts[0]).toContain('FAIL menu.test.ts');
+    const log = (await gitIn(ctx.repo.root, ['log', '--format=%s', 'cp/a-thing'])).split('\n');
+    expect(log).toContain(`cp: a-thing merge base ${moved.slice(0, 12)}`);
+    expect(log).toContain('cp: a-thing session 2');
+  });
+
+  it('goes straight to the gates when no build task is open', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const sessions = fakeSessions();
+    const g = gates([]);
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(sessions.count()).toBe(0);
+    expect(g.calls).toEqual([1]);
+    expect(second.delivered).toEqual(['a-thing']);
+    const row = listRunChanges(ctx.db, two.runId)[0];
+    expect(row?.state).toBe('green');
+    expect(runChangeTicks(ctx.db, row?.id as number)).toEqual(['1.1 Do it', '1.2 Test it']);
+  });
+
+  it('has one session resolve a conflict with the moved base, then builds on', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions((_, cwd) => {
+        writeFileSync(join(cwd, 'src', 'app.ts'), 'export const app = "branch";\n');
+        return {};
+      }).start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const moved = await moveBase(ctx, { 'src/app.ts': 'export const app = "base";\n' });
+
+    const sessions = fakeSessions((_, cwd) => {
+      expect(readFileSync(join(cwd, 'src', 'app.ts'), 'utf8')).toContain('<<<<<<<');
+      writeFileSync(join(cwd, 'src', 'app.ts'), 'export const app = "both";\n');
+      return { idle: true, tick: false };
+    });
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({ state: 'green' });
+    // Only the session that resolved the conflict: no build task was open after it.
+    expect(sessions.count()).toBe(1);
+    expect(sessions.prompts[0]).toContain('These files conflict:\n- src/app.ts');
+    const head = await gitIn(ctx.repo.root, ['show', 'cp/a-thing:src/app.ts']);
+    expect(head).toBe('export const app = "both";');
+    await gitIn(ctx.repo.root, ['merge-base', '--is-ancestor', moved, 'cp/a-thing']);
+  });
+
+  it('starts fresh after its PR was closed, keeps the old branch, and replaces the stale remote one', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const old = (await gitIn(ctx.repo.root, ['rev-parse', 'cp/a-thing'])).trim();
+    setPullRequestState(ctx.db, listRunChanges(ctx.db, one.runId)[0]?.id as number, 'closed');
+
+    const leases: Array<string | null | undefined> = [];
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      remoteHead: async () => old,
+      deliver: async (c) => {
+        leases.push(c.lease);
+        return { prUrl: 'https://github.com/x/y/pull/2', previewUrl: null };
+      },
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({ state: 'green' });
+    expect(sessions.count()).toBe(1);
+    expect(leases).toEqual([old]);
+    const backups = await gitIn(ctx.repo.root, [
+      'branch',
+      '--list',
+      'cp-backup/*',
+      '--format=%(objectname)',
+    ]);
+    expect(backups.trim()).toBe(old);
+    // The new branch starts from the base, not from the old one.
+    const fresh = await runGit(ctx.repo.root, ['merge-base', '--is-ancestor', old, 'cp/a-thing'], {
+      allowExitCodes: [0, 1],
+    });
+    expect(fresh.exitCode).toBe(1);
+  });
+
+  it('parks before any session when the remote branch of an open PR has commits it did not push', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    updateRunChange(ctx.db, listRunChanges(ctx.db, one.runId)[0]?.id as number, {
+      headCommit: 'a'.repeat(40),
+    });
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      remoteHead: async () => 'b'.repeat(40),
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(sessions.count()).toBe(0);
+    expect(listRunChanges(ctx.db, two.runId)[0]).toMatchObject({
+      state: 'parked',
+      reason: expect.stringMatching(
+        /cp\/a-thing on the remote has commits Counterpoint did not push/,
+      ),
+    });
+  });
+
+  it('asks for PR states at run start and before each change, so a PR merged meanwhile is not built again', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const first = orchestrator(ctx, {
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+    });
+    const one = await first.o.start('cena', SETTINGS);
+    if (!one.ok) throw new Error(one.error);
+    await first.o.idle();
+    const prRow = listRunChanges(ctx.db, one.runId)[0]?.id as number;
+    // The PR merges between the run's start and the change's build start.
+    let asked = 0;
+    const sessions = fakeSessions();
+    const second = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      refreshPullRequests: async () => {
+        asked += 1;
+        if (asked === 2) setPullRequestState(ctx.db, prRow, 'merged');
+      },
+    });
+    const two = await second.o.start('cena', SETTINGS);
+    if (!two.ok) throw new Error(two.error);
+    await second.o.idle();
+    expect(asked).toBe(2);
+    expect(sessions.count()).toBe(0);
+    expect(second.delivered).toEqual([]);
+    expect(listRunChanges(ctx.db, two.runId)[0]?.state).toBe('skipped');
+    // The next start sees it merged at once: nothing is left to build.
+    expect(await second.o.start('cena', SETTINGS)).toMatchObject({
+      ok: false,
+      error: 'The runway is empty.',
+    });
+  });
+
+  it('stops a change withdrawn during its last session before its gates and delivery', async () => {
+    const ctx = await host({}, ['a-thing']);
+    const sessions = fakeSessions((n) => {
+      if (n === 1) withdrawApproval(ctx.db, 'cena', 'a-thing');
+      return {};
+    });
+    const g = gates([]);
+    const { o, delivered } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: g.round,
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(g.calls).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({
+      state: 'skipped',
+      reason: expect.stringMatching(/approval was withdrawn.*cp\/a-thing keeps the work/),
+    });
   });
 });
 

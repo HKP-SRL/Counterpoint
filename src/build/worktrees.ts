@@ -240,6 +240,19 @@ async function mergeBase(input: {
   return { commit: (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim(), conflicts: [] };
 }
 
+/**
+ * Abandons a base merge left half done in the worktree (a crash while its conflicts were being
+ * resolved); true when there was one. The next build merges the base again.
+ */
+export async function abortUnfinishedMerge(worktree: string): Promise<boolean> {
+  const head = await runGit(worktree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], {
+    allowExitCodes: [0, 1],
+  });
+  if (head.exitCode !== 0) return false;
+  await runGit(worktree, ['merge', '--abort'], { allowExitCodes: [0, 128] });
+  return true;
+}
+
 /** A conflict marker git leaves at the start of a line. */
 const MARKER_RE = /^(<{7}|>{7})( |$)/m;
 

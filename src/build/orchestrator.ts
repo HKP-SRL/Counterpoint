@@ -11,8 +11,12 @@
 //    program its gates need must be runnable, or the run stops before any session (the machine's
 //    problem);
 // 2. its worktree is prepared (`cp/<change>` from the base commit, outside the repository, locked,
-//    with the config's `worktree.clone` folders);
-// 3. builder sessions run until no build task is left open; each is committed by Counterpoint
+//    with the config's `worktree.clone` folders). A branch that exists is built on again with the
+//    base merged in, continuing from the previous build's handoff, failing gate and ticks; a merge
+//    conflict goes to one session that resolves it and nothing else; a stale branch (its PR closed
+//    or merged) starts fresh (rebuild.ts). The remote branch is checked here too;
+// 3. builder sessions run until no build task is left open (none when no build task is open and no
+//    gate failure waits: a change built again goes straight to its gates); each is committed by Counterpoint
 //    (builders write no git state) and hands off to the next at the context budget. A session that
 //    ends by itself with tasks still open is followed by a fresh one; the change parks instead when
 //    the session says what is left cannot be done in a build session, when it made no progress, or
@@ -21,8 +25,9 @@
 //    change parks and the run moves on;
 // 5. green: the tick commit of the recorded build ticks (build-ticks.ts), the planning-file check,
 //    then delivery (push, PR, preview: group 11).
-// Before every session the approval is verified again: a change that leaves the runway stops at
-// its next handoff and is skipped (Needs You shows it as approved version changed).
+// Before every session, before the gates and before delivery the approval is verified again: a
+// change that leaves the runway stops there and is skipped (Needs You shows it as approved version
+// changed); its branch keeps the work.
 //
 // Every spawn goes through the governor (usage-limit pauses for every lane, the doctor gate) and
 // uses the claude installed at that moment: the binary and its version are resolved before each
@@ -39,7 +44,7 @@
 // running session is asked to finish its task and hand off; running gates are stopped (a stopped
 // gate round counts nothing); no new session starts. What remains is recorded.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { AgentRunner, StreamEvent } from '../agent/runner.ts';
@@ -108,8 +113,15 @@ import {
 } from './governor.ts';
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
 import { type OwnerEnv, readOwnerEnv } from './owner-env.ts';
-import { builderPrompt, type GateFailure } from './prompt.ts';
+import {
+  ASSUMPTIONS_FILE,
+  BLOCKED_FILE,
+  builderPrompt,
+  type GateFailure,
+  HANDOFF_FILE,
+} from './prompt.ts';
 import { parseQuestions } from './questions.ts';
+import { conflictPrompt, continueFromPrevious, planBranch, reapplyTicks } from './rebuild.ts';
 import { askParkWhy } from './run-cards.ts';
 import {
   createServiceSession,
@@ -120,7 +132,7 @@ import {
 import { commitSession, type SessionCommit } from './session-commit.ts';
 import { describeMissingTools, missingRunTools } from './tools.ts';
 import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
-import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.ts';
+import { finishMerge, prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.ts';
 
 /** The longest one builder session may run. */
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -265,6 +277,23 @@ export interface OrchestratorOptions {
   ownerEnv?: () => Promise<OwnerEnv>;
   /** Fetches each host's base branch from its remote (the daemon's). Without one, none is fetched. */
   fetcher?: Pick<BaseFetcher, 'fetch' | 'setOwnerEnv'>;
+  /**
+   * Asks GitHub for the state of the host's build PRs (pr-state.ts), right after each base fetch
+   * of a run: a change whose PR merged a moment ago is not built again. Without one, none is asked.
+   */
+  refreshPullRequests?: (
+    host: HostContext,
+    env: Readonly<Record<string, string>> | undefined,
+  ) => Promise<void>;
+  /**
+   * The change's branch on the remote (deliver.ts remoteBranchHead): a commit, or null when the
+   * remote has none. Without one, the remote branch is not checked before the build.
+   */
+  remoteHead?: (
+    host: HostContext,
+    branch: string,
+    env: Readonly<Record<string, string>>,
+  ) => Promise<string | null>;
   consolePort: number;
   /** Tells open consoles something about the run changed (ids only). */
   publish: (hostId: string, payload: Record<string, unknown>) => void;
@@ -734,14 +763,46 @@ export class Orchestrator {
     signal: AbortSignal,
   ): Promise<BaseFetchState | null> {
     const fetcher = this.#o.fetcher;
-    if (fetcher === undefined) return null;
-    let state = await fetcher.fetch(runtime.host, env);
-    if (state.error !== null && !signal.aborted) {
-      this.#o.log?.('base-fetch-retry', { hostId: runtime.host.id, message: state.error });
-      await this.#sleep(FETCH_RETRY_MS, signal);
-      if (!signal.aborted) state = await fetcher.fetch(runtime.host, env);
+    let state: BaseFetchState | null = null;
+    if (fetcher !== undefined) {
+      state = await fetcher.fetch(runtime.host, env);
+      if (state.error !== null && !signal.aborted) {
+        this.#o.log?.('base-fetch-retry', { hostId: runtime.host.id, message: state.error });
+        await this.#sleep(FETCH_RETRY_MS, signal);
+        if (!signal.aborted) state = await fetcher.fetch(runtime.host, env);
+      }
+    }
+    // The PRs' states now, not as of the last minute tick: one merged meanwhile is built.
+    try {
+      await this.#o.refreshPullRequests?.(runtime.host, env);
+    } catch (error) {
+      this.#o.log?.('pr-state-failed', {
+        hostId: runtime.host.id,
+        message: (error as Error).message,
+      });
     }
     return state;
+  }
+
+  /**
+   * Null while the change is on the runway; otherwise it is skipped with the reason, its branch
+   * keeping the work, and true is returned.
+   */
+  async #leftRunway(
+    active: ActiveRun,
+    runtime: RunHost,
+    row: RunChangeRow,
+    branch: string,
+  ): Promise<boolean> {
+    const left = await this.#offRunway(runtime, row.change);
+    if (left === null) return false;
+    updateRunChange(this.#o.db, row.id, {
+      state: 'skipped',
+      reason: `Stopped building: ${left} The branch ${branch} keeps the work so far.`,
+      endedAt: this.#now(),
+    });
+    this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'skipped' });
+    return true;
   }
 
   /** The adapter's build order (dependencies first) for the chosen changes. */
@@ -949,9 +1010,33 @@ export class Orchestrator {
     const missing = (this.#o.missingServicePrograms ?? missingServicePrograms)(config, active.env);
     if (missing.length > 0) throw new RunEnd('error', describeMissingPrograms(missing));
 
-    // 2. The worktree.
+    // 2. The branch (built on again, or fresh when its PR closed or merged) and the remote branch,
+    // checked before any session; then the worktree.
+    let remoteHead: string | null | undefined;
+    try {
+      remoteHead = await this.#o.remoteHead?.(runtime.host, `cp/${row.change}`, active.env);
+    } catch (error) {
+      this.#o.log?.('remote-branch-failed', {
+        change: row.change,
+        message: (error as Error).message,
+      });
+    }
+    const plan = await planBranch({
+      db,
+      hostId: active.hostId,
+      root: runtime.host.root,
+      row,
+      remoteHead,
+    });
+    if (plan.refuse !== null) {
+      parkRunChange(db, row.id, plan.refuse, this.#now());
+      this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'parked' });
+      return;
+    }
     let worktree: string;
     let branch: string;
+    let conflicts: string[];
+    let continued: boolean;
     try {
       const prepared = await (this.#o.prepareWorktree ?? prepareWorktree)({
         host: runtime.host,
@@ -959,9 +1044,16 @@ export class Orchestrator {
         baseCommit,
         runId: active.id,
         clone: config.worktree.clone,
+        fresh: plan.fresh,
+        isPlanningPath: (path) => adapter.isPlanningPath(path),
       });
       worktree = prepared.path;
       branch = prepared.branch;
+      conflicts = prepared.merged?.conflicts ?? [];
+      continued = prepared.continued;
+      if (prepared.backup !== null) {
+        this.#o.log?.('branch-backup', { change: row.change, backup: prepared.backup });
+      }
     } catch (error) {
       if (!(error instanceof WorktreeRefusal)) throw error;
       parkRunChange(db, row.id, error.message, this.#now());
@@ -976,15 +1068,24 @@ export class Orchestrator {
       ...(row.startedAt === null ? { startedAt: this.#now() } : {}),
     });
     this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'building' });
+    // Built on again in a new run: it continues from its previous build (handoff, failing gate,
+    // ticks), and the recorded ticks are made again in the task list.
+    if (continued && row.baseCommit === null) continueFromPrevious(db, active.hostId, row);
+    let open = await reapplyTicks({
+      worktree,
+      change: facts,
+      adapter,
+      baseCommit,
+      ticked: runChangeTicks(db, row.id),
+    });
 
     const services = createServiceSession({ config, worktree, parentEnv: active.env });
-    let feedback: GateFailure | null = null;
+    let feedback: GateFailure | null = getRunChange(db, row.id)?.gateFailure ?? null;
     try {
       for (;;) {
         const current = getRunChange(db, row.id);
         const attempt = (current?.attempts ?? 0) + 1;
-        // 3. Builder sessions until one finishes its work.
-        const built = await this.#sessions(active, runtime, settings, window, {
+        const c = {
           row,
           facts,
           worktree,
@@ -995,8 +1096,25 @@ export class Orchestrator {
           feedback,
           gates: config.gates,
           testBudget: config.tests.budget,
-        });
-        if (built === 'stopped' || built === 'left-runway' || built === 'parked') return;
+        };
+        // The base merge's conflicts first: one session resolves them, Counterpoint commits.
+        if (conflicts.length > 0) {
+          const resolved = await this.#sessions(active, runtime, settings, window, {
+            ...c,
+            conflicts,
+          });
+          if (resolved !== 'built') return;
+          conflicts = [];
+        }
+        // 3. Builder sessions until one finishes its work; none when no build task is open and no
+        // gate failure waits (a change built again goes straight to its gates).
+        if (open === null || open.length > 0 || feedback !== null) {
+          const built = await this.#sessions(active, runtime, settings, window, c);
+          if (built === 'stopped' || built === 'left-runway' || built === 'parked') return;
+        }
+        open = null;
+        // A change withdrawn during its last session stops before its gates.
+        if (await this.#leftRunway(active, runtime, row, branch)) return;
 
         // 4. The gates.
         this.#activity(active, { change: row.change, phase: 'gates', attempt });
@@ -1023,6 +1141,9 @@ export class Orchestrator {
             }
           },
         });
+        // The failing gate is kept for the next session, in this run or the next.
+        if (round.kind === 'fail') updateRunChange(db, row.id, { gateFailure: round.failure });
+        if (round.kind === 'pass') updateRunChange(db, row.id, { gateFailure: null });
         const next = afterGateRound(db, row.id, round, config.attempts);
         if (next.next === 'stopped') return;
         if (next.next === 'park') {
@@ -1035,7 +1156,9 @@ export class Orchestrator {
         }
 
         // 5. Green: the tick commit (or the ticks left out of the PR), the planning-file check,
-        // then delivery (build-ticks-and-owner-steps D-1 to D-3).
+        // then delivery (build-ticks-and-owner-steps D-1 to D-3). A change withdrawn meanwhile
+        // stops here, its branch keeping the work.
+        if (await this.#leftRunway(active, runtime, row, branch)) return;
         this.#activity(active, { change: row.change, phase: 'delivering' });
         const ticks = await deliveryTicks({
           worktree,
@@ -1102,6 +1225,7 @@ export class Orchestrator {
             signal: active.stop.signal,
             env: active.env,
             testShare,
+            lease: plan.lease,
           })) ?? { prUrl: null, previewUrl: null };
         } catch (error) {
           this.#o.log?.('delivery-failed', {
@@ -1175,6 +1299,8 @@ export class Orchestrator {
       feedback: GateFailure | null;
       gates: readonly GateConfig[];
       testBudget: number;
+      /** Set for the session that resolves the base merge's conflicts (and nothing else). */
+      conflicts?: readonly string[];
     },
   ): Promise<'built' | 'stopped' | 'left-runway' | 'parked'> {
     const { db } = this.#o;
@@ -1187,36 +1313,36 @@ export class Orchestrator {
     for (let inAttempt = 0; inAttempt < settings.sessionsPerAttempt; inAttempt += 1) {
       if (active.stop.signal.aborted) return 'stopped';
       // A change the owner withdrew stops here, at its next handoff; the branch keeps the work.
-      const left = await this.#offRunway(runtime, c.row.change);
-      if (left !== null) {
-        updateRunChange(db, c.row.id, {
-          state: 'skipped',
-          reason: `Stopped building: ${left} The branch ${c.branch} keeps the work so far.`,
-          endedAt: this.#now(),
-        });
-        this.#publish(active.hostId, { runId: active.id, change: c.row.change, state: 'skipped' });
-        return 'left-runway';
-      }
+      if (await this.#leftRunway(active, runtime, c.row, c.branch)) return 'left-runway';
 
       const { runner, version } = await this.#installed(active);
       const number = builderSessionCount(db, c.row.id) + 1;
       const handoffPath = runChangeHandoffPath(db, c.row.id);
       const handoff =
         handoffPath !== null && existsSync(handoffPath) ? readFileSync(handoffPath, 'utf8') : null;
-      const prompt = builderPrompt({
-        changeId: c.row.change,
-        branch: c.branch,
-        instructions: adapter.buildInstructions(c.facts),
-        session: number,
-        handoff,
-        gateFailure: gateFeedback,
-        doneTasks: runChangeTicks(db, c.row.id),
-        gates: c.gates,
-        testBudget: c.testBudget,
-        ownerNotes: waitingChangeNotes(db, active.hostId, c.row.change),
-        askTool: this.#o.askServer !== undefined,
-      });
-      markChangeNotesUsed(db, active.hostId, c.row.change, this.#now());
+      const conflicts = c.conflicts ?? null;
+      const prompt =
+        conflicts !== null
+          ? conflictPrompt({
+              changeId: c.row.change,
+              branch: c.branch,
+              baseBranch: runtime.host.baseBranch,
+              conflicts,
+            })
+          : builderPrompt({
+              changeId: c.row.change,
+              branch: c.branch,
+              instructions: adapter.buildInstructions(c.facts),
+              session: number,
+              handoff,
+              gateFailure: gateFeedback,
+              doneTasks: runChangeTicks(db, c.row.id),
+              gates: c.gates,
+              testBudget: c.testBudget,
+              ownerNotes: waitingChangeNotes(db, active.hostId, c.row.change),
+              askTool: this.#o.askServer !== undefined,
+            });
+      if (conflicts === null) markChangeNotesUsed(db, active.hostId, c.row.change, this.#now());
       const processTag = randomBytes(16).toString('hex');
       const rawLogPath = join(c.changeDir, `session-${number}.jsonl`);
       const sessionId = insertAgentSession(db, {
@@ -1303,10 +1429,11 @@ export class Orchestrator {
         usage: { outcome: result.outcome.kind },
       });
 
-      // Every session's work is committed, whatever ended it.
+      // Every session's work is committed, whatever ended it (a merge's, once it is resolved).
       const ticksBefore = runChangeTicks(db, c.row.id).length;
-      const done = await this.#commit(c, runtime, number, result, active.id);
-      gateFeedback = null;
+      const done =
+        conflicts === null ? await this.#commit(c, runtime, number, result, active.id) : null;
+      if (conflicts === null) gateFeedback = null;
 
       switch (result.outcome.kind) {
         case 'usage-limit':
@@ -1344,6 +1471,27 @@ export class Orchestrator {
           transient = 0;
       }
       if (active.stop.signal.aborted || result.reason === 'stop-handoff') return 'stopped';
+      if (conflicts !== null) {
+        // budget-handoff, forced, timeout, failed: the next session goes on resolving.
+        if (result.reason !== 'finished') continue;
+        for (const note of [HANDOFF_FILE, ASSUMPTIONS_FILE, BLOCKED_FILE]) {
+          rmSync(join(c.worktree, note), { force: true });
+        }
+        const finished = await finishMerge({
+          worktree: c.worktree,
+          change: c.row.change,
+          baseCommit: c.baseCommit,
+          runId: active.id,
+          conflicts,
+          isPlanningPath: (path) => adapter.isPlanningPath(path),
+        });
+        if (finished.commit !== null) return 'built';
+        return this.#parkOpen(
+          active,
+          c,
+          `${runtime.host.baseBranch} moved on and merging it into ${c.branch} conflicts; the session left conflict markers in ${finished.left.join(', ')}.`,
+        );
+      }
       open = done === null ? null : done.open;
       // budget-handoff, forced, timeout, failed: the next session continues from the handoff.
       if (result.reason !== 'finished') continue;
@@ -1376,6 +1524,13 @@ export class Orchestrator {
         );
       }
       // It stopped early with work left: a fresh session continues from its handoff.
+    }
+    if (c.conflicts !== undefined) {
+      return this.#parkOpen(
+        active,
+        c,
+        `${runtime.host.baseBranch} moved on and merging it into ${c.branch} conflicts; ${settings.sessionsPerAttempt} sessions did not resolve it.`,
+      );
     }
     if (open !== null && open.length > 0) {
       return this.#parkOpen(
