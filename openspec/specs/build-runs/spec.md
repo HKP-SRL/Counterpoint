@@ -47,11 +47,15 @@ A run SHALL build only changes that are approved at the moment their build start
 - **THEN** that change is still built, from the edited version at the base-branch tip
 
 ### Requirement: One worktree and branch per change
-Each change SHALL build in its own git worktree and branch created from the base-branch tip at the moment its build starts, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout. Builder sessions SHALL leave git state alone: Counterpoint commits each session's work in the worktree itself.
+Each change SHALL build in its own git worktree and branch created from the base-branch tip on the remote, fetched at the moment its build starts, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout. Builder sessions SHALL leave git state alone: Counterpoint commits each session's work in the worktree itself.
 
 #### Scenario: Owner works during a day run
 - **WHEN** the owner edits files in their checkout while a change builds
 - **THEN** the build is unaffected and the owner's checkout is untouched
+
+#### Scenario: Local base branch behind the remote
+- **WHEN** the owner's local base branch is behind the remote when a change's build starts
+- **THEN** the change's branch starts from the remote's tip, its gates come from the host config there, and the owner's local base branch is unchanged
 
 ### Requirement: Fresh sessions with context-budget handoff
 Each build SHALL run in fresh `claude -p` sessions. When a session's context passes the run's budget, measured against the model's real window (never a hard-coded size), Counterpoint SHALL have it finish the current task, write a handoff and stop, SHALL commit the session's work with the handoff, and SHALL start the next fresh session from that handoff.
