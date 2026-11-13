@@ -25,6 +25,7 @@ import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../buil
 import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
 import { createDeliver } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
+import { HoldCards, resolveHoldCards } from '../build/hold-card.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { readOwnerEnv } from '../build/owner-env.ts';
@@ -415,7 +416,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     submit: (hostId, write, cardId) => lane?.submit(hostId, write, cardId),
     log,
   });
-  const governor = new Governor({ db: store });
+  // A long usage hold is told in Needs You (build-runs: A long usage hold is told).
+  const holdCards = new HoldCards(desk);
+  const governor = new Governor({ db: store, onLongHold: (hold) => holdCards.update(hold) });
   // Owner steps are cards (owner-inbox 4.2): recomputed with the run's cards on every read. Do it
   // for me runs a session as the owner, through the same governor as builders (4.3).
   const steps = new OwnerSteps({
@@ -572,6 +575,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   if (askServer !== undefined) raiseAskSetupCard(desk, options.home);
   // This daemon runs the newest install: a restart card an earlier daemon raised is moot.
   resolveRestartCards(store, desk, 'Counterpoint restarted.');
+  resolveHoldCards(store, desk, 'Counterpoint restarted; a session still waiting raises it again.');
   if (planned) {
     desk.doneForYou(
       null,

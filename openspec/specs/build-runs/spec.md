@@ -141,6 +141,13 @@ The session that learns a model's context window SHALL end like any session: a u
 - **WHEN** the run learns the window of a new claude version and the API answers overloaded
 - **THEN** it tries again a minute later and the run builds
 
+### Requirement: A long usage hold is told
+When agent work starts waiting on a usage hold of 3 hours or more, Needs You SHALL show one card that blocks nothing, naming the limit window that holds work and when it resets. The card SHALL close itself when nothing waits on the hold any more.
+
+#### Scenario: Weekly window near its limit
+- **WHEN** the weekly window is at its ceiling two days before it resets and the next session would start
+- **THEN** Needs You says the weekly usage limit holds agent work until the reset time, and the card closes once work resumes
+
 ### Requirement: Single governor in front of every spawn
 Every agent spawn on the machine, across hosts, SHALL go through one governor that applies usage-limit pauses to all lanes together.
 

@@ -14,6 +14,7 @@ import {
   DEFAULT_CEILING,
   Governor,
   governedRunner,
+  LONG_HOLD_MS,
   RESET_MARGIN_MS,
   rateLimitWindows,
   readPause,
@@ -344,6 +345,71 @@ describe('Governor', () => {
       }),
     );
     expect(g.holdUntil()).toBeNull();
+  });
+
+  describe('a long hold is told', () => {
+    const weekly = (utilization: number, resetsAt: number) =>
+      limitEvent({
+        status: 'allowed_warning',
+        rateLimitType: 'seven_day',
+        utilization,
+        resetsAt: resetsAt / 1000,
+      });
+
+    function telling(db: Store, now: { t: number }) {
+      const told: Array<unknown> = [];
+      const g = new Governor({
+        db,
+        now: () => now.t,
+        sleep: async (ms) => {
+          told.push({ slept: ms });
+          now.t += ms;
+        },
+        onLongHold: (hold) => told.push(hold),
+      });
+      return { g, told };
+    }
+
+    it('names the window and its reset when a wait of 3 hours or more begins, and ends it after', async () => {
+      const db = store();
+      const now = { t: T0 };
+      const { g, told } = telling(db, now);
+      const reset = T0 + 2 * 24 * 3_600_000;
+      g.observe(weekly(0.96, reset));
+      await g.admit({ hostId: 'cena', kind: 'builder' });
+      const until = reset + RESET_MARGIN_MS;
+      expect(told).toEqual([
+        { until, reason: 'seven_day usage at 96%, pacing until it resets', window: 'seven_day' },
+        { slept: until - T0 },
+        null,
+      ]);
+    });
+
+    it('says nothing for a short hold', async () => {
+      const db = store();
+      const now = { t: T0 };
+      const { g, told } = telling(db, now);
+      g.observe(weekly(0.97, T0 + LONG_HOLD_MS - RESET_MARGIN_MS - 60_000));
+      await g.admit({ hostId: 'cena', kind: 'builder' });
+      expect(
+        told.filter((entry) => !(typeof entry === 'object' && entry && 'slept' in entry)),
+      ).toEqual([]);
+    });
+
+    it('ends it when the waiting spawn is stopped', async () => {
+      const db = store();
+      const told: Array<unknown> = [];
+      const g = new Governor({ db, now: () => T0, onLongHold: (hold) => told.push(hold) });
+      g.pause(T0 + 5 * 3_600_000, 'usage limit reached');
+      const controller = new AbortController();
+      const waiting = g.admit({ hostId: 'cena', kind: 'builder', signal: controller.signal });
+      controller.abort();
+      await expect(waiting).rejects.toMatchObject({ kind: 'aborted' });
+      expect(told).toEqual([
+        { until: T0 + 5 * 3_600_000, reason: 'usage limit reached', window: null },
+        null,
+      ]);
+    });
   });
 
   it('stops waiting when aborted', async () => {

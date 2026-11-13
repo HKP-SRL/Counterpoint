@@ -39,6 +39,8 @@ export const RESET_MARGIN_MS = 2 * 60 * 1000;
 export const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
 /** Default utilization ceiling: no new session starts while a warned window is at or above it. */
 export const DEFAULT_CEILING = 0.95;
+/** A hold at least this long, from when a spawn starts waiting on it, is told to the owner. */
+export const LONG_HOLD_MS = 3 * 60 * 60 * 1000;
 
 export type SpawnKind = 'calibration' | 'builder' | 'owner-step';
 
@@ -55,6 +57,14 @@ export interface GovernorState {
   pauseReason: string | null;
   /** The last state seen per limit window (`five_hour`, `seven_day`, ...). */
   windows: Record<string, WindowState>;
+}
+
+/** A hold a spawn waits on: until when (epoch ms), why, and the limit window it waits for. */
+export interface LongHold {
+  until: number;
+  reason: string;
+  /** The window (`seven_day`, `five_hour`, ...) whose reset ends it, when one does. */
+  window: string | null;
 }
 
 export class GovernorRefusal extends Error {
@@ -345,6 +355,11 @@ export interface GovernorOptions {
   ceiling?: number;
   /** Called whenever the state changes (the daemon turns it into an event). */
   onChange?: (state: GovernorState) => void;
+  /**
+   * Told when a spawn starts waiting on a hold of LONG_HOLD_MS or more (again when that hold
+   * changes), and with null once no spawn waits any more (the hold ended, or the run stopped).
+   */
+  onLongHold?: (hold: LongHold | null) => void;
 }
 
 export class Governor {
@@ -353,6 +368,10 @@ export class Governor {
   readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly #ceiling: number;
   readonly #onChange: ((state: GovernorState) => void) | undefined;
+  readonly #onLongHold: ((hold: LongHold | null) => void) | undefined;
+  /** Spawns waiting in admit now, and the long hold told to the listener (null: none). */
+  #waiting = 0;
+  #longHold: LongHold | null = null;
 
   constructor(options: GovernorOptions) {
     this.#db = options.db;
@@ -360,6 +379,7 @@ export class Governor {
     this.#sleep = options.sleep ?? abortableSleep;
     this.#ceiling = options.ceiling ?? DEFAULT_CEILING;
     this.#onChange = options.onChange;
+    this.#onLongHold = options.onLongHold;
   }
 
   state(): GovernorState {
@@ -392,13 +412,47 @@ export class Governor {
     return hold;
   }
 
-  /** Waits until a spawn may start: no usage-limit pause or pacing hold in force. */
+  /**
+   * Waits until a spawn may start: no usage-limit pause or pacing hold in force. A long wait is
+   * told to the owner (build-runs: A long usage hold is told), so a weekly window days from its
+   * reset is not a silent "Holding".
+   */
   async admit(request: { hostId: string; kind: SpawnKind; signal?: AbortSignal }): Promise<void> {
-    for (;;) {
-      if (request.signal?.aborted) throw new GovernorRefusal('aborted', 'Stopped while waiting.');
-      const hold = this.holdUntil();
-      if (hold === null) return;
-      await this.#sleep(Math.max(1000, hold.until - this.#now()), request.signal);
+    this.#waiting += 1;
+    try {
+      for (;;) {
+        if (request.signal?.aborted) throw new GovernorRefusal('aborted', 'Stopped while waiting.');
+        const hold = this.holdUntil();
+        if (hold === null) return;
+        this.#tellLongHold(hold);
+        await this.#sleep(Math.max(1000, hold.until - this.#now()), request.signal);
+      }
+    } finally {
+      this.#waiting -= 1;
+      if (this.#waiting === 0 && this.#longHold !== null) {
+        this.#longHold = null;
+        this.#tell(null);
+      }
+    }
+  }
+
+  #tellLongHold(hold: { until: number; reason: string }): void {
+    if (this.#longHold?.until === hold.until) return;
+    if (hold.until - this.#now() < LONG_HOLD_MS) return;
+    // The window whose reset (plus the margin) ends the hold, if one does.
+    const window =
+      Object.entries(this.state().windows).find(
+        ([, w]) => w.resetsAt !== null && w.resetsAt + RESET_MARGIN_MS === hold.until,
+      )?.[0] ?? null;
+    this.#longHold = { until: hold.until, reason: hold.reason, window };
+    this.#tell(this.#longHold);
+  }
+
+  #tell(hold: LongHold | null): void {
+    try {
+      this.#onLongHold?.(hold);
+    } catch {
+      // telling the owner never stops a spawn from waiting or starting
     }
   }
 
