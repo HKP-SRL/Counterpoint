@@ -24,16 +24,20 @@
 // Before every session the approval is verified again: a change that leaves the runway stops at
 // its next handoff and is skipped (Needs You shows it as approved version changed).
 //
-// Every spawn goes through the governor (usage-limit pauses for every lane, the doctor gate) and
-// uses the claude installed at that moment: the binary and its version are resolved before each
-// spawn, and when the version differs from the one the last doctor report checked, the run runs
-// doctor itself (governed, about two minutes) and goes on if it passes. A claude update never stops
-// a run unless it really breaks the sandbox.
+// Every spawn goes through the governor (usage-limit pauses for every lane) and uses the claude
+// installed at that moment: the binary and its version are resolved before each spawn (a failed
+// `claude --version` is asked again, 3 tries), and a version with no learned window for the model
+// gets a calibration session first. A claude update never stops a run. Sessions run as the owner,
+// with no sandbox and no doctor (run-as-owner, 2026-11-12; docs/decisions.md Direction).
 //
-// Session endings (6.3): a usage limit pauses every lane (the governor) and the session is run
-// again after the pause, counting nothing; transient API errors back off (1, 2, 4, ... minutes) and
-// retry, up to five times, then count as a failed attempt; authentication, credit and spend-limit
-// errors stop the run with the reason (Needs You shows it).
+// Session endings (6.3): only claude's error decides how a session ended, never its summary. A
+// usage limit pauses every lane (the governor) and the session is run again after the pause,
+// counting nothing; transient API errors back off (1, 2, 4, ... minutes) and retry, up to five
+// times, then count as a failed attempt; two sessions in a row that end on claude's error without
+// a commit park the change with that error; a failed sign-in stops the run at once only when
+// claude holds no login, otherwise it is retried and may stop as a possible outage
+// (auth-failures.ts); credit and spend-limit errors stop the run with the reason (Needs You shows
+// it). The calibration session ends the same way.
 //
 // Stopping: the owner's stop and the run's stop time end the run at the next clean point. The
 // running session is asked to finish its task and hand off; running gates are stopped (a stopped
@@ -406,9 +410,9 @@ export class Orchestrator {
   // --- the owner's requests ----------------------------------------------------------------
 
   /**
-   * Starts a run, or refuses with the reason. Refused: an unknown host, a run already going, a
-   * failing doctor verdict (unless only the claude version changed: then the run re-runs doctor
-   * first), and any chosen change that is not on the runway now.
+   * Starts a run, or refuses with the reason. Refused: bad settings or stop time, an unknown or
+   * unreadable host, a run already going, any chosen change that is not on the runway now, and an
+   * empty runway.
    */
   async start(hostId: string, input: unknown): Promise<StartResult> {
     const parsed = RunSettings.safeParse(input);
