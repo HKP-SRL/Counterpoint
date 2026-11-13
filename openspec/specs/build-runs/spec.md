@@ -33,7 +33,7 @@ Each project SHALL have a Settings page in the console holding its run settings:
 
 #### Scenario: Per-session limits
 - **WHEN** the owner sets 300 turns, $30 and 6 sessions per attempt
-- **THEN** each builder session stops at 300 turns or $30 estimated cost, and the gates run after at most 6 sessions of one attempt
+- **THEN** each builder session stops at 300 turns or $30 estimated cost, and a change with build tasks still open after 6 sessions of one attempt parks with the reason instead of going to its gates
 
 ### Requirement: Only runway changes are built
 A run SHALL build only changes that are approved at the moment their build starts. A change whose approval is withdrawn during a run SHALL NOT start; one already building SHALL stop at its next handoff and keep its branch.

@@ -7,14 +7,11 @@ Mission are decisions: Launch, Stop, Resume, Approve, Merge, Retry tonight, Late
 an assumed decision, pick A or B, and Dismiss. Everything else (cards moving, tasks finishing,
 gates running) happens on its own and simply shows up.
 
-**Signing happens in the owner's terminal, never in the browser.** Approve and Merge open a
-dialog that explains what signing does and shows the exact command with a Copy button:
-`counterpoint approve 6`, `counterpoint merge 41`. It also says "it asks for your passphrase".
-Fixing auth works the same way (`claude /login`). Counterpoint never signs in for the owner.
-Dialog copy, kept from the sketch:
-- Approve: "Approving signs this exact version of the change onto the runway … If the change
-  is edited after you sign, it leaves the runway and shows up in Needs You."
-- Merge: "Only your signed merge commit lands it … Gates re-run on the merge result before it lands."
+**Approve and Merge are one click in the console (2026-11-12).** Nothing is signed: no terminal
+command, key or passphrase. An approval stays with the change when its plan is edited later. Only
+the owner merges, with that click. Fixing auth still happens in the owner's terminal
+(`claude /login`): a dialog shows the exact command with a Copy button. Counterpoint never signs
+in for the owner.
 
 **Needs You is a keyboard inbox (In flight, and wherever it carries key hints):**
 - `J` / `K` move the focus row (inset 2px accent bar + neutral background)
@@ -31,17 +28,15 @@ Dialog copy, kept from the sketch:
 - Empty: "Nothing needs you. Go do something else."
 - The Needs You count also shows in the side nav.
 
-**Go/No-go gates Launch (Launch mode):** a checklist card with six checks: Sandbox probe, GitHub
-CLI signed in, Runway signed and unchanged, Gate config approved, Mac stays awake, and Usage window
-fresh. Each row shows GO or NO-GO (12px, weight 600, letter-spaced). A No-go row turns error red
-and swaps its detail for the fix ("On battery. Plug in, or the Mac may sleep mid-run."). The
-footer says why Launch is disabled ("1 No-go. Launch waits until every check is Go.") until
-every check is Go and at least one change is included. In the real app the checks come from
-doctor/trust, not clicks.
+**Go/No-go gates Launch (Launch mode):** a checklist card of real preconditions, such as GitHub
+CLI signed in, Mac stays awake and Usage window fresh. Each row shows GO or NO-GO (12px, weight
+600, letter-spaced). A No-go row turns error red and swaps its detail for the fix ("On battery.
+Plug in, or the Mac may sleep mid-run."). The footer says why Launch is disabled ("1 No-go.
+Launch waits until every check is Go.") until every check is Go and at least one change is
+included. In the real app the checks come from real state, not clicks.
 
 **Flight plan (Launch mode):** runway changes with checkboxes to include or exclude them for
-tonight, in build order, each with its task count, signed time and ≈ duration. A change that
-changed after signing is listed separately as not included, with See change / Re-approve….
+tonight, in build order, each with its task count, approval time and ≈ duration.
 
 **Settings (Launch mode, compact):** one summary line in the card header ("Stop 07:00 · Opus 5.5
 · 40% context per session (400k tokens)") with a Change button that expands three selects:
@@ -72,7 +67,7 @@ clickable, including flight-path blocks and sparklines.
 
 | Sketch part | Astryx |
 |---|---|
-| Approve / Merge / How to fix dialogs | `Dialog` + `DialogHeader` (an `ApprovalDialog` already exists in `ui/src/components/`) |
+| How to fix dialogs | `Dialog` + `DialogHeader` |
 | Command line with Copy | `CodeBlock` or `Code` + `useClipboard` |
 | Key hints | `Kbd` |
 | Toasts | `useToast` |
@@ -104,8 +99,8 @@ Go/No-go:
 <section class="card">
   <div class="card-h"><span class="label">Go / No-go</span></div>
   <ul class="nlist">
-    <li class="check"><span class="c-ic">✓</span><div class="n-main"><div class="n-title">Sandbox probe</div>
-      <div class="n-detail">Agents can't read your keys or reach the console</div></div><span class="go">GO</span></li>
+    <li class="check"><span class="c-ic">✓</span><div class="n-main"><div class="n-title">GitHub CLI signed in</div>
+      <div class="n-detail">PRs open as you</div></div><span class="go">GO</span></li>
     <li class="check nogo"><span class="c-ic">✗</span><div class="n-main"><div class="n-title">Mac stays awake</div>
       <div class="n-detail">On battery. Plug in, or the Mac may sleep mid-run.</div></div><span class="go">NO-GO</span></li>
   </ul>
@@ -114,15 +109,14 @@ Go/No-go:
 </section>
 ```
 
-Signing dialog:
+How to fix dialog:
 
 ```html
 <dialog>
-  <div class="dlg-h"><h2 class="h2">Merge PR #41</h2></div>
+  <div class="dlg-h"><h2 class="h2">Claude Code is signed out</h2></div>
   <div class="dlg-b">
-    <p class="muted">Only your signed merge commit lands it. Run this in your terminal; it asks for your passphrase.</p>
-    <div class="codeline"><span>counterpoint merge 41</span><button class="btn sm ghost">Copy</button></div>
-    <p class="sup">Gates re-run on the merge result before it lands.</p>
+    <p class="muted">Run this in your terminal, then start the run again.</p>
+    <div class="codeline"><span>claude /login</span><button class="btn sm ghost">Copy</button></div>
   </div>
   <div class="dlg-f"><button class="btn secondary">Close</button></div>
 </dialog>
@@ -172,12 +166,13 @@ document.addEventListener('keydown', e => {
 ## What to Avoid
 
 - **Drag and drop, or any action that moves work by hand.** The owner decides; agents move.
-- **Signing or merging with a browser click.** The approval key is never cached and agents can
-  reach the console, so signing always happens in the owner's terminal with a passphrase.
+- **Extra steps to approve or merge.** Both are one click in the console, with no terminal
+  command, key or passphrase (2026-11-12). Merging stays the owner's click; nothing merges on its
+  own.
 - **Interrupting modals for questions.** Council questions wait in Needs You, marked "not
   blocking"; only irreversible work parks.
-- **Ceremony without meaning.** Go/No-go checks are real preconditions (sandbox, gh, signatures,
-  power, usage); each No-go names its fix.
+- **Ceremony without meaning.** Go/No-go checks are real preconditions (gh, power, usage); each
+  No-go names its fix.
 - **Motion as decoration.** Nothing animates unless something is happening, and all motion
   respects reduced-motion.
 

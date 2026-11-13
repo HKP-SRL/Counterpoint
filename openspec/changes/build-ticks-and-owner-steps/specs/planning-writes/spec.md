@@ -2,6 +2,17 @@
 
 ## MODIFIED Requirements
 
+### Requirement: Single serialized write path
+Every write Counterpoint makes to the host's planning files (decisions, backlog items, bookkeeping such as ticking tasks or archiving a change) SHALL go through one serialized path that lands one write at a time. The one exception is a build's own ticks: the tick-only commit Counterpoint adds to a build branch rides in that change's build PR and is not a separate write. Ticks kept out of the build PR land after its merge through the serialized path.
+
+#### Scenario: Two writes at once
+- **WHEN** two builds finish at the same moment and both need bookkeeping
+- **THEN** the writes land one after the other as separate small PRs, each merged
+
+#### Scenario: A build's ticks
+- **WHEN** a change is delivered with build tasks recorded done
+- **THEN** its ticks reach the base branch in its build PR, and no separate small PR is opened for them
+
 ### Requirement: Builds never write planning files directly
 A build worktree's commits SHALL NOT change the host's planning files, with one exception that Counterpoint makes itself: a commit that only ticks tasks in the change's own task list, made from the ticks it recorded. A PR whose diff touches planning files in any other way SHALL be flagged and not offered for merge.
 

@@ -174,7 +174,7 @@ function SettingsForm({ hostId, answer }: { hostId: string; answer: SettingsAnsw
             />
             <NumberInput
               label="Sessions per attempt"
-              description="After this many sessions on one attempt, the gates run anyway."
+              description="After this many sessions with build tasks still open, the change parks."
               value={draft.sessionsPerAttempt}
               min={1}
               max={20}

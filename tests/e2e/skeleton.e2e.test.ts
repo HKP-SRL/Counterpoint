@@ -189,7 +189,7 @@ describe('walking skeleton: counterpoint → daemon → SQLite → HTTP → Astr
     const result = await cli(['--port', '0', '--no-open'], missing, repo);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain(
-      `Counterpoint home "${missing}" does not exist. If it is on the Dock volume, is it mounted? Nothing was created.`,
+      `Counterpoint home "${missing}" does not exist. If it is on an external volume, is it mounted? Nothing was created.`,
     );
     expect(existsSync(missing)).toBe(false);
   });
