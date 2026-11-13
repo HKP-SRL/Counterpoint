@@ -27,12 +27,12 @@ It reads planning truth from the host project's SDD framework through adapters (
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | CLI + local web UI + live updates | One Node >=24 process: **Hono 4 + `@hono/node-server` 2** serving a prebuilt **Vite 8 / React 19 / Tailwind 4 / shadcn** SPA. **SSE** (not WebSocket) for server-to-UI push, plain `POST` for commands. Bound to `127.0.0.1` with Host/Origin checks. |
-| 2 | Driving Claude Code | **Claude Agent SDK for TypeScript (`@anthropic-ai/claude-agent-sdk`, exact-pinned)** behind one internal `AgentRunner` port, pointed at the owner's own `claude` binary via `pathToClaudeCodeExecutable`. Not raw `claude -p` spawning. Context budget is enforced by the orchestrator from per-message usage, not by a model-obeyed hook. |
+| 2 | Driving Claude Code | **Spawn the owner's own `claude -p` and read its `stream-json` events**, behind one internal `AgentRunner` port (`src/agent/`). Not the Agent SDK; the SDK is only a possible later second implementation of the same port. Context budget is enforced by the orchestrator from per-message usage, not by a model-obeyed hook. See section 2. |
 | 3 | Git, PRs | Shell out to the real `git` and `gh` with **execa 10** (argument arrays, no shell). No git library. (Signature checks were removed 2026-11-12.) |
 | 4 | State store | **SQLite via built-in `node:sqlite`** (WAL, STRICT tables, FTS5) for runs, items, approvals, attempts, gate results, events, council. **Files** for logs, screenshots, diffs. **Git** (host repo) for planning (specs, decisions, approved mocks). |
 | 5 | Gates | Child processes in their own process group, judged by exit code only, output streamed to a log file plus a tail kept in SQLite. Machine-wide test lock = SQLite exclusive lock (the owner's existing `test-lock.ts` technique). |
 | 6 | Visual gate | **`playwright-core` screenshots + `pixelmatch` 8** (with `pngjs`) as the exit-code check, **structural landmark comparison** as the second check, **vision-model review as advisory only**. Pixel diff needs hi-fi mocks. |
-| 7 | Persona browser agents | **`@playwright/mcp` (exact-pinned) headless + isolated**, passed to the SDK via `mcpServers`. **Not** Claude in Chrome (needs a headed, logged-in real Chrome; unusable unattended). Computer use is not needed. |
+| 7 | Persona browser agents | **`@playwright/mcp` (exact-pinned) headless + isolated**, passed to the persona's `claude` session via `--mcp-config`. **Not** Claude in Chrome (needs a headed, logged-in real Chrome; unusable unattended). Computer use is not needed. |
 | 8 | Element-pinned mock comments | **Build a small in-house overlay** (vanilla TS, Shadow DOM, injected by the mock server). Nothing off the shelf fits: Agentation is React-only and PolyForm Shield, Stagewise is an AGPL IDE, react-grab copies context but has no persistent comments, Vercel comments only work on Vercel deploys. |
 | 9 | Reading `openspec/` | **Parse the host's committed `openspec/` natively** from git blobs at the base tip: `yaml` + zod for `.openspec.yaml`, **unified + remark-parse + remark-gfm** for proposals, task checkboxes and spec requirements, and position-exact splicing for write-back. The `openspec` CLI reads the working tree, so it is a dev-time tool only. **Do not use gray-matter.** |
 
@@ -50,10 +50,9 @@ It reads planning truth from the host project's SDD framework through adapters (
 
 | Technology | Version | Purpose | Why Recommended | Confidence |
 |------------|---------|---------|-----------------|------------|
-| `@anthropic-ai/claude-agent-sdk` | **0.3.319, exact pin** (no caret) | Run headless Claude Code sessions: builder, council seats, persona agents | See "SDK vs spawning the CLI" below. Typed message stream, live `getContextUsage()`, in-process hooks, in-process MCP tools, `interrupt()`, `resume`/`fork`, structured rate-limit events. It is 0.x and ships very frequently (patch 319 on the 0.3 line), so pin exactly and wrap it. | HIGH on capability, MEDIUM on API stability |
-| `zod` | 4.6.7 | Schemas for config, DB rows, API payloads, SDK tool definitions | The SDK requires zod `^4` as a peer dependency, so one validation library serves everything. | HIGH |
-| `@anthropic-ai/sdk` | 1.6.0 | **Peer dependency of the Agent SDK** (`>=0.93.0`) | Required to install; Counterpoint code should not call it directly. | HIGH |
-| `@modelcontextprotocol/sdk` | 1.32.2 | **Peer dependency of the Agent SDK** (`^1.29.0`); also used to define Counterpoint's own in-process MCP tools | Council seats need tools like `file_backlog_item` and `post_pin_comment`; `createSdkMcpServer` + `tool()` define them in-process with no extra server. | HIGH |
+| `claude` CLI (the owner's own install, not a dependency) | whatever the owner has | Run headless Claude Code sessions: builder, council seats, persona agents | See section 2. Spawned with `claude -p --output-format stream-json` through `AgentRunner`; usage, context window, rate limits and errors come from typed stream events. Judge sessions by protocol fields, never by claude's wording, because Claude Code updates almost daily. | HIGH |
+| `zod` | 4.6.7 | Schemas for config, DB rows, API payloads, MCP tool inputs | One validation library serves everything. | HIGH |
+| `@modelcontextprotocol/sdk` | 1.32.2 | Not yet a dependency. Counterpoint's own MCP endpoint for council seat tools | Council seats need tools like `file_backlog_item` and `post_pin_comment`. Counterpoint's server exposes them as an MCP endpoint and each session gets it through `--mcp-config`. Add it when the council lands. | MEDIUM |
 | Hono | 4.13.17 | HTTP API, SSE, static file serving, mock serving + HTML injection | Web-standard Request/Response, tiny, `streamSSE()` helper built in, `hono/csrf` and `hono/secure-headers` middleware. Hono v5 is only a release candidate (`next` tag); v4 is `latest`. | HIGH |
 | `@hono/node-server` | 2.1.6 | Node adapter | `latest` is 2.1.6 (Nov 2) and includes three security fixes (path backslashes, WebSocket host handling, upgrade socket errors). Peer range is `hono ^4 \|\| ^5.0.0-0`. | HIGH |
 | `node:sqlite` (built in) | Node 24/26 | Durable local state | See "State store" below. The owner's `speckit-auto/test-lock.ts` already uses `DatabaseSync`, so there is existing in-house experience. FTS5 verified working locally (for searchable council transcripts). | MEDIUM-HIGH |
@@ -113,19 +112,27 @@ It reads planning truth from the host project's SDD framework through adapters (
 - **Mock serving.** Mocks are served from a separate path or port from the console UI so that mock JavaScript cannot touch console cookies (use a different port on `127.0.0.1`, which is a different origin).
 - **Keep the machine awake.** Wrap long runs with `caffeinate -i -w <pid>` on macOS (the prior art does the same).
 
-## 2. Orchestrating headless Claude Code: SDK vs spawning the CLI
+## 2. Orchestrating headless Claude Code: the `claude` CLI
 
-| Need | `claude -p` + stream-json | Agent SDK (TS) |
-|------|---------------------------|----------------|
-| Per-message token usage | Parse JSON lines yourself | Typed `SDKAssistantMessage.message.usage` (dedupe by `message.id`; input/cache tokens are accurate, per-step `output_tokens` is a placeholder) |
-| Window size for the budget | Only at the end, in `result.modelUsage[model].contextWindow` | `modelUsage[model].contextWindow` after the first turn result **and** `query.getContextUsage({detail:'summary'})` live, mid-run |
-| Stop at N% and hand off | A shell hook that asks the model nicely (prior art: `context-budget.sh`), no way to inject a turn | `interrupt()` and `streamInput()` to inject the wrap-up turn, or a `PostToolUse` callback in-process |
-| Usage-limit wait | Regex on stderr text (prior art: `retry_wait`) | Structured `rate_limit_event` (`status`, `resetsAt`, `rateLimitType: five_hour \| seven_day`), `system/api_retry` (`attempt`, `retry_delay_ms`, `error_status`), result `subtype` values (`error_max_turns`, `error_max_budget_usd`) |
-| Custom tools for council seats | Separate MCP server process | `createSdkMcpServer` in-process |
-| Cost cap per session | `--max-budget-usd` | `maxBudgetUsd` |
-| Approve/deny tools programmatically | `--permission-prompt-tool` | `canUseTool`, in-process `hooks` (`PreToolUse`, `PostToolUse`, `Stop`, `PreCompact`, `SubagentStop`, ...), `onFailure: "block"` for fail-closed guards |
-| Isolation | `--bare`, settings flags | `settingSources: []`, `strictMcpConfig`, `sandbox`, `managedSettings`, `allowedTools`/`disallowedTools` |
-| Install weight | None (uses user's `claude`) | 5 MB JS **plus a ~322 MB platform binary** (optional dependency) unless you point at the user's `claude` |
+Counterpoint spawns the owner's own `claude -p` and reads `stream-json` (decided in `docs/decisions.md`; argv in `src/agent/claude-argv.ts`). Why not the Agent SDK:
+- **It already does everything we need**, as the table shows.
+- **It runs the owner's Claude Code as is**: their login, settings, skills and hooks. Counterpoint acts as the owner.
+- **Terms.** Anthropic restricts third-party products built on the Agent SDK from offering claude.ai login. Running each user's own `claude` avoids that for the public release.
+- **Churn.** The SDK is 0.x and ships almost daily.
+
+| Need | How Counterpoint does it (`claude -p` + stream-json) | Agent SDK equivalent, if we ever swap |
+|------|------------------------------------------------------|---------------------------------------|
+| Per-message token usage | Latest `assistant` event's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, counted once per `message.id` (`src/agent/usage.ts`) | Typed `SDKAssistantMessage.message.usage` |
+| Window size for the budget | `result.modelUsage[model].contextWindow`, one `result` per turn; never assumed | Same field, plus `query.getContextUsage()` mid-run |
+| Stop at N% and hand off | `--input-format stream-json`: the orchestrator writes a wrap-up message to stdin; a `control_request` `interrupt`; killing the process group as a last resort | `interrupt()` and `streamInput()` |
+| Usage-limit wait | Structured `rate_limit_event` (`status`, `resetsAt`), `system/api_retry`, result error values (`src/build/governor.ts`); no text matching | Same events, typed |
+| Custom tools for council seats | Counterpoint's server exposes an MCP endpoint; sessions get it via `--mcp-config` (not built yet) | `createSdkMcpServer` in-process |
+| Cost and turn caps | `--max-budget-usd`, `--max-turns` | `maxBudgetUsd`, `maxTurns` |
+| Permissions | `--permission-mode auto` + `--permission-prompts none`, so a session never waits | `canUseTool`, in-process `hooks` |
+| Settings and MCP | `--setting-sources user,project` (non-`--bare`), `--strict-mcp-config` | `settingSources`, `strictMcpConfig` |
+| Install weight | None (the owner's `claude`) | 5 MB JS **plus a ~322 MB platform binary** unless pointed at the user's `claude` |
+
+Swap to the SDK (a second `AgentRunner` implementation) only if the CLI stops exposing something we need, and re-read Anthropic's terms first.
 
 ## 3. Git worktrees and PRs
 
@@ -139,7 +146,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Data | Where | Why |
 |------|-------|-----|
 | Runs, work items, attempts, parking state, gate results, usage figures, run settings, council cards/threads/meetings/turns, pin comments, `events` outbox | **SQLite** | Relational queries ("what is parked", "gate pass rate", "runway length"), transactional state transitions, crash recovery, and an autoincrement `events` table that doubles as the SSE replay log. Plain files make multi-writer updates (builder, server, council all writing) racy; the prototype's `factory/*.yaml` is exactly what PROJECT.md retired. |
-| Gate logs, persona screenshots, diff images, raw SDK event streams | **Files** under `<home>/hosts/<host-id>/runs/<run>/...`; SQLite stores path, size, tail | Large and append-only; the UI needs "last lines one click away", which is a stored tail plus a file link. |
+| Gate logs, persona screenshots, diff images, raw agent `stream-json` event streams | **Files** under `<home>/hosts/<host-id>/runs/<run>/...`; SQLite stores path, size, tail | Large and append-only; the UI needs "last lines one click away", which is a stored tail plus a file link. |
 | Specs, decisions, approved mocks, backlog items | **The host git repo** (via the adapter) | They must be versioned and reviewable. Counterpoint reads planning truth, it does not own it. |
 | Seat definitions, host settings | **Config file in the host repo** (YAML parsed with `yaml`, validated with `zod`) | Reviewable, per-host, committed. |
 
@@ -201,7 +208,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 
 | Recommended | Alternative | When to Use Alternative |
 |-------------|-------------|-------------------------|
-| Agent SDK (TS) | Raw `claude -p` spawning | If an SDK release breaks the build lane and a fix is not available, or the ~322 MB binary dependency becomes a problem even with `--omit=optional`. Keep the fallback runner designed for, not built. |
+| `claude -p` + stream-json | Agent SDK (TS) | Only if the CLI stops exposing something we need. It would be a second `AgentRunner` implementation; re-read Anthropic's third-party login terms first. |
 | Hono | Fastify 5.12.8 | If you need its plugin ecosystem or schema-first validation. Heavier and Node-specific; Hono's Web-standard API and built-in SSE fit this tool better. |
 | SSE | WebSocket (`ws` 8.22.2 / `@hono/node-ws`) | If a true bidirectional stream appears (embedded terminal, collaborative editing). Not needed for v1. |
 | `node:sqlite` | `better-sqlite3` 13.0.3 | If `node:sqlite` shows a regression or lacks a needed API; the `db/` wrapper makes this a one-module swap. |
@@ -222,8 +229,8 @@ It reads planning truth from the host project's SDD framework through adapters (
 |-------|-----|-------------|
 | `gray-matter` 4.0.3 | Unmaintained since 2023, old `js-yaml`, default JS front-matter engine can execute code; `openspec/` content is agent-written | `remark-frontmatter` + `yaml` |
 | Shell-string process spawning (`exec`, `execa` with `shell: true`, template-string commands) | Injection via branch names, phase titles, comment text | `execFile`-style argument arrays through execa |
-| A hard-coded context window (the prior art's `CONTEXT_WINDOW_TOKENS=1000000`) | Violates "budgets follow the model"; wrong for other models | `modelUsage[model].contextWindow` / `getContextUsage()` |
-| Model-obeyed "please stop" hooks as the only budget enforcement | The model can ignore or mis-time it | Orchestrator-owned wrap-up turn via `interrupt()` / `streamInput()` |
+| A hard-coded context window (the prior art's `CONTEXT_WINDOW_TOKENS=1000000`) | Violates "budgets follow the model"; wrong for other models | `result.modelUsage[model].contextWindow` from the stream |
+| Model-obeyed "please stop" hooks as the only budget enforcement | The model can ignore or mis-time it | Orchestrator-owned wrap-up message over stream-json stdin, then `interrupt` / process-group kill |
 | Parsing "limit reached" text for waits | Brittle across CLI versions and locales | Structured `rate_limit_event` and `api_retry` events (regex only as fallback) |
 | Binding to `0.0.0.0` or relying on a Host check alone | Host check does not stop non-browser LAN clients (the prototype's own WR-01 note) | Bind `127.0.0.1` + Host allowlist + Origin check + token |
 | Claude in Chrome for persona agents | Needs a headed, logged-in real Chrome, claude.ai login only, per-site prompts, drops long connections | Playwright MCP headless + isolated |
@@ -241,18 +248,17 @@ It reads planning truth from the host project's SDD framework through adapters (
 - Because PROJECT.md says to prefer the host's own preview, and Vercel toolbar comments then work for free on that URL (still not a dependency).
 - Counterpoint starts the host's dev/preview command from the feature worktree with a free port (lock-file allocation like `speckit-auto` does, from 4174 upward) and serves it on loopback only.
 - Because worktree-per-feature needs per-feature ports, and previews must not collide with the console port.
-- Switch `AgentRunner` to the CLI stream-json implementation.
+- If the CLI stops exposing something we need, add an Agent SDK implementation of `AgentRunner`.
 - Because the port and the internal event schema are designed so both can emit the same events.
 - Mask dynamic regions, raise that screen's `windowSize` budget, and lean on the structural check.
 - Because both signals are per-screen configurable, not global.
-- Make the SDK's bundled platform binary optional, require a user-supplied `claude`, never perform logins, and re-read Anthropic's current terms for third-party tools.
-- Because the SDK overview restricts third-party offering of claude.ai login and rate limits.
+- For the public release, keep requiring a user-supplied `claude`, never perform logins, and re-read Anthropic's current terms for third-party tools.
+- Because the Agent SDK overview restricts third-party offering of claude.ai login and rate limits.
 
 ## Version Compatibility
 
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
-| `@anthropic-ai/claude-agent-sdk@0.3.319` | `zod@^4`, `@anthropic-ai/sdk@>=0.93.0`, `@modelcontextprotocol/sdk@^1.29.0` (all peers) | Install all three explicitly; npm 7+ auto-installs peers but pin them. Engines `>=18.14.0`, optional platform binaries `0.3.319` (darwin-arm64 about 322 MB unpacked). |
 | `@hono/node-server@2.1.6` | `hono@^4 \|\| ^5.0.0-0` | Use Hono 4.13.x now. |
 | `vitest@5.1.0` | `vite@^6.4 \|\| ^7 \|\| ^8`, Node `^22.12 \|\| ^24 \|\| >=26` | Matches Vite 8.3.7. |
 | `@vitejs/plugin-react@6.3.0` | `vite@^8` only | Do not mix with Vite 7. |
