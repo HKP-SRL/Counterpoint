@@ -186,6 +186,96 @@ describe('runGate', () => {
     expect(existsSync(outside)).toBe(true);
   }, 30_000);
 
+  // gates: Exit code is the only verdict. A process that left the group and kept the output
+  // open used to hold the gate (and the run) forever: `close` never fired.
+  describe('a process that left the group holding the output', () => {
+    /** A command that starts a detached node process sharing its stdout, prints its pid, then `then`. */
+    const escaping = (then: string) => [
+      process.execPath,
+      '-e',
+      [
+        "const { spawn } = require('node:child_process');",
+        "const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {",
+        "  detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+        'holder.unref();',
+        "console.log('holder ' + holder.pid);",
+        then,
+      ].join('\n'),
+    ];
+    const holders: number[] = [];
+    const holderOf = (logPath: string) => {
+      const pid = Number(/holder (\d+)/.exec(readFileSync(logPath, 'utf8'))?.[1]);
+      if (Number.isFinite(pid)) holders.push(pid);
+      return pid;
+    };
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    afterAll(() => {
+      for (const pid of holders) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // gone
+        }
+      }
+    });
+
+    it('ends when the command exits, judged by its exit code, and cuts the output', async () => {
+      const started = Date.now();
+      const { result, logPath } = await run(escaping('process.exit(0);'), {}, { drainMs: 300 });
+      expect(result).toMatchObject({ verdict: 'pass', reason: null, exitCode: 0 });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      // The holder is still alive (this test's sweep finds nothing): the gate did not wait for it.
+      expect(alive(holderOf(logPath))).toBe(true);
+      expect(readFileSync(logPath, 'utf8')).toContain('kept its output open');
+    }, 30_000);
+
+    it('ends on its timeout although the output stays open', async () => {
+      const { result, logPath } = await run(
+        escaping('setInterval(() => {}, 1000);'),
+        { timeout: 1000 },
+        { drainMs: 300 },
+      );
+      expect(result).toMatchObject({ verdict: 'fail', reason: 'timeout' });
+      expect(result.durationMs).toBeLessThan(10_000);
+      holderOf(logPath);
+    }, 30_000);
+
+    it('sweeps the tag after the cut, so the holder is ended by the sweep', async () => {
+      let sweptAfterEnd = false;
+      const s = setup();
+      const logPath = join(s.root, 'logs', 'unit.log');
+      const sweep: typeof sweepTagged = async () => {
+        const pid = holderOf(logPath);
+        sweptAfterEnd = alive(pid);
+        process.kill(pid, 'SIGKILL');
+        return { found: [{ pid, command: 'node holder' }], error: null };
+      };
+      const { result } = await run(escaping('process.exit(0);'), {}, { drainMs: 300, sweep }, s);
+      expect(sweptAfterEnd).toBe(true);
+      expect(result.survivors).toHaveLength(1);
+    }, 30_000);
+  });
+
+  it('a Stop ends a gate already ending on its timeout, at once', async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 1500);
+    // It ignores SIGTERM, and the SIGKILL after its timeout is a minute away.
+    const { result } = await run(
+      [process.execPath, '-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+      { timeout: 500 },
+      { signal: controller.signal, killGraceMs: 60_000, drainMs: 300 },
+    );
+    expect(result).toMatchObject({ verdict: 'fail', reason: 'timeout' });
+    expect(result.durationMs).toBeLessThan(10_000);
+  }, 30_000);
+
   it('records what the tag sweep found and ended', async () => {
     const sweep: typeof sweepTagged = async (name, tag) => {
       expect(name).toBe(GATE_TAG_ENV);

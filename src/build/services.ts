@@ -41,10 +41,12 @@ import {
 import { basename, delimiter, dirname, isAbsolute, join, sep } from 'node:path';
 import { killGroup } from '../agent/runner.ts';
 import type { GateConfig, HostConfig, ServiceConfig } from '../core/host/host-config.ts';
+import { DEFAULT_DRAIN_MS, watchChildEnd } from './child-end.ts';
 import { lastLines, stripTerminal } from './gate-runner.ts';
 
 const KEEP_BYTES = 256 * 1024;
 const KILL_GRACE_MS = 5000;
+const GIVE_UP_EXTRA_MS = 1000;
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
 
 export type ServiceStep = 'start' | 'reset' | 'env';
@@ -80,6 +82,8 @@ export type ServiceCommandRunner = (input: {
   timeoutMs: number;
   logPath: string;
   signal?: AbortSignal;
+  /** How long the output may stay open after the command exits (child-end.ts). */
+  drainMs?: number;
 }) => Promise<ServiceCommandResult>;
 
 /** The owner's environment for service commands, minus Counterpoint's own and Node's options. */
@@ -172,8 +176,13 @@ export function describeMissingPrograms(missing: readonly MissingServiceProgram[
   );
 }
 
-/** Runs one service command detached, in its own process group, with its output logged. */
-export const runServiceCommand: ServiceCommandRunner = (input) => {
+/**
+ * Runs one service command detached, in its own process group, with its output logged. It ends
+ * when the command exits (its output gets a short drain time, child-end.ts): a start that leaves
+ * its service running with the output still open cannot keep the gate waiting. A Stop ends it at
+ * once, even one already ending on its timeout.
+ */
+export const runServiceCommand: ServiceCommandRunner = async (input) => {
   mkdirSync(dirname(input.logPath), { recursive: true, mode: 0o700 });
   const log = openSync(input.logPath, 'a', 0o600);
   writeSync(log, `$ ${input.argv.join(' ')}\n`);
@@ -181,65 +190,77 @@ export const runServiceCommand: ServiceCommandRunner = (input) => {
   let output = '';
   let timedOut = false;
   let stopped = false;
-  return new Promise((resolve) => {
-    let settled = false;
-    let spawnError: string | undefined;
-    const finish = (exitCode: number | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      input.signal?.removeEventListener('abort', onAbort);
-      closeSync(log);
-      resolve({
-        exitCode,
-        timedOut,
-        stopped,
-        stdout,
-        output,
-        ...(spawnError === undefined ? {} : { spawnError }),
-      });
-    };
-    const child = spawn(input.argv[0] as string, input.argv.slice(1), {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
-    const end = (why: 'timeout' | 'stopped') => {
-      if (child.pid === undefined || timedOut || stopped) return;
-      if (why === 'timeout') timedOut = true;
-      else stopped = true;
-      const pid = child.pid;
-      killGroup(pid, 'SIGTERM');
-      setTimeout(() => killGroup(pid, 'SIGKILL'), KILL_GRACE_MS).unref();
-    };
-    const timer = setTimeout(() => end('timeout'), input.timeoutMs);
-    timer.unref();
-    const onAbort = () => end('stopped');
-    if (input.signal?.aborted) queueMicrotask(onAbort);
-    else input.signal?.addEventListener('abort', onAbort, { once: true });
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      writeSync(log, chunk);
-      stdout = (stdout + chunk).slice(-KEEP_BYTES);
-      output = (output + chunk).slice(-KEEP_BYTES);
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      writeSync(log, chunk);
-      output = (output + chunk).slice(-KEEP_BYTES);
-    });
-    child.on('error', (error) => {
-      output += `\n${error.message}\n`;
-      if (child.pid === undefined && !settled) {
-        // Not started, so nothing else writes the log: say why there before closing it.
-        writeSync(log, `${error.message}\n`);
-        spawnError = error.message;
-        finish(null);
-      }
-    });
-    child.on('close', (exitCode) => finish(exitCode));
+  let spawnError: string | undefined;
+  let logClosed = false;
+  const drainMs = input.drainMs ?? DEFAULT_DRAIN_MS;
+  const child = spawn(input.argv[0] as string, input.argv.slice(1), {
+    cwd: input.cwd,
+    env: input.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
+  const pid = child.pid;
+  const watch = watchChildEnd(child, drainMs);
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const terminate = (grace: number) => {
+    if (pid === undefined) return;
+    if (grace > 0) {
+      killGroup(pid, 'SIGTERM');
+      timers.push(setTimeout(() => killGroup(pid, 'SIGKILL'), grace));
+    } else killGroup(pid, 'SIGKILL');
+    timers.push(setTimeout(() => watch.giveUp(), grace + drainMs + GIVE_UP_EXTRA_MS));
+  };
+  const end = (why: 'timeout' | 'stopped') => {
+    if (pid === undefined || stopped) return;
+    if (why === 'timeout') {
+      if (timedOut) return;
+      timedOut = true;
+      terminate(KILL_GRACE_MS);
+      return;
+    }
+    stopped = true;
+    terminate(timedOut ? 0 : KILL_GRACE_MS);
+  };
+  timers.push(setTimeout(() => end('timeout'), input.timeoutMs));
+  const onAbort = () => end('stopped');
+  if (input.signal?.aborted) queueMicrotask(onAbort);
+  else input.signal?.addEventListener('abort', onAbort, { once: true });
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk: string) => {
+    if (logClosed) return;
+    writeSync(log, chunk);
+    stdout = (stdout + chunk).slice(-KEEP_BYTES);
+    output = (output + chunk).slice(-KEEP_BYTES);
+  });
+  child.stderr?.on('data', (chunk: string) => {
+    if (logClosed) return;
+    writeSync(log, chunk);
+    output = (output + chunk).slice(-KEEP_BYTES);
+  });
+  child.on('error', (error) => {
+    output += `\n${error.message}\n`;
+    if (pid === undefined) {
+      // Not started, so nothing else writes the log: say why there before closing it.
+      if (!logClosed) writeSync(log, `${error.message}\n`);
+      spawnError = error.message;
+      watch.giveUp();
+    }
+  });
+  const ended = await watch.ended;
+  for (const timer of timers) clearTimeout(timer);
+  input.signal?.removeEventListener('abort', onAbort);
+  // A service is meant to stay up after its start: what it left running is not killed here.
+  logClosed = true;
+  closeSync(log);
+  return {
+    exitCode: ended.exitCode,
+    timedOut,
+    stopped,
+    stdout,
+    output,
+    ...(spawnError === undefined ? {} : { spawnError }),
+  };
 };
 
 /** `KEY=value` lines (values optionally in single or double quotes), as `supabase status -o env` prints. */

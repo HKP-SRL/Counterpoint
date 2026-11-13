@@ -290,6 +290,60 @@ describe('host services', () => {
     expect(readFileSync(join(worktree, 'service-db-start.log'), 'utf8')).toMatch(/ENOENT/);
   });
 
+  // A start that leaves its service running with the output still open (a database daemon) used
+  // to hold the gate forever: the command had exited, but `close` never came.
+  it('ends a service command when it exits, though what it started keeps the output open', async () => {
+    const dir = makeScratchDir('cp-svc');
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "const db = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {",
+      "  detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+      'db.unref();',
+      "console.log('db ' + db.pid);",
+    ].join('\n');
+    const started = Date.now();
+    const result = await runServiceCommand({
+      argv: [process.execPath, '-e', script],
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      timeoutMs: 30_000,
+      logPath: join(dir, 'service-db-start.log'),
+      drainMs: 300,
+    });
+    const db = Number(/db (\d+)/.exec(result.output)?.[1]);
+    try {
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false, stopped: false });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      // A service is meant to stay up: what the start left running is not killed.
+      expect(() => process.kill(db, 0)).not.toThrow();
+    } finally {
+      process.kill(db, 'SIGKILL');
+    }
+  }, 30_000);
+
+  it('ends a service command at once when the run stops after its timeout', async () => {
+    const dir = makeScratchDir('cp-svc');
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 1500);
+    const started = Date.now();
+    // It ignores SIGTERM; the SIGKILL after its timeout is 5 s away.
+    const result = await runServiceCommand({
+      argv: [
+        process.execPath,
+        '-e',
+        "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
+      ],
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      timeoutMs: 500,
+      logPath: join(dir, 'service-db-start.log'),
+      signal: controller.signal,
+      drainMs: 300,
+    });
+    expect(result).toMatchObject({ timedOut: true, stopped: true });
+    expect(Date.now() - started).toBeLessThan(4000);
+  }, 30_000);
+
   it('finds every service program a gate needs on PATH before a build, and names what is missing', () => {
     const bin = makeScratchDir('cp-bin');
     writeFileSync(join(bin, 'supabase'), '#!/bin/sh\n', { mode: 0o755 });
