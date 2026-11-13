@@ -217,6 +217,9 @@ export async function commitSession(input: SessionCommitInput): Promise<SessionC
 
   // 3. Commit the rest.
   await runGit(worktree, ['add', '-A', '--', '.']);
+  // The design-drafts reference (.cp-drafts/, D-10) is the builder's to read, never to commit:
+  // it is in info/exclude, and anything of it staged anyway is taken out again.
+  await runGit(worktree, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', '.cp-drafts']);
   if (keepUncommitted.length > 0) await runGit(worktree, ['reset', '-q', '--', ...keepUncommitted]);
   const staged = await runGit(worktree, ['diff', '--cached', '--quiet'], {
     allowExitCodes: [0, 1],

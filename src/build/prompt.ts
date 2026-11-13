@@ -23,6 +23,12 @@
 //
 // The mid-session wrap-up message (sent at the context budget, or when the run stops) is here too.
 
+import {
+  DESIGN_RULES_MAX_BYTES,
+  DESIGN_RULES_PATH,
+  type DesignRules,
+} from '../core/host/design-rules.ts';
+
 export const HANDOFF_FILE = '.cp-handoff.md';
 export const ASSUMPTIONS_FILE = '.cp-assumptions.md';
 export const BLOCKED_FILE = '.cp-blocked.md';
@@ -60,6 +66,53 @@ export interface BuilderPromptInput {
   ownerNotes?: readonly string[];
   /** The session has the ask_owner tool (owner-inbox D-5). */
   askTool?: boolean;
+  /** The host's design rules at the build's base commit (design-drafts D-11). */
+  designRules?: DesignRules | null;
+  /** The signed-off screens of the change (design-drafts D-10). */
+  referenceScreens?: readonly ReferenceScreen[];
+}
+
+/** One signed-off screen state the builder builds to (design-drafts D-10). */
+export interface ReferenceScreen {
+  screen: string;
+  state: string;
+  /** Worktree-relative paths. */
+  html: string;
+  source: string | null;
+  phonePng: string | null;
+  desktopPng: string | null;
+}
+
+/** The design-rules section of a session's prompt (design-drafts D-11); none without rules. */
+export function designRulesSection(rules: DesignRules | null | undefined): string[] {
+  if (rules == null) return [];
+  return [
+    '',
+    `The project's design rules (${DESIGN_RULES_PATH}). Follow them in every screen you make or change:`,
+    quote(rules.text),
+    ...(rules.clipped
+      ? [`(The file is longer than ${DESIGN_RULES_MAX_BYTES / 1024} KB; the rest is left out.)`]
+      : []),
+  ];
+}
+
+/** The Reference screens section of the builder prompt (design-drafts D-10). */
+export function referenceScreensSection(screens: readonly ReferenceScreen[] | undefined): string[] {
+  if (screens === undefined || screens.length === 0) return [];
+  const lines = ['', 'Reference screens', ''];
+  lines.push(
+    'The owner signed off these screens. They show how the screens must look: build them to match, with the components, props and sample text the source names. Read the images (you can read PNG files), the static HTML and the source for each.',
+  );
+  for (const s of screens) {
+    const files = [
+      s.phonePng === null ? null : `phone ${s.phonePng}`,
+      s.desktopPng === null ? null : `desktop ${s.desktopPng}`,
+      `HTML ${s.html}`,
+      s.source === null ? null : `source ${s.source}`,
+    ].filter((file): file is string => file !== null);
+    lines.push(`- ${s.screen}, ${s.state}: ${files.join('; ')}`);
+  }
+  return lines;
 }
 
 export interface PromptGate {
@@ -158,6 +211,8 @@ export function builderPrompt(input: BuilderPromptInput): string {
     '- Keep working until no task is left that you can do. Do not stop early to leave work for a later session: Counterpoint tells you when this session has used its budget. Stop only when every task left waits on the owner.',
     `- Before you stop, write ${HANDOFF_FILE} at the worktree root: what is done, what is next, open problems, and anything the next session must know. Then stop.`,
   ];
+  parts.push(...designRulesSection(input.designRules));
+  parts.push(...referenceScreensSection(input.referenceScreens));
   if (input.session > 1) {
     parts.push(
       '',

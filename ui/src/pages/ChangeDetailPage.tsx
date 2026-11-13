@@ -27,6 +27,7 @@ import { OwnerStepsBanner } from '../components/OwnerStepsBanner';
 import { StatusBadge } from '../components/StatusBadge';
 import {
   type ChangeRow,
+  ChangeStatusBadges,
   changesQuery,
   notReadyText,
   parseChangeRow,
@@ -111,6 +112,17 @@ function ReasonBanners({ change }: { change: ChangeDetail }) {
         status="info"
         title="Not ready to approve"
         description={notReadyText(change.id, host, change.notReadyReason)}
+      />,
+    );
+  }
+
+  if (change.drafts?.held === true) {
+    banners.push(
+      <Banner
+        key="drafts"
+        status="warning"
+        title="Waiting for sign-off"
+        description={`It builds once every screen is signed off and on the base branch. Waiting: ${change.drafts.waiting.join(', ')}.`}
       />,
     );
   }
@@ -233,24 +245,33 @@ export function ChangeDetailPage({ hostId, changeId }: { hostId: string; changeI
             <Heading level={2} accessibilityLevel={1}>
               {change.title}
             </Heading>
-            <StatusBadge status={change.status} />
+            <ChangeStatusBadges row={change} />
           </HStack>
-          {change.status === 'ready' ? (
-            <Button
-              label="Approve"
-              variant="primary"
-              isLoading={actions.pending === change.id}
-              onClick={() => void actions.approve(change.id)}
-            />
-          ) : null}
-          {change.status === 'on-runway' ? (
-            <Button
-              label="Withdraw"
-              variant="secondary"
-              isLoading={actions.pending === change.id}
-              onClick={() => void actions.withdraw(change.id)}
-            />
-          ) : null}
+          <HStack gap={2} vAlign="center">
+            {change.archived ? null : (
+              <Button
+                label="Drafts"
+                variant="secondary"
+                href={`/h/${hostId}/changes/${change.id}/drafts`}
+              />
+            )}
+            {change.status === 'ready' ? (
+              <Button
+                label="Approve"
+                variant="primary"
+                isLoading={actions.pending === change.id}
+                onClick={() => void actions.approve(change.id)}
+              />
+            ) : null}
+            {change.status === 'on-runway' ? (
+              <Button
+                label="Withdraw"
+                variant="secondary"
+                isLoading={actions.pending === change.id}
+                onClick={() => void actions.withdraw(change.id)}
+              />
+            ) : null}
+          </HStack>
         </HStack>
         <Text type="code" color="secondary">
           {change.id}

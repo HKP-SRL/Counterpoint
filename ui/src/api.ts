@@ -114,6 +114,11 @@ export const queryKeys = {
   /** Under the run key, so every `run` event refetches it. */
   preview: (hostId: string, changeId: string) =>
     ['host', hostId, 'run', 'preview', changeId] as const,
+  /** A change's design drafts; without a change, the prefix of every change's. */
+  drafts: (hostId: string, changeId?: string) =>
+    changeId === undefined
+      ? (['host', hostId, 'drafts'] as const)
+      : (['host', hostId, 'drafts', changeId] as const),
 };
 
 export interface HostSummary {

@@ -98,8 +98,11 @@ export function sessionGuard(db: Store): MiddlewareHandler {
   };
 }
 
-/** CSP, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, nosniff. */
-export function securityHeaders(): MiddlewareHandler {
+/**
+ * CSP, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, nosniff. `frameOrigin` is the draft
+ * server's origin (design-drafts D-5): the console may frame drafts from it, nothing else.
+ */
+export function securityHeaders(frameOrigin?: () => string | null): MiddlewareHandler {
   const standard = secureHeaders({
     referrerPolicy: 'no-referrer',
     xFrameOptions: 'DENY',
@@ -109,7 +112,11 @@ export function securityHeaders(): MiddlewareHandler {
   });
   return async (c, next) => {
     await standard(c, next);
-    c.res.headers.set('Content-Security-Policy', CONSOLE_CSP);
+    const origin = frameOrigin?.() ?? null;
+    c.res.headers.set(
+      'Content-Security-Policy',
+      origin === null ? CONSOLE_CSP : `${CONSOLE_CSP}; frame-src ${origin}`,
+    );
   };
 }
 

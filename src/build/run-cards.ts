@@ -15,6 +15,7 @@
 import type { CardOption, NewCard } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
+import { HOLD_REASON, holdCard } from '../drafts/hold.ts';
 import type { CardDesk } from '../server/cards.ts';
 
 const clip = (text: string, max = 300): string => {
@@ -249,6 +250,11 @@ export function runCards(db: Store, hostId: string): NewCard[] {
     cards.push(noticeCard(hostId, run.id, notice, index));
   });
   for (const change of listRunChanges(db, run.id)) {
+    // A change its design drafts held (design-drafts D-12): one card per change and run.
+    if (change.state === 'skipped' && (change.reason ?? '').startsWith(HOLD_REASON)) {
+      cards.push(holdCard(hostId, run.id, change.change, change.reason ?? ''));
+      continue;
+    }
     if (change.state !== 'parked') continue;
     const asked = change.questions
       .map((question, index) => questionCard(hostId, run.id, change.change, question, index))
@@ -261,7 +267,7 @@ export function runCards(db: Store, hostId: string): NewCard[] {
   return cards;
 }
 
-const RUN_PREFIXES = ['run-stopped:', 'parked:', 'question:', 'notice:'] as const;
+const RUN_PREFIXES = ['run-stopped:', 'parked:', 'question:', 'notice:', 'drafts-hold:'] as const;
 
 /**
  * Raises the cards the latest run calls for and resolves the ones it no longer does (a later run
