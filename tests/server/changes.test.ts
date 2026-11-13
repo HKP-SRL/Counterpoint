@@ -3,12 +3,9 @@
 // and the base-tip watcher pushes a `planning` event within seconds of a commit to the base branch.
 // Also the read-only doctor report route behind the Trust page (doctor: Trust page).
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
-import { revokeAcceptedRisk, writeAcceptedRisk } from '../../src/core/security/accepted-risks.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus, type StoredEvent } from '../../src/core/store/events.ts';
@@ -26,13 +23,13 @@ import { makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scrat
 
 const PORT = 4998;
 const HOST = `127.0.0.1:${PORT}`;
-const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const _DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const READY = SYNTHETIC.ready;
 const READY_DIR = `openspec/changes/${READY}`;
 const PROPOSAL = `${READY_DIR}/proposal.md`;
 const METADATA = `${READY_DIR}/.openspec.yaml`;
 
-const sha256 = (bytes: Uint8Array | string) =>
+const _sha256 = (bytes: Uint8Array | string) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 interface ChangeRow {
@@ -49,7 +46,6 @@ interface ChangeRow {
   ownerStepCount: number;
   unreadable: { file: string; reason: string } | null;
   approval: unknown;
-  uncommittedEdits: boolean;
 }
 
 interface ChangesBody {
@@ -66,14 +62,6 @@ interface ChangeDetailBody extends ChangeRow {
   tip: string;
   why: string | null;
   ownerSteps: string[];
-  inputs: {
-    path: string;
-    label: string;
-    kind: string;
-    normalization: string | null;
-    digest: string;
-  }[];
-  inputsError?: string;
 }
 
 let repo: FixtureRepo;
@@ -165,7 +153,6 @@ describe('GET /api/hosts/:hostId/changes', () => {
       tasks: { total: 4, done: 1 },
       ownerStepCount: 1,
       approval: null,
-      uncommittedEdits: false,
     });
     const broken = body.changes.find((change) => change.id === SYNTHETIC.broken);
     expect(broken?.unreadable?.file).toBe(`openspec/changes/${SYNTHETIC.broken}/.openspec.yaml`);
@@ -189,7 +176,7 @@ describe('GET /api/hosts/:hostId/changes', () => {
 });
 
 describe('GET /api/hosts/:hostId/changes/:changeId', () => {
-  it('returns why, owner steps and every covered file with sha256 digests', async () => {
+  it('returns why, owner steps, the base tip and the approval state, and no covered files', async () => {
     const res = await get(`/api/hosts/${hostId}/changes/${READY}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as ChangeDetailBody;
@@ -199,25 +186,8 @@ describe('GET /api/hosts/:hostId/changes/:changeId', () => {
     expect(body.why).toBe('A change that has its proposal and its tasks, ready to approve.');
     expect(body.ownerSteps).toEqual(['Owner: create the Supabase project']);
 
-    const paths = body.inputs.map((input) => input.path);
-    expect(paths).toEqual([
-      `${READY_DIR}/.openspec.yaml`,
-      `${READY_DIR}/design.md`,
-      PROPOSAL,
-      `${READY_DIR}/specs/menu/spec.md`,
-      `${READY_DIR}/tasks.md`,
-    ]);
-    for (const input of body.inputs) {
-      expect(input.digest).toMatch(DIGEST_RE);
-      expect(input).not.toHaveProperty('bytes');
-      if (input.kind !== 'tasks') {
-        expect(input.digest).toBe(sha256(readFileSync(join(repo.root, input.path))));
-        expect(input.normalization).toBeNull();
-      }
-    }
-    expect(body.inputs.find((input) => input.kind === 'tasks')?.normalization).toBe(
-      'cp-openspec-tasks/v1',
-    );
+    expect(body.approval).toBeNull();
+    expect(body).not.toHaveProperty('inputs');
   });
 
   it('answers 404 for an unknown change and 400 for a malformed change id', async () => {
@@ -236,21 +206,16 @@ describe('GET /api/hosts/:hostId/changes/:changeId', () => {
     expect(body.unreadable?.file).toBe(`openspec/changes/${SYNTHETIC.broken}/.openspec.yaml`);
   });
 
-  it('shows an archived change as built, with its files', async () => {
+  it('shows an archived change as built', async () => {
     const body = (await (
       await get(`/api/hosts/${hostId}/changes/${SYNTHETIC.archived}`)
     ).json()) as ChangeDetailBody;
     expect(body).toMatchObject({ status: 'built', archived: true, approval: null });
-    expect(body.inputs.map((input) => input.label)).toEqual([
-      '.openspec.yaml',
-      'proposal.md',
-      'tasks.md',
-    ]);
   });
 });
 
 describe('base-tip watcher', () => {
-  it('appends a planning event within 3 s of a commit to the base branch and serves the new digest', async () => {
+  it('appends a planning event within 3 s of a commit to the base branch and serves the new content', async () => {
     const events: StoredEvent[] = [];
     const unsubscribe = bus.subscribe((event) => events.push(event));
     const watcher = startWatcher({ runtimes, db, bus, intervalMs: 100 });
@@ -274,7 +239,7 @@ describe('base-tip watcher', () => {
       ).json()) as ChangeDetailBody;
       expect(body.tip).toBe(tip);
       expect(body.title).toBe('Ready thing, revised');
-      expect(body.inputs.find((input) => input.path === PROPOSAL)?.digest).toBe(sha256(content));
+      expect(body.why).toBe('A new reason.');
     } finally {
       watcher.stop();
       unsubscribe();
@@ -361,268 +326,5 @@ describe('base-tip watcher', () => {
       watcher.stop();
       unsubscribe();
     }
-  });
-});
-
-describe('GET /api/hosts/:hostId/doctor', () => {
-  const PROBE_IDS = [
-    'signing-key',
-    'ssh',
-    'gh',
-    'state',
-    'git-config',
-    'git-hooks',
-    'git-info',
-    'outside-workdir',
-    'credential-env',
-    'worktree-git',
-    'gate-sandbox',
-  ];
-  const WRITE_IDS = new Set([
-    'git-config',
-    'git-hooks',
-    'git-info',
-    'outside-workdir',
-    'worktree-git',
-    'gate-sandbox',
-  ]);
-  const reportFile = () => join(home, 'hosts', hostId, 'doctor.json');
-  const report = (overrides: Record<string, unknown> = {}) => {
-    const check = (id: string) => ({ id, label: id, result: 'pass', detail: 'ok' });
-    return {
-      schema: 'counterpoint/doctor/v1',
-      hostId,
-      checkedAt: new Date().toISOString(),
-      claudeVersion: '2.1.0',
-      matcherVersion: '1',
-      tools: [check('claude'), check('git'), check('gh')],
-      signingKey: [check('passphrase')],
-      integrity: check('integrity'),
-      probe: PROBE_IDS.map((id, index) => ({
-        id,
-        label: id,
-        mode: WRITE_IDS.has(id) ? 'write' : 'read',
-        result: overrides.reachableIndex === index ? 'reachable' : 'blocked',
-        evidence: 'probe',
-        // gh reached only through the Keychain lookup, as the live probe records it.
-        ...(overrides.keychainOnlyGh === true && id === 'gh'
-          ? {
-              result: 'reachable',
-              steps: [
-                {
-                  index: 10,
-                  tool: 'Bash',
-                  operation: 'cat',
-                  treatment: 'denied-rule',
-                  control: 'reached',
-                },
-                {
-                  index: 11,
-                  tool: 'Read',
-                  operation: 'read',
-                  treatment: 'denied-rule',
-                  control: 'reached',
-                },
-                {
-                  index: 12,
-                  tool: 'Grep',
-                  operation: 'grep',
-                  treatment: 'denied-rule',
-                  control: 'reached',
-                },
-                {
-                  index: 13,
-                  tool: 'Bash',
-                  operation: 'keychain',
-                  treatment: 'reached',
-                  control: 'reached',
-                },
-              ],
-              leaks: ['keychain-canary'],
-              trusted: true,
-            }
-          : {}),
-      })),
-      ...(overrides.acceptedRisks === undefined ? {} : { acceptedRisks: overrides.acceptedRisks }),
-      ...(overrides.noIsolation === true
-        ? {}
-        : {
-            sandboxIsolation: {
-              id: 'sandbox-isolation',
-              label: 'Sandbox isolation settings',
-              result: 'pass',
-              detail: 'ok',
-              sources: [
-                {
-                  kind: 'launch',
-                  label: 'launch settings',
-                  path: null,
-                  state: 'read',
-                  findings: [],
-                },
-              ],
-            },
-          }),
-      ...(overrides.noAgentMode === true
-        ? {}
-        : {
-            agentMode: {
-              id: 'agent-mode',
-              label: 'Agent permission mode',
-              result: 'pass',
-              detail: "The probe's agent session ran in auto mode.",
-              expected: 'auto',
-              effective: 'auto',
-            },
-          }),
-      ...(overrides.checkedAt === undefined ? {} : { checkedAt: overrides.checkedAt }),
-      ...(overrides.hostId === undefined ? {} : { hostId: overrides.hostId }),
-    };
-  };
-  const write = (value: unknown) => {
-    mkdirSync(join(home, 'hosts', hostId), { recursive: true });
-    rmSync(reportFile(), { force: true });
-    writeFileSync(reportFile(), JSON.stringify(value));
-  };
-  const doctor = async () => {
-    const res = await get(`/api/hosts/${hostId}/doctor`);
-    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
-  };
-
-  it('answers report null before doctor has run', async () => {
-    rmSync(reportFile(), { force: true });
-    expect(await doctor()).toEqual({ status: 200, body: { report: null } });
-  });
-
-  it('returns a valid report with its verdict and staleness', async () => {
-    write(report());
-    const fresh = await doctor();
-    expect(fresh.body.verdict).toBe('pass');
-    expect(fresh.body.stale).toBe(false);
-
-    write(report({ checkedAt: new Date(Date.now() - 25 * 3_600_000).toISOString() }));
-    expect((await doctor()).body.stale).toBe(true);
-
-    write(report({ reachableIndex: 1 }));
-    expect((await doctor()).body.verdict).toBe('fail');
-  });
-
-  it('fails a stored report that lacks the sandbox isolation check', async () => {
-    write(report({ noIsolation: true }));
-    const older = await doctor();
-    expect(older.status).toBe(200);
-    expect(older.body.verdict).toBe('fail');
-
-    write(report());
-    expect((await doctor()).body.verdict).toBe('pass');
-  });
-
-  it('fails a stored report that lacks the agent permission mode check', async () => {
-    write(report({ noAgentMode: true }));
-    const older = await doctor();
-    expect(older.status).toBe(200);
-    expect(older.body.verdict).toBe('fail');
-    expect((older.body.report as Record<string, unknown>).agentMode).toBeUndefined();
-
-    write(report());
-    const current = await doctor();
-    expect(current.body.verdict).toBe('pass');
-    expect((current.body.report as Record<string, unknown>).agentMode).toMatchObject({
-      id: 'agent-mode',
-      result: 'pass',
-      effective: 'auto',
-    });
-  });
-
-  it('refuses a symlinked, malformed or other-host report as unreadable, never as a verdict', async () => {
-    const elsewhere = join(makeScratchDir('elsewhere'), 'doctor.json');
-    writeFileSync(elsewhere, JSON.stringify(report()));
-    rmSync(reportFile(), { force: true });
-    symlinkSync(elsewhere, reportFile());
-    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
-
-    write('not a report');
-    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
-
-    write(report({ hostId: 'some-other-host' }));
-    expect((await doctor()).body).toEqual({ report: null, error: 'unreadable' });
-  });
-
-  it('answers 400 for a malformed host id and 404 for an unknown host', async () => {
-    expect((await get('/api/hosts/Bad_Host/doctor')).status).toBe(400);
-    expect((await get('/api/hosts/no-such-host/doctor')).status).toBe(404);
-  });
-
-  describe('the accepted risk gh-keychain', () => {
-    const REASON = 'the gh keyring entry; accepted macOS residual';
-    const recordFile = () => join(home, 'trust', 'accepted-risks.json');
-
-    afterAll(() => {
-      revokeAcceptedRisk(home, 'gh-keychain');
-    });
-
-    it('answers accepted-risk with the applied record, then fail after a revoke, for the same stored report', async () => {
-      const entry = writeAcceptedRisk(home, {
-        reason: REASON,
-        now: () => new Date('2026-11-10T10:00:00.000Z'),
-      });
-      write(report({ keychainOnlyGh: true, acceptedRisks: [entry] }));
-
-      const accepted = await doctor();
-      expect(accepted.status).toBe(200);
-      expect(accepted.body.verdict).toBe('accepted-risk');
-      expect(accepted.body.acceptedRisks).toEqual([
-        {
-          id: 'gh-keychain',
-          target: 'gh',
-          subStep: 'keychain',
-          reason: REASON,
-          recordedAt: '2026-11-10T10:00:00.000Z',
-        },
-      ]);
-      const acceptedRisks = accepted.body.acceptedRisks as Array<{ reason: string }>;
-      expect(acceptedRisks[0]?.reason).toBe(REASON);
-      // The gh row keeps its measured result.
-      const probe = (accepted.body.report as { probe: Array<{ id: string; result: string }> })
-        .probe;
-      expect(probe.find((row) => row.id === 'gh')?.result).toBe('reachable');
-
-      expect(revokeAcceptedRisk(home, 'gh-keychain')).toBe(true);
-      const revoked = await doctor();
-      expect(revoked.body.verdict).toBe('fail');
-      expect(revoked.body.acceptedRisks).toEqual([]);
-    });
-
-    it('fails a Keychain-only gh reach when no record exists', async () => {
-      write(report({ keychainOnlyGh: true }));
-      const answer = await doctor();
-      expect(answer.body.verdict).toBe('fail');
-      expect(answer.body.acceptedRisks).toEqual([]);
-    });
-
-    it('fails a report checked before the risk was recorded', async () => {
-      writeAcceptedRisk(home, { reason: REASON });
-      write(report({ keychainOnlyGh: true }));
-      const answer = await doctor();
-      expect(answer.body.verdict).toBe('fail');
-      expect(answer.body.acceptedRisks).toEqual([]);
-      revokeAcceptedRisk(home, 'gh-keychain');
-    });
-
-    it('serves no POST on the doctor route and writes no record', async () => {
-      rmSync(recordFile(), { force: true });
-      const res = await app().request(`http://${HOST}/api/hosts/${hostId}/doctor`, {
-        method: 'POST',
-        headers: {
-          host: HOST,
-          cookie,
-          origin: `http://${HOST}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ risk: 'gh-keychain', reason: 'from the console' }),
-      });
-      expect([404, 405]).toContain(res.status);
-      expect(existsSync(recordFile())).toBe(false);
-    });
   });
 });

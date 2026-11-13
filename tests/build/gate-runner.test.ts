@@ -1,5 +1,6 @@
-// The gate runner under the real gate sandbox (srt, macOS), plus its pure helpers.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// The gate runner on real child processes (gates run as the owner, with no sandbox), plus its
+// pure helpers.
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
@@ -12,7 +13,6 @@ import {
 } from '../../src/build/gate-runner.ts';
 import type { sweepTagged } from '../../src/build/process-sweep.ts';
 import type { GateConfig } from '../../src/core/host/host-config.ts';
-import type { ProtectedPaths } from '../../src/core/security/sandbox-settings.ts';
 import { makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 
 afterAll(() => {
@@ -24,35 +24,20 @@ function gate(command: string[], extra: Partial<GateConfig> = {}): GateConfig {
     name: 'unit',
     command,
     timeout: 30_000,
+    when: 'every',
     testLock: false,
-    ports: [],
     services: [],
     ...extra,
   };
 }
 
-function setup(): {
-  root: string;
-  worktree: string;
-  protectedPaths: Omit<ProtectedPaths, 'workdir'>;
-} {
+function setup(): { root: string; worktree: string; home: string } {
   const root = makeScratchDir('cp-gate');
   const home = join(root, 'home');
-  for (const dir of ['.ssh', '.config/gh', 'cp-home', 'key'])
-    mkdirSync(join(home, dir), { recursive: true });
+  mkdirSync(home, { recursive: true });
   const worktree = join(root, 'wt');
   mkdirSync(worktree);
-  return {
-    root,
-    worktree,
-    protectedPaths: {
-      homeDir: home,
-      counterpointHome: join(home, 'cp-home'),
-      signingKeyDir: join(home, 'key'),
-      ghConfigDir: join(home, '.config/gh'),
-      hostGitDir: join(root, 'host', '.git'),
-    },
-  };
+  return { root, worktree, home };
 }
 
 /** A sweep that finds nothing (ps cannot read environments inside every test sandbox). */
@@ -68,11 +53,8 @@ async function run(
   const result = await runGate({
     gate: gate(command, extra),
     worktree: s.worktree,
-    scratchDir: join(s.root, 'scratch'),
     logPath,
-    protectedPaths: s.protectedPaths,
-    consolePort: 4170,
-    parentEnv: { PATH: process.env.PATH, HOME: s.protectedPaths.homeDir, GH_TOKEN: 'gho_secret' },
+    parentEnv: { PATH: process.env.PATH, HOME: s.home, GH_TOKEN: 'gho_owner' },
     killGraceMs: 500,
     sweep: noSweep,
     ...options,
@@ -99,15 +81,16 @@ describe('gate output helpers', () => {
     expect(lastTestCount('Tests\\s+(\\d+) passed', 'nothing')).toBeNull();
   });
 
-  it('builds the environment from the allow-list, CI markers, extras and the tag last', () => {
+  it("builds the environment from the run's, CI markers, extras and the tag last", () => {
     const env = gateEnv(
-      { PATH: '/bin', HOME: '/h', GH_TOKEN: 't', SSH_AUTH_SOCK: '/s', ANTHROPIC_API_KEY: 'k' },
+      { PATH: '/bin', HOME: '/h', GH_TOKEN: 't', COUNTERPOINT_HOME: '/cp', CP_AGENT_RUN: 'x' },
       { API_URL: 'http://127.0.0.1:54321', [GATE_TAG_ENV]: 'spoofed' },
       'tag123456',
     );
     expect(env).toEqual({
       PATH: '/bin',
       HOME: '/h',
+      GH_TOKEN: 't',
       CI: '1',
       FORCE_COLOR: '0',
       NO_COLOR: '1',
@@ -117,7 +100,7 @@ describe('gate output helpers', () => {
   });
 });
 
-describe.skipIf(process.platform !== 'darwin')('runGate (live srt)', () => {
+describe('runGate', () => {
   it('passes on exit 0, logs the output and keeps a stripped tail', async () => {
     const { result, logPath } = await run(['/bin/sh', '-c', 'printf "\\033[32mok\\033[0m\\n"']);
     expect(result.verdict).toBe('pass');
@@ -133,7 +116,7 @@ describe.skipIf(process.platform !== 'darwin')('runGate (live srt)', () => {
     expect(result.tail).toBe('one\ntwo');
   }, 30_000);
 
-  it('fails a command killed by a signal (srt alone would exit 0)', async () => {
+  it('fails a command killed by a signal', async () => {
     const { result } = await run(['/bin/sh', '-c', 'kill -TERM $$']);
     expect(result).toMatchObject({ verdict: 'fail', reason: 'signal', signal: 'SIGTERM' });
   }, 30_000);
@@ -173,39 +156,34 @@ describe.skipIf(process.platform !== 'darwin')('runGate (live srt)', () => {
     expect(result.durationMs).toBeLessThan(15_000);
   }, 30_000);
 
-  it('runs with the reduced environment, its tag, CI=1 and its own temp dir', async () => {
-    const { result, root } = await run([
+  it("runs with the run's environment, its tag and CI=1", async () => {
+    const { result } = await run([
       '/bin/sh',
       '-c',
-      `echo "tag=$${GATE_TAG_ENV} ci=$CI gh=\${GH_TOKEN:-none} tmp=$TMPDIR proxy=$NODE_USE_ENV_PROXY"`,
+      `echo "tag=$${GATE_TAG_ENV} ci=$CI gh=\${GH_TOKEN:-none}"`,
     ]);
     expect(result.verdict).toBe('pass');
-    expect(result.tail).toBe(
-      `tag=${result.processTag} ci=1 gh=none tmp=${join(root, 'scratch', 'tmp')} proxy=1`,
-    );
+    expect(result.tail).toBe(`tag=${result.processTag} ci=1 gh=gho_owner`);
   }, 30_000);
 
-  it('writes the worktree but nothing outside it, and reads no protected path', async () => {
+  it('runs as the owner: a gate binds a local port and writes outside its worktree', async () => {
     const s = setup();
-    writeFileSync(join(s.protectedPaths.signingKeyDir, 'key'), 'cp-secret-value\n');
     const outside = join(s.root, 'outside');
-    const result = await runGate({
-      gate: gate([
-        '/bin/sh',
-        '-c',
-        `touch inside; touch '${outside}'; cat '${join(s.protectedPaths.signingKeyDir, 'key')}'; true`,
-      ]),
-      worktree: s.worktree,
-      scratchDir: join(s.root, 'scratch'),
-      logPath: join(s.root, 'logs', 'unit.log'),
-      protectedPaths: s.protectedPaths,
-      consolePort: 4170,
-      sweep: noSweep,
-    });
-    expect(result.verdict).toBe('pass');
-    expect(existsSync(join(s.worktree, 'inside'))).toBe(true);
-    expect(existsSync(outside)).toBe(false);
-    expect(result.tail).not.toContain('cp-secret-value');
+    const script = [
+      "const net = require('node:net');",
+      "const server = net.createServer((socket) => socket.end('pong'));",
+      "server.listen(0, '127.0.0.1', () => {",
+      "  net.connect(server.address().port, '127.0.0.1').on('data', (data) => {",
+      "    console.log('bound ' + String(data));",
+      `    require('node:fs').writeFileSync(${JSON.stringify(outside)}, 'x');`,
+      '    server.close();',
+      '  });',
+      '});',
+    ].join('\n');
+    const { result } = await run([process.execPath, '-e', script], {}, {}, s);
+    expect(result).toMatchObject({ verdict: 'pass', reason: null, exitCode: 0 });
+    expect(result.tail).toBe('bound pong');
+    expect(existsSync(outside)).toBe(true);
   }, 30_000);
 
   it('records what the tag sweep found and ended', async () => {

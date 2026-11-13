@@ -1,9 +1,8 @@
 // The console's owner actions for the build lane (build-runs: Start and stop a run from the
-// console; doctor: Doctor and risk withdrawal from the console; daemon-lifecycle: Stop Counterpoint
-// from the console). Every write here is a guarded POST: the session cookie plus the Origin, Fetch
-// Metadata and JSON checks of the guard chain; sandboxed agents cannot reach the console at all.
+// console; daemon-lifecycle: Stop Counterpoint from the console). Every write here is a guarded
+// POST: the session cookie plus the Origin, Fetch Metadata and JSON checks of the guard chain.
 //
-//   GET  /api/hosts/:hostId/run                  { run, runway, claudeVersion, doctor }
+//   GET  /api/hosts/:hostId/run                  { run, runway, claudeVersion }
 //   GET  /api/hosts/:hostId/run/budget?model=&percent=   { window, label }
 //   POST /api/hosts/:hostId/run                  start: { changes, stopAt (ISO or null) } → 202
 //                                                { runId } or the refusal; the run uses the
@@ -17,10 +16,6 @@
 //   POST /api/hosts/:hostId/settings             save the run settings (build-runs: Run settings
 //                                                page); runs started afterwards use them
 //   POST /api/hosts/:hostId/run/stop             stop at the next clean point
-//   POST /api/hosts/:hostId/doctor/run           run doctor (one probe at a time) → 202
-//   GET  /api/doctor/status                      the probe running now, or null
-//   POST /api/risks/:riskId/withdraw             withdraw an accepted risk (accepting stays a
-//                                                terminal act)
 //   POST /api/stop                               stop Counterpoint (a run first stops at its next
 //                                                clean point)
 import type { Hono } from 'hono';
@@ -36,15 +31,9 @@ import type { Orchestrator } from '../../build/orchestrator.ts';
 import { buildRunReport, factsFromRuntime } from '../../build/run-report.ts';
 import { formatBudget, knownWindow, normalizeClaudeVersion } from '../../build/windows.ts';
 import { HOST_ID_RE, isChangeId } from '../../core/ids.ts';
-import {
-  ACCEPTED_RISK_IDS,
-  type AcceptedRiskId,
-  revokeAcceptedRisk,
-} from '../../core/security/accepted-risks.ts';
 import { getHost, type Store } from '../../core/store/db.ts';
 import { getRun } from '../../core/store/runs.ts';
 import type { ApprovalViews } from '../approval-views.ts';
-import type { DoctorService } from '../doctor-service.ts';
 import type { HostRuntimes } from '../hosts.ts';
 
 export interface RunRoutesOptions {
@@ -53,13 +42,10 @@ export interface RunRoutesOptions {
   runtimes: HostRuntimes;
   approvals: ApprovalViews;
   orchestrator: Orchestrator;
-  doctor: DoctorService;
   /** The claude version installed now, or null. */
   claudeVersion: () => Promise<string | null>;
   /** Stops the daemon (after any run reaches its clean point). */
   stopDaemon: () => void;
-  /** Tells open consoles the accepted risks changed. */
-  onRiskWithdrawn: () => void;
   /** Tells open consoles a project's run settings changed. */
   onSettingsChanged?: (hostId: string) => void;
   /** Local previews, started on demand from the console. */
@@ -94,7 +80,6 @@ export function mountRunRoutes(app: Hono, options: RunRoutesOptions): void {
           taskCount,
         })) ?? [],
       claudeVersion: await options.claudeVersion(),
-      doctor: options.doctor.status(),
     });
   });
 
@@ -208,28 +193,6 @@ export function mountRunRoutes(app: Hono, options: RunRoutesOptions): void {
     if (hostOf(hostId) === null) return c.json({ error: 'not found' }, 404);
     if (!orchestrator.stop(hostId)) return c.json({ error: 'No run is going.' }, 409);
     return c.json({ stopping: true }, 202);
-  });
-
-  app.post('/api/hosts/:hostId/doctor/run', (c) => {
-    const runtime = hostOf(c.req.param('hostId'));
-    if (runtime === null) return c.json({ error: 'not found' }, 404);
-    const started = options.doctor.start(runtime.host.id, 'console');
-    if (!started.ok) return c.json({ error: started.error }, 409);
-    return c.json({ started: true }, 202);
-  });
-
-  app.get('/api/doctor/status', (c) => c.json({ doctor: options.doctor.status() }));
-
-  app.post('/api/risks/:riskId/withdraw', (c) => {
-    const riskId = c.req.param('riskId');
-    if (!(ACCEPTED_RISK_IDS as readonly string[]).includes(riskId)) {
-      return c.json({ error: 'Unknown risk.' }, 404);
-    }
-    // Withdrawing only makes the verdict stricter, so the console may do it; recording a risk
-    // stays a terminal act (counterpoint accept-risk).
-    const existed = revokeAcceptedRisk(options.home, riskId as AcceptedRiskId);
-    options.onRiskWithdrawn();
-    return c.json({ withdrawn: existed });
   });
 
   app.post('/api/stop', (c) => {

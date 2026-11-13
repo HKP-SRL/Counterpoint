@@ -6,11 +6,8 @@
 // string), an allow-listed environment that ignores global/system config, and `-c` overrides
 // that disable hooks, fsmonitor and pagers.
 //
-// Every call also ignores replace refs and grafts (signed-approvals: Recomputation ignores replace
-// refs and grafts; WR-04): `--no-replace-objects`, GIT_NO_REPLACE_OBJECTS=1 and
-// GIT_GRAFT_FILE=/dev/null. A ref under refs/replace/ could otherwise map an edited blob back to
-// the signed one, so the input digests would match while the pushed branch carries other
-// content. Signature verification and every input read share this one runner, so they always see
+// Every call also ignores replace refs and grafts: `--no-replace-objects`,
+// GIT_NO_REPLACE_OBJECTS=1 and GIT_GRAFT_FILE=/dev/null, so every read and the pushed branch see
 // the same objects. No Counterpoint call needs replacements.
 import { accessSync, constants, realpathSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';

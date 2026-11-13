@@ -10,7 +10,6 @@
 import { buildClaudeArgv } from '../agent/claude-argv.ts';
 import type { AgentRunner, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter, initModel, resultWindows } from '../agent/usage.ts';
-import type { AgentSettings } from '../core/security/sandbox-settings.ts';
 import type { Store } from '../core/store/db.ts';
 import {
   endAgentSession,
@@ -58,8 +57,6 @@ export interface CalibrateInput {
   hostId: string;
   model: string;
   claudeVersion: string;
-  settings: AgentSettings;
-  allowedTools: readonly string[];
   cwd: string;
   rawLogPath: string;
   processTag: string;
@@ -75,17 +72,15 @@ export class CalibrationError extends Error {
 
 /**
  * Runs one short session to learn `model`'s window, records the session and the window, and
- * returns the window. Uses the one agent launch profile, like every other session.
+ * returns the window. Launched like every other session.
  */
 export async function calibrateWindow(input: CalibrateInput): Promise<number> {
   const { runner, db } = input;
   if (runner.start === undefined) throw new CalibrationError('The runner cannot stream.');
   const argv = buildClaudeArgv({
-    settings: input.settings,
     model: input.model,
     maxTurns: 1,
     maxBudgetUsd: 0.5,
-    allowedTools: input.allowedTools,
     streamInput: true,
   });
   const sessionId = insertAgentSession(db, {

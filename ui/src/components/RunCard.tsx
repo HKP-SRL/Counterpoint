@@ -9,7 +9,7 @@
 // and the launch form: the runway changes to build (all by default, in build order) and an
 // optional stop time. The model, effort and context budget come from the project's Settings page;
 // the form shows them in one line (budget as tokens once the model's window is known: "40% of 1M =
-// 400k tokens") with a link there. Start is a guarded POST; a refusal (doctor failing, a change
+// 400k tokens") with a link there. Start is a guarded POST; a refusal (a change
 // that left the runway) is shown in the daemon's own words.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -18,7 +18,6 @@ import { Card } from '@astryxdesign/core/Card';
 import { CheckboxList, CheckboxListItem } from '@astryxdesign/core/CheckboxList';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
-import { Icon } from '@astryxdesign/core/Icon';
 import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
@@ -36,6 +35,7 @@ import {
   effortLabel,
   errorText,
   nextOccurrence,
+  overBudgetText,
   type RunAnswer,
   type RunChangeView,
   type RunView,
@@ -94,6 +94,12 @@ function ChangeRows({ hostId, run }: { hostId: string; run: RunView }) {
                 {change.previewUrl !== null ? <Link href={change.previewUrl}>Preview</Link> : null}
                 {change.notForMerge === true ? (
                   <Badge variant="warning" label="Not for merge" />
+                ) : null}
+                {/* Over the test budget: a mark on the row, never a failure (gates: Test budget). */}
+                {change.overBudget === true &&
+                change.testShare !== undefined &&
+                change.testShare !== null ? (
+                  <Badge variant="warning" label={overBudgetText(change.testShare)} />
                 ) : null}
                 <Badge variant={look.variant} label={look.label} />
               </HStack>
@@ -397,16 +403,6 @@ export function RunCard({ hostId }: { hostId: string }) {
               />
             }
           />
-        ) : null}
-        {answer?.doctor != null &&
-        answer.doctor.hostId === hostId &&
-        answer.doctor.source === 'run' ? (
-          <HStack gap={2} vAlign="center">
-            <Icon icon="info" size="sm" />
-            <Text type="supporting">
-              claude was updated: doctor is checking the sandbox again first.
-            </Text>
-          </HStack>
         ) : null}
         {body}
       </VStack>

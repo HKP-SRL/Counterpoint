@@ -1,16 +1,12 @@
-// Needs You (`/h/{hostId}/needs-you`, needs-you: One inbox; a long list grows with the page):
-// one inbox of what genuinely needs the owner, newest first as the server serves it. So far the
-// only kind is "approved version changed": an approved change whose committed files or gate
-// config moved on after signing. Each row links to its drift view.
-//
-// Nothing here dismisses, snoozes or hides an item: the server recomputes the list from git, and
-// an item disappears only when the change is re-signed or its files return to the signed state.
-// `needs-you` and `approval` events refetch the list (live.ts). The row component takes a `kind`
-// so later changes add parked items, PRs and council cards; the Mission card reuses it.
-//
-// Above them, what the last build run left for the owner (needs-you: Parked changes in Needs You;
-// Run-stopping errors in Needs You): a parked change with its failing gate's last lines and every
-// attempt, and a run that stopped on an error with what to do. A `run` event refetches them.
+// Needs You (`/h/{hostId}/needs-you`, needs-you: One inbox; Builder questions in Needs You): what
+// the host's last build run left for the owner, newest first as the server serves it:
+// - a change that parked because its remaining tasks wait on an ask-first question shows the
+//   question, its options and the one the builder recommends, and the tasks that wait on it;
+// - any other parked change shows its reason, the failing gate's last lines and every attempt;
+// - a note the run left while it went on (it could not read the login shell, say);
+// - a run that stopped on something only the owner can fix, with what to do.
+// A `run` event refetches the list (live.ts). Nothing here is dismissed or hidden: a later run
+// replaces it.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -24,75 +20,104 @@ import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
-import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { apiGet, hostsQuery, queryKeys } from '../api';
+import { apiGet, queryKeys } from '../api';
 import { isChangeId } from '../ids';
-
-/** Needs You item ids are change ids (src/server/routes/needs-you.ts). */
-export const isNeedsYouItemId = isChangeId;
-
-export type NeedsYouKind = 'approved-version-changed';
-
-export type NeedsYouItem = {
-  id: string;
-  kind: NeedsYouKind;
-  /** The kind's visible name, e.g. `Approved version changed`. */
-  kindLabel: string;
-  changeId: string;
-  title: string;
-  changedCount: number;
-  gatesChanged: boolean;
-  signedAt: string;
-  changedAt: string;
-  unreadable: boolean;
-};
 
 export type RunAttempt = {
   attempt: number;
   gate: string;
-  verdict: 'pass' | 'fail' | null;
+  verdict: 'pass' | 'fail' | 'skipped' | 'not-run' | null;
   reason: string | null;
   exitCode: number | null;
   tail: string | null;
   logPath: string;
 };
 
+/** A question the builder asked before doing something it cannot undo. */
+export type BuilderQuestion = {
+  /** The task it is about, as the builder named it. */
+  task: string | null;
+  text: string;
+  options: string[];
+  /** Index into `options` of the builder's recommendation, or null. */
+  recommended: number | null;
+  /** Tasks that wait on the answer. */
+  waiting: string[];
+};
+
 export type RunItem = {
   id: string;
-  kind: 'parked' | 'run-stopped';
+  kind: 'parked' | 'run-stopped' | 'notice';
   kindLabel: string;
   changeId: string | null;
   reason: string;
   at: number;
   attempts: RunAttempt[];
+  questions: BuilderQuestion[];
   action: string;
 };
 
 export type NeedsYouSnapshot = {
   hostId: string;
   baseBranch: string;
-  items: NeedsYouItem[];
   runItems: RunItem[];
 };
 
-/** Everything that needs the owner: approval items and what the last run left. */
+/** Everything that needs the owner. */
 export function needsYouCount(snapshot: NeedsYouSnapshot): number {
-  return snapshot.items.length + snapshot.runItems.length;
+  return snapshot.runItems.length;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const count = (value: unknown): number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const str = (value: unknown): string => (typeof value === 'string' ? value : '');
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+
+const KIND_LABEL = { parked: 'Parked', 'run-stopped': 'Run stopped', notice: 'Note' } as const;
+
+function parseQuestion(value: unknown): BuilderQuestion | null {
+  if (!isRecord(value) || typeof value.text !== 'string') return null;
+  const options = strings(value.options);
+  const recommended =
+    typeof value.recommended === 'number' &&
+    Number.isInteger(value.recommended) &&
+    value.recommended >= 0 &&
+    value.recommended < options.length
+      ? value.recommended
+      : null;
+  return {
+    task: typeof value.task === 'string' ? value.task : null,
+    text: value.text,
+    options,
+    recommended,
+    waiting: strings(value.waiting),
+  };
 }
 
 function parseRunItem(value: unknown): RunItem | null {
   if (!isRecord(value)) return null;
-  if (value.kind !== 'parked' && value.kind !== 'run-stopped') return null;
+  if (value.kind !== 'parked' && value.kind !== 'run-stopped' && value.kind !== 'notice') {
+    return null;
+  }
   if (typeof value.id !== 'string' || typeof value.reason !== 'string') return null;
   const attempts = Array.isArray(value.attempts)
     ? value.attempts.filter(isRecord).map(
         (a): RunAttempt => ({
           attempt: count(a.attempt),
           gate: str(a.gate),
-          verdict: a.verdict === 'pass' || a.verdict === 'fail' ? a.verdict : null,
+          verdict:
+            a.verdict === 'pass' ||
+            a.verdict === 'fail' ||
+            a.verdict === 'skipped' ||
+            a.verdict === 'not-run'
+              ? a.verdict
+              : null,
           reason: typeof a.reason === 'string' ? a.reason : null,
           exitCode: typeof a.exitCode === 'number' ? a.exitCode : null,
           tail: typeof a.tail === 'string' ? a.tail : null,
@@ -103,39 +128,16 @@ function parseRunItem(value: unknown): RunItem | null {
   return {
     id: value.id,
     kind: value.kind,
-    kindLabel: str(value.kindLabel) || (value.kind === 'parked' ? 'Parked' : 'Run stopped'),
+    kindLabel: str(value.kindLabel) || KIND_LABEL[value.kind],
     changeId:
       typeof value.changeId === 'string' && isChangeId(value.changeId) ? value.changeId : null,
     reason: value.reason,
     at: count(value.at),
     attempts,
+    questions: Array.isArray(value.questions)
+      ? value.questions.map(parseQuestion).filter((q): q is BuilderQuestion => q !== null)
+      : [],
     action: str(value.action),
-  };
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-const count = (value: unknown): number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
-const str = (value: unknown): string => (typeof value === 'string' ? value : '');
-
-/** One item from the server; null for anything that does not have the expected shape. */
-export function parseNeedsYouItem(value: unknown): NeedsYouItem | null {
-  if (!isRecord(value)) return null;
-  if (!isNeedsYouItemId(value.id) || !isChangeId(value.changeId)) return null;
-  if (value.kind !== 'approved-version-changed') return null;
-  if (typeof value.signedAt !== 'string') return null;
-  return {
-    id: value.id,
-    kind: value.kind,
-    kindLabel: str(value.kindLabel) || 'Approved version changed',
-    changeId: value.changeId,
-    title: str(value.title) || `${value.changeId} changed since you signed it`,
-    changedCount: count(value.changedCount),
-    gatesChanged: value.gatesChanged === true,
-    signedAt: value.signedAt,
-    changedAt: str(value.changedAt),
-    unreadable: value.unreadable === true,
   };
 }
 
@@ -145,9 +147,6 @@ async function fetchNeedsYou(hostId: string, signal?: AbortSignal): Promise<Need
   return {
     hostId,
     baseBranch: str(raw.baseBranch),
-    items: Array.isArray(raw.items)
-      ? raw.items.map(parseNeedsYouItem).filter((item): item is NeedsYouItem => item !== null)
-      : [],
     runItems: Array.isArray(raw.runItems)
       ? raw.runItems.map(parseRunItem).filter((item): item is RunItem => item !== null)
       : [],
@@ -162,68 +161,50 @@ export const needsYouQuery = (hostId: string) =>
     placeholderData: keepPreviousData,
   });
 
-export function filesChangedText(n: number): string {
-  return n === 1 ? '1 file changed' : `${n} files changed`;
-}
-
-/** What changed, for the row's Supporting line: input files, the gate config, or both. */
-export function changedSummary(item: Pick<NeedsYouItem, 'changedCount' | 'gatesChanged'>): string {
-  if (item.gatesChanged && item.changedCount === 0) return 'gate config changed';
-  if (item.gatesChanged) return `${filesChangedText(item.changedCount)} + gate config`;
-  return filesChangedText(item.changedCount);
-}
-
-/** The icon each kind shows before its row (from the theme's icon registry). */
-const KIND_ICON = { 'approved-version-changed': 'warning' } as const;
-
-/**
- * One Needs You row: the kind's icon, the kind name as a visible warning Badge above the title,
- * the title on one line (full text in a Tooltip), and the Supporting line. Links to the item.
- */
-export function NeedsYouRow({
-  hostId,
-  hostName,
-  item,
-}: {
-  hostId: string;
-  hostName: string;
-  item: NeedsYouItem;
-}) {
+function QuestionBlock({ question }: { question: BuilderQuestion }) {
   return (
-    <ListItem
-      href={`/h/${hostId}/needs-you/${item.id}`}
-      align="first-line"
-      startContent={<Icon icon={KIND_ICON[item.kind]} size="sm" color="warning" />}
-      label={
-        <VStack gap={1} hAlign="start">
-          <Badge variant="warning" label={item.kindLabel} />
-          <Text weight="semibold" maxLines={1} hasTruncateTooltip>
-            {item.title}
-          </Text>
-        </VStack>
-      }
-      description={
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {`${hostName} · ${changedSummary(item)} · signed `}
-          <Timestamp value={item.signedAt} hasTooltip />
+    <VStack gap={2}>
+      <Text weight="semibold">{question.text}</Text>
+      {question.options.length > 0 ? (
+        <List aria-label="Options">
+          {question.options.map((option, index) => (
+            <ListItem
+              key={option}
+              label={<Text>{option}</Text>}
+              endContent={
+                index === question.recommended ? (
+                  <Badge variant="info" label="Recommended" />
+                ) : undefined
+              }
+            />
+          ))}
+        </List>
+      ) : null}
+      {question.waiting.length > 0 ? (
+        <Text type="supporting" color="secondary">
+          {`Waiting on it: ${question.waiting.join(', ')}`}
         </Text>
-      }
-      endContent={
-        item.unreadable ? (
-          <Badge variant="error" label="Couldn't read" icon={<Icon icon="error" size="xsm" />} />
-        ) : undefined
-      }
-    />
+      ) : null}
+    </VStack>
   );
 }
 
+function badgeOf(kind: RunItem['kind']): {
+  variant: 'warning' | 'error' | 'info';
+  icon: 'warning' | 'error' | 'info';
+} {
+  if (kind === 'parked') return { variant: 'warning', icon: 'warning' };
+  if (kind === 'notice') return { variant: 'info', icon: 'info' };
+  return { variant: 'error', icon: 'error' };
+}
+
 /**
- * What the last run left: a parked change shows its reason, the failing gate's last lines (plain
- * text, never HTML) and every attempt; a stopped run says why and what to do.
+ * One item: a question with its options, or the reason with the failing gate's last lines (plain
+ * text, never HTML) and every attempt, then what to do.
  */
 export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }) {
   const failing = [...item.attempts].reverse().find((a) => a.verdict === 'fail');
-  const parked = item.kind === 'parked';
+  const badge = badgeOf(item.kind);
   return (
     <Card
       padding={4}
@@ -233,19 +214,26 @@ export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }
       <VStack gap={3}>
         <VStack gap={1} hAlign="start">
           <Badge
-            variant={parked ? 'warning' : 'error'}
+            variant={badge.variant}
             label={item.kindLabel}
-            icon={<Icon icon={parked ? 'warning' : 'error'} size="xsm" />}
+            icon={<Icon icon={badge.icon} size="xsm" />}
           />
           <Text weight="semibold">
             {item.changeId === null ? (
-              'The run stopped'
+              item.kind === 'notice' ? (
+                'The run'
+              ) : (
+                'The run stopped'
+              )
             ) : (
               <Link href={`/h/${hostId}/changes/${item.changeId}`}>{item.changeId}</Link>
             )}
           </Text>
-          <Text>{item.reason}</Text>
+          {item.questions.length === 0 ? <Text>{item.reason}</Text> : null}
         </VStack>
+        {item.questions.map((question) => (
+          <QuestionBlock key={`${question.task ?? ''}-${question.text}`} question={question} />
+        ))}
         {failing?.tail != null && failing.tail !== '' ? (
           <VStack gap={1}>
             <Text type="supporting" color="secondary">
@@ -261,7 +249,7 @@ export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }
                 key={`${a.attempt}-${a.gate}`}
                 label={
                   <Text type="supporting" hasTabularNumbers>
-                    {`Attempt ${a.attempt} · gate ${a.gate} · ${a.verdict === 'pass' ? 'passed' : (a.reason ?? 'failed')}${a.exitCode !== null && a.verdict === 'fail' ? ` (exit ${a.exitCode})` : ''}`}
+                    {`Attempt ${a.attempt} · gate ${a.gate} · ${attemptText(a)}`}
                   </Text>
                 }
                 description={
@@ -283,7 +271,16 @@ export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }
   );
 }
 
-/** Skeleton rows at the final row height (badge, title and Supporting line). */
+/** A gate's outcome in an attempt, in words: passed, failed (why), skipped or not run. */
+export function attemptText(a: Pick<RunAttempt, 'verdict' | 'reason' | 'exitCode'>): string {
+  if (a.verdict === 'pass') return 'passed';
+  if (a.verdict === 'skipped') return 'skipped (no matching files changed)';
+  if (a.verdict === 'not-run') return 'not run (an earlier gate failed)';
+  const exit = a.exitCode !== null && a.verdict === 'fail' ? ` (exit ${a.exitCode})` : '';
+  return `${a.reason ?? 'failed'}${exit}`;
+}
+
+/** Skeleton rows at the final card height. */
 export function NeedsYouLoading({ rows = 3 }: { rows?: number }) {
   return (
     <VStack gap={2} aria-busy="true" aria-label="Loading Needs You">
@@ -299,14 +296,12 @@ export function NeedsYouEmpty({ headingLevel = 2 }: { headingLevel?: 2 | 3 }) {
     <EmptyState
       headingLevel={headingLevel}
       title="Nothing needs you"
-      description="If a change you approved is edited after signing, it will show up here with what changed."
+      description="When a run needs an answer or a fix from you, it shows up here."
     />
   );
 }
 
 export function NeedsYouPage({ hostId }: { hostId: string }) {
-  const hosts = useQuery(hostsQuery);
-  const hostName = hosts.data?.find((candidate) => candidate.id === hostId)?.name ?? hostId;
   const query = useQuery(needsYouQuery(hostId));
   // keepPreviousData can briefly hold another host's items while switching; never show them.
   const snapshot = query.data?.hostId === hostId ? query.data : undefined;
@@ -346,13 +341,6 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
         {snapshot.runItems.map((item) => (
           <RunItemBlock key={item.id} hostId={hostId} item={item} />
         ))}
-        {snapshot.items.length > 0 ? (
-          <List hasDividers={snapshot.items.length > 1} aria-label="Needs You items">
-            {snapshot.items.map((item) => (
-              <NeedsYouRow key={item.id} hostId={hostId} hostName={hostName} item={item} />
-            ))}
-          </List>
-        ) : null}
       </VStack>
     );
   }

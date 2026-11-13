@@ -1,10 +1,10 @@
 // The governor (build-runs: Single governor in front of every spawn; Usage limits pause every
-// lane; No agent spawns while doctor fails).
+// lane).
 //
 // One instance lives in the daemon and every agent spawn on the machine asks it first, whatever
-// the host: builder sessions, calibration sessions and probes started from the console. Its pause
-// is persisted in the store (`governor` row), so a daemon restart keeps it, and a CLI doctor run
-// (another process, read-only store) can see it too (`readPause`).
+// the host: builder sessions and calibration sessions. Its pause is persisted in the store
+// (`governor` row), so a daemon restart keeps it, and another process with a read-only store can
+// see it too (`readPause`).
 //
 // What it reads, from claude 2.1.322 streams (spike 3.2) and the documented shapes
 // (https://code.claude.com/docs/en/headless "Handle API retries", agent-sdk/typescript
@@ -38,7 +38,7 @@ export const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
 /** Default utilization ceiling: no new session starts while a warned window is at or above it. */
 export const DEFAULT_CEILING = 0.95;
 
-export type SpawnKind = 'probe' | 'calibration' | 'builder';
+export type SpawnKind = 'calibration' | 'builder';
 
 export interface WindowState {
   status: string;
@@ -55,16 +55,10 @@ export interface GovernorState {
   windows: Record<string, WindowState>;
 }
 
-/** Whether the host's last doctor verdict lets agents spawn. */
-export type DoctorGate = (hostId: string) =>
-  | { ok: true }
-  /** `rerun`: only the claude version changed, so a doctor run Counterpoint starts itself can clear it. */
-  | { ok: false; reason: string; rerun?: boolean };
-
 export class GovernorRefusal extends Error {
-  readonly kind: 'doctor' | 'aborted';
+  readonly kind: 'aborted';
 
-  constructor(kind: 'doctor' | 'aborted', message: string) {
+  constructor(kind: 'aborted', message: string) {
     super(message);
     this.name = 'GovernorRefusal';
     this.kind = kind;
@@ -109,7 +103,7 @@ export function readGovernorState(db: Store): GovernorState {
   };
 }
 
-/** The pause in force at `now`, or null. For processes that only read the store (CLI doctor). */
+/** The pause in force at `now`, or null. For processes that only read the store. */
 export function readPause(
   db: Store,
   now: number = Date.now(),
@@ -295,7 +289,6 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export interface GovernorOptions {
   db: Store;
-  doctorGate: DoctorGate;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Utilization ceiling for pacing on `allowed_warning` (0..1). */
@@ -306,7 +299,6 @@ export interface GovernorOptions {
 
 export class Governor {
   readonly #db: Store;
-  readonly #doctorGate: DoctorGate;
   readonly #now: () => number;
   readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly #ceiling: number;
@@ -314,7 +306,6 @@ export class Governor {
 
   constructor(options: GovernorOptions) {
     this.#db = options.db;
-    this.#doctorGate = options.doctorGate;
     this.#now = options.now ?? Date.now;
     this.#sleep = options.sleep ?? abortableSleep;
     this.#ceiling = options.ceiling ?? DEFAULT_CEILING;
@@ -351,16 +342,9 @@ export class Governor {
     return hold;
   }
 
-  /**
-   * Waits until a spawn may start. Refuses at once (and again after any wait) when the host's
-   * last doctor verdict does not pass; probes are exempt from that check, since doctor runs them.
-   */
+  /** Waits until a spawn may start: no usage-limit pause or pacing hold in force. */
   async admit(request: { hostId: string; kind: SpawnKind; signal?: AbortSignal }): Promise<void> {
     for (;;) {
-      if (request.kind !== 'probe') {
-        const gate = this.#doctorGate(request.hostId);
-        if (!gate.ok) throw new GovernorRefusal('doctor', gate.reason);
-      }
       if (request.signal?.aborted) throw new GovernorRefusal('aborted', 'Stopped while waiting.');
       const hold = this.holdUntil();
       if (hold === null) return;
@@ -416,7 +400,7 @@ export class Governor {
 /**
  * An AgentRunner that asks the governor before every spawn and feeds it every event the session
  * prints. Every agent spawn the daemon makes goes through one of these (one scope per host and
- * kind), so pauses and the doctor gate apply to all lanes on all hosts together.
+ * kind), so pauses apply to all lanes on all hosts together.
  */
 export function governedRunner(
   governor: Governor,

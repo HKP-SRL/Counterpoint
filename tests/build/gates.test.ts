@@ -11,16 +11,17 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { GateRunResult } from '../../src/build/gate-runner.ts';
-import { afterGateRound, runGateRound } from '../../src/build/gates.ts';
-import { taggedFromListings } from '../../src/build/process-sweep.ts';
 import {
   blocksMerge,
-  checkProtectedPaths,
   isTestPath,
+  measureTestShare,
   parseNameStatus,
-  protectedCategories,
-} from '../../src/build/protected-paths.ts';
+  parseNumstat,
+  planningEdits,
+} from '../../src/build/branch-diff.ts';
+import type { GateRunResult } from '../../src/build/gate-runner.ts';
+import { afterGateRound, changedFiles, gateCommand, runGateRound } from '../../src/build/gates.ts';
+import { taggedFromListings } from '../../src/build/process-sweep.ts';
 import {
   createServiceSession,
   describeMissingPrograms,
@@ -303,10 +304,9 @@ describe('host services', () => {
       { service: 'supabase', step: 'env', program: 'supabase' },
     ]);
     expect(describeMissingPrograms(missing)).toBe(
-      'The supabase service needs "supabase", which Counterpoint cannot find on its PATH. ' +
-        'Counterpoint keeps the PATH of the terminal that started it, and a terminal that was ' +
-        'already open keeps its old PATH. Open a new terminal window, check that ' +
-        '"command -v supabase" prints a path, then run "counterpoint stop" and "counterpoint".',
+      'The supabase service needs "supabase", which is not on your login shell\'s PATH. ' +
+        "Install it or add it to your shell's PATH (in a new terminal, " +
+        '"command -v supabase" should print a path), then start a new run. No restart is needed.',
     );
 
     // A file that is there but not executable is not runnable either.
@@ -424,6 +424,7 @@ function round(
 ) {
   const { db, runChangeId, home } = storeWithChange();
   const ran: string[] = [];
+  const commands: string[][] = [];
   const envs: Record<string, string>[] = [];
   const input = {
     db,
@@ -432,25 +433,20 @@ function round(
     attempt: 1,
     config,
     worktree: home,
+    baseCommit: 'a'.repeat(40),
     changeDir: join(home, 'runs', 'run-1', 'qr-menu'),
-    protectedPaths: {
-      homeDir: '/h',
-      counterpointHome: '/h/cp',
-      signingKeyDir: '/h/k',
-      ghConfigDir: '/h/gh',
-      hostGitDir: '/x/.git',
-    },
-    consolePort: 4170,
     services: NO_SERVICES,
+    changedFiles: async () => [],
     runGate: async (gate: Parameters<NonNullable<typeof extra.runGate>>[0]) => {
       ran.push(gate.gate.name);
+      commands.push([...(gate.command ?? gate.gate.command)]);
       envs.push({ ...(gate.env ?? {}) });
       gate.onStart?.(9999);
       return result(outcomes[gate.gate.name] ?? {});
     },
     ...extra,
   };
-  return { db, runChangeId, ran, envs, input };
+  return { db, runChangeId, ran, commands, envs, input };
 }
 
 const TWO_GATES = parseHostConfig({
@@ -502,6 +498,11 @@ describe('gate rounds', () => {
       kind: 'fail',
       failure: { gate: 'unit', attempt: 1, reason: 'exit code 1', tail: 'FAIL menu.test.ts' },
     });
+    // The gate after the failure is recorded as not run.
+    expect(listGateResults(r.db, r.runChangeId).map((row) => [row.gate, row.verdict])).toEqual([
+      ['unit', 'fail'],
+      ['lint', 'not-run'],
+    ]);
     const next = afterGateRound(r.db, r.runChangeId, out, 3);
     expect(next).toEqual({
       next: 'retry',
@@ -642,20 +643,110 @@ describe('gate rounds', () => {
     );
   });
 
+  const TIERS = parseHostConfig({
+    gates: [
+      { name: 'suite', command: ['pnpm', 'vitest', 'run'], when: 'final' },
+      { name: 'types', command: ['pnpm', 'tsc'] },
+      { name: 'lint', command: ['pnpm', 'lint'] },
+      { name: 'build', command: ['pnpm', 'build'], when: 'final' },
+    ],
+  });
+
+  it('runs the every-attempt gates first and the final gates once they all pass', async () => {
+    const r = round(TIERS, {});
+    expect((await runGateRound(r.input)).kind).toBe('pass');
+    expect(r.ran).toEqual(['types', 'lint', 'suite', 'build']);
+  });
+
+  it('does not run a final gate when an every-attempt gate fails', async () => {
+    const r = round(TIERS, { lint: { verdict: 'fail', reason: 'exit-code', exitCode: 1 } });
+    const out = await runGateRound(r.input);
+    expect(out).toMatchObject({ kind: 'fail', failure: { gate: 'lint' } });
+    expect(r.ran).toEqual(['types', 'lint']);
+    expect(listGateResults(r.db, r.runChangeId).map((row) => [row.gate, row.verdict])).toEqual([
+      ['types', 'pass'],
+      ['lint', 'fail'],
+      ['suite', 'not-run'],
+      ['build', 'not-run'],
+    ]);
+  });
+
+  it('counts a failing final gate as a failed attempt, and runs every tier again next time', async () => {
+    const r = round(TIERS, { suite: { verdict: 'fail', reason: 'exit-code', exitCode: 1 } });
+    const first = await runGateRound(r.input);
+    expect(first).toMatchObject({ kind: 'fail', failure: { gate: 'suite' } });
+    expect(afterGateRound(r.db, r.runChangeId, first, 3)).toMatchObject({
+      next: 'retry',
+      attempts: 1,
+    });
+    await runGateRound({ ...r.input, attempt: 2 });
+    expect(r.ran).toEqual(['types', 'lint', 'suite', 'types', 'lint', 'suite']);
+  });
+
+  const CHANGED = parseHostConfig({
+    gates: [
+      { name: 'related', command: ['vitest', 'related', '--run', '{changed}'] },
+      { name: 'ts-only', command: ['eslint', '{changed}'], paths: ['**/*.ts'] },
+      { name: 'styles', command: ['stylelint', '{changed}'], paths: ['**/*.css'] },
+    ],
+  });
+
+  it('expands {changed} to the changed files, one argument each, narrowed by paths', async () => {
+    const r = round(CHANGED, {}, { changedFiles: async () => ['src/menu.ts', 'src/cart.ts'] });
+    expect((await runGateRound(r.input)).kind).toBe('pass');
+    expect(r.commands).toEqual([
+      ['vitest', 'related', '--run', 'src/menu.ts', 'src/cart.ts'],
+      ['eslint', 'src/menu.ts', 'src/cart.ts'],
+    ]);
+    // Nothing matched the stylesheet gate: it is skipped, neither passed nor failed.
+    expect(listGateResults(r.db, r.runChangeId).map((row) => [row.gate, row.verdict])).toEqual([
+      ['related', 'pass'],
+      ['ts-only', 'pass'],
+      ['styles', 'skipped'],
+    ]);
+  });
+
+  it('skips a gate whose patterns match nothing the change touched, and stays green', async () => {
+    const r = round(CHANGED, {}, { changedFiles: async () => ['app/theme.css'] });
+    expect((await runGateRound(r.input)).kind).toBe('pass');
+    expect(r.commands).toEqual([
+      ['vitest', 'related', '--run', 'app/theme.css'],
+      ['stylelint', 'app/theme.css'],
+    ]);
+    expect(
+      listGateResults(r.db, r.runChangeId).find((row) => row.gate === 'ts-only')?.verdict,
+    ).toBe('skipped');
+  });
+
+  it('lists the added and modified files since the base, not the deleted ones', async () => {
+    const repo = makeScratchDir('cp-changed');
+    await initScratchRepo(repo);
+    writeFileIn(repo, 'src/old.ts', 'old\n');
+    writeFileIn(repo, 'src/gone.ts', 'gone\n');
+    await gitIn(repo, ['add', '-A']);
+    await gitIn(repo, ['commit', '-q', '-m', 'base']);
+    const base = (await gitIn(repo, ['rev-parse', 'HEAD'])).trim();
+    writeFileIn(repo, 'src/old.ts', 'changed\n');
+    writeFileIn(repo, 'src/new file.ts', 'new\n');
+    await gitIn(repo, ['rm', '-q', 'src/gone.ts']);
+    await gitIn(repo, ['add', '-A']);
+    await gitIn(repo, ['commit', '-q', '-m', 'build']);
+    expect((await changedFiles(repo, base)).sort()).toEqual(['src/new file.ts', 'src/old.ts']);
+    const related = CHANGED.gates[0];
+    if (related === undefined) throw new Error('no gate');
+    expect(gateCommand(related, [])).toBeNull();
+    expect(gateCommand({ ...related, command: ['pnpm', 'lint'] }, [])).toEqual(['pnpm', 'lint']);
+  });
+
   it('a host with no gates is green with nothing run', async () => {
     const r = round(EMPTY_HOST_CONFIG as HostConfig, {});
     expect(await runGateRound(r.input)).toEqual({ kind: 'pass', entries: [] });
   });
 });
 
-// --- protected paths ----------------------------------------------------------------------------
+// --- the branch diff -----------------------------------------------------------------------------
 
-describe('protected paths', () => {
-  const rules = {
-    isPlanningPath: (path: string) => path.startsWith('openspec/'),
-    hostGlobs: ['src/core/security/**', 'supabase/config.toml'],
-  };
-
+describe('the branch diff', () => {
   it('recognises test files by naming convention only', () => {
     for (const path of [
       'a.test.ts',
@@ -672,85 +763,67 @@ describe('protected paths', () => {
     }
   });
 
-  it('flags edited tests but not new ones, gate config, .counterpoint, .claude, planning and host globs', () => {
-    expect(protectedCategories('src/a.test.ts', 'modified', rules)).toEqual(['test']);
-    expect(protectedCategories('src/a.test.ts', 'deleted', rules)).toEqual(['test']);
-    expect(protectedCategories('src/a.test.ts', 'added', rules)).toEqual([]);
-    expect(protectedCategories('.counterpoint/config.yaml', 'modified', rules)).toEqual([
-      'gate-config',
-    ]);
-    expect(protectedCategories('.counterpoint/approvals/a.json', 'added', rules)).toEqual([
-      'counterpoint',
-    ]);
-    expect(protectedCategories('.claude/settings.json', 'modified', rules)).toEqual([
-      'agent-settings',
-    ]);
-    expect(protectedCategories('openspec/changes/a/tasks.md', 'modified', rules)).toEqual([
-      'planning',
-    ]);
-    expect(protectedCategories('src/core/security/guard.ts', 'added', rules)).toEqual([
-      'host-listed',
-    ]);
-    expect(protectedCategories('supabase/config.toml', 'modified', rules)).toEqual(['host-listed']);
-    expect(protectedCategories('src/app/page.tsx', 'modified', rules)).toEqual([]);
-  });
-
-  it('parses name-status output with odd paths', () => {
+  it('parses name-status and numstat output with odd paths', () => {
     expect(parseNameStatus('M\0a b.ts\0D\0x\ny.ts\0A\0new.ts\0')).toEqual([
       { status: 'modified', path: 'a b.ts' },
       { status: 'deleted', path: 'x\ny.ts' },
       { status: 'added', path: 'new.ts' },
     ]);
+    expect(parseNumstat('3\t1\ta b.ts\0-\t-\tlogo.png\0')).toEqual([
+      { added: 3, path: 'a b.ts' },
+      { added: 0, path: 'logo.png' },
+    ]);
   });
 
-  it('diffs the branch against its base commit, judged by the base config', async () => {
-    const repo = makeScratchDir('cp-prot');
+  async function built() {
+    const repo = makeScratchDir('cp-diff');
     await initScratchRepo(repo);
     writeFileIn(repo, 'src/menu.test.ts', 'old\n');
+    writeFileIn(repo, 'src/old.spec.ts', 'gone\n');
     writeFileIn(repo, 'src/menu.ts', 'a\n');
-    writeFileIn(repo, '.counterpoint/config.yaml', 'protected: [src/core/security/**]\n');
     await gitIn(repo, ['add', '-A']);
     await gitIn(repo, ['commit', '-q', '-m', 'base']);
     const base = (await gitIn(repo, ['rev-parse', 'HEAD'])).trim();
-    writeFileIn(repo, 'src/menu.test.ts', 'weakened\n');
-    writeFileIn(repo, 'src/new.test.ts', 'new\n');
-    writeFileIn(repo, 'src/menu.ts', 'b\n');
-    writeFileIn(repo, 'src/core/security/guard.ts', 'x\n');
-    writeFileIn(repo, '.counterpoint/config.yaml', 'protected: []\n');
+    const lines = (n: number, what: string) =>
+      Array.from({ length: n }, (_, i) => `${what} ${i}`)
+        .join('\n')
+        .concat('\n');
+    writeFileIn(repo, 'src/menu.ts', lines(10, 'code'));
+    writeFileIn(repo, 'src/menu.test.ts', 'old\nmore\nmore\n');
+    writeFileIn(repo, 'src/new.test.ts', lines(4, 'test'));
+    writeFileIn(repo, 'pnpm-lock.yaml', lines(100, 'lock'));
+    writeFileIn(repo, 'openspec/changes/a/tasks.md', lines(5, '- [x]'));
+    await gitIn(repo, ['rm', '-q', 'src/old.spec.ts']);
     await gitIn(repo, ['add', '-A']);
     await gitIn(repo, ['commit', '-q', '-m', 'build']);
     const tip = (await gitIn(repo, ['rev-parse', 'HEAD'])).trim();
-    const flags = await checkProtectedPaths({
-      repo,
-      base,
-      tip,
-      isPlanningPath: () => false,
-      hostGlobs: ['src/core/security/**'],
+    return { repo, base, tip, isPlanningPath: (path: string) => path.startsWith('openspec/') };
+  }
+
+  it('measures the test share, leaving out lock and planning files, and names edited tests', async () => {
+    const b = await built();
+    // src/menu.ts: 10 added (the old line is replaced); menu.test.ts: 2; new.test.ts: 4.
+    expect(await measureTestShare(b)).toEqual({
+      testLines: 6,
+      addedLines: 16,
+      percent: 38,
+      editedTests: [
+        { path: 'src/menu.test.ts', status: 'modified' },
+        { path: 'src/old.spec.ts', status: 'deleted' },
+      ],
     });
-    expect(flags.map((f) => [f.path, f.category, f.status])).toEqual([
-      ['.counterpoint/config.yaml', 'gate-config', 'modified'],
-      ['src/core/security/guard.ts', 'host-listed', 'added'],
-      ['src/menu.test.ts', 'test', 'modified'],
-    ]);
-    expect(blocksMerge(flags)).toBe(false);
+  });
+
+  it('flags a planning file on the branch, which keeps the PR from being offered for merge', async () => {
+    const b = await built();
+    const flags = await planningEdits(b);
+    expect(flags).toEqual([{ kind: 'planning-edit', path: 'openspec/changes/a/tasks.md' }]);
+    expect(blocksMerge(flags)).toBe(true);
+    expect(blocksMerge([])).toBe(false);
+    // A flag an earlier version stored still blocks.
     expect(
-      blocksMerge([
-        {
-          kind: 'protected-path',
-          path: 'openspec/x',
-          category: 'planning',
-          status: 'modified',
-        } as never,
-      ]),
+      blocksMerge([{ kind: 'protected-path', path: 'openspec/x', category: 'planning' } as never]),
     ).toBe(true);
-    await expect(
-      checkProtectedPaths({
-        repo,
-        base: '--output=/tmp/x',
-        tip,
-        isPlanningPath: () => false,
-        hostGlobs: [],
-      }),
-    ).rejects.toThrow(/commit ids/);
+    await expect(planningEdits({ ...b, base: '--output=/tmp/x' })).rejects.toThrow(/commit ids/);
   });
 });

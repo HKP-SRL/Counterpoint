@@ -105,11 +105,9 @@ export const queryKeys = {
       : (['host', hostId, 'change', changeId] as const),
   runway: (hostId: string) => ['host', hostId, 'runway'] as const,
   needsYou: (hostId: string) => ['host', hostId, 'needs-you'] as const,
-  doctor: (hostId: string) => ['host', hostId, 'doctor'] as const,
   run: (hostId: string) => ['host', hostId, 'run'] as const,
   budget: (hostId: string, model: string, percent: number) =>
     ['host', hostId, 'run', 'budget', model, percent] as const,
-  doctorStatus: ['doctor-status'] as const,
   settings: (hostId: string) => ['host', hostId, 'settings'] as const,
   /** Under the run key, so every `run` event refetches it. */
   runReport: (hostId: string, runId: string) => ['host', hostId, 'run', 'report', runId] as const,

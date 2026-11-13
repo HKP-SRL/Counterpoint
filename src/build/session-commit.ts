@@ -2,7 +2,7 @@
 // change; planning-writes: Builds never write planning files directly).
 //
 // Builders write no git state (spike 3.6), so after every session Counterpoint, outside any
-// sandbox, with the hardened git runner:
+// session, with the hardened git runner:
 // 1. moves the builder's handoff, assumptions and blocked-task notes out of the worktree into the run folder
 //    (opened without following symlinks and size-capped: the builder could plant a link to a file
 //    only Counterpoint can read, and these texts end up in prompts and the PR body);

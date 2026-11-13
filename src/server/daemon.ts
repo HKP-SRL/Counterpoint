@@ -21,7 +21,6 @@ import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { ClaudeCliRunner } from '../agent/runner.ts';
 import { createDeliver } from '../build/deliver.ts';
-import { doctorGate } from '../build/doctor-gate.ts';
 import { Governor } from '../build/governor.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
@@ -30,6 +29,8 @@ import { factsFromRuntime, writeRunReport } from '../build/run-report.ts';
 import { detectFramework } from '../compose.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
+import { carryOverApprovals } from '../core/runway/carry-over.ts';
+import { runNeedsYou } from '../core/runway/run-items.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { openStore, type Store } from '../core/store/db.ts';
@@ -38,7 +39,6 @@ import { getRun } from '../core/store/runs.ts';
 import { createApp, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
 import { createControlApp, hashToken } from './control.ts';
-import { createDoctorService } from './doctor-service.ts';
 import { createHostRuntimes } from './hosts.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
 
@@ -241,42 +241,41 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
-  // One set of approval views (states and runway recomputed from git, cached per tip in memory
-  // only, so every daemon start begins with an empty cache).
-  const approvals = createApprovalViews({ home: options.home });
+  // Approvals given before one-click approval carry over once (approvals: Earlier approvals
+  // carry over).
+  await carryOverApprovals(
+    store,
+    (hostId) => {
+      const runtime = runtimes.get(hostId);
+      return runtime === null
+        ? null
+        : {
+            hostId,
+            baseBranch: runtime.host.baseBranch,
+            reader: runtime.reader,
+            adapter: runtime.adapter,
+          };
+    },
+    log,
+  );
+  // One set of approval views: approvals from the store, the runway derived at the tip.
+  const approvals = createApprovalViews({ store });
 
-  // The build lane. Every agent spawn goes through the one governor; the doctor gate compares the
-  // last report's claude version with the claude installed now, which the orchestrator and the
-  // doctor service re-read before each spawn (a claude update never stops a run).
-  let installedVersion: string | null = null;
-  const setInstalledVersion = (version: string | null) => {
-    installedVersion = version;
-  };
-  const runnerFactory = () => new ClaudeCliRunner();
+  // The build lane. Every agent spawn goes through the one governor (usage-limit pauses).
+  // A runner for the claude on the run's PATH (the owner's login shell's); the daemon's own PATH
+  // when no run environment is given (the version shown in the console).
+  const runnerFactory = (env?: Readonly<Record<string, string>>) =>
+    new ClaudeCliRunner(env === undefined ? {} : { env });
   const claudeVersion = async (): Promise<string | null> => {
     try {
-      const version = (await runnerFactory().version()) ?? null;
-      installedVersion = version;
-      return version;
+      return (await runnerFactory().version()) ?? null;
     } catch {
       return null;
     }
   };
-  await claudeVersion();
-  const gate = doctorGate({ home: options.home, claudeVersion: () => installedVersion });
-  const publish =
-    (family: 'run' | 'doctor') => (hostId: string, payload: Record<string, unknown>) =>
-      void publishEvent(store, bus, { hostId, family, payload });
-  const governor = new Governor({ db: store, doctorGate: gate });
-  const doctor = createDoctorService({
-    home: options.home,
-    store,
-    governor,
-    runnerFactory,
-    setInstalledVersion,
-    publish: publish('doctor'),
-    log,
-  });
+  const publish = (family: 'run') => (hostId: string, payload: Record<string, unknown>) =>
+    void publishEvent(store, bus, { hostId, family, payload });
+  const governor = new Governor({ db: store });
   const previews = new LocalPreviews({
     home: options.home,
     db: store,
@@ -290,18 +289,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     host: (hostId) => runtimes.get(hostId),
     approvals,
     governor,
-    doctorGate: gate,
     runnerFactory,
-    setInstalledVersion,
-    runDoctor: async (hostId, signal) => {
-      // One probe at a time: wait for a console doctor run of another host to finish first.
-      for (;;) {
-        const started = doctor.start(hostId, 'run');
-        if (started.ok) return started.done;
-        if (signal.aborted) return { passed: false, detail: 'The run stopped.' };
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    },
     consolePort: bound,
     publish: publish('run'),
     onRunEnd: async (runId) => {
@@ -359,16 +347,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     runtimes,
     home: options.home,
     approvals,
+    onApprovalChanged: (hostId) => void watcher?.nudge(hostId),
     run: {
       orchestrator,
-      doctor,
       claudeVersion,
       stopDaemon: () => void stopAfterRun('console'),
-      onRiskWithdrawn: () => {
-        for (const host of runtimes.list()) {
-          publishEvent(store, bus, { hostId: host.host.id, family: 'doctor' });
-        }
-      },
       onSettingsChanged: (hostId) => {
         publishEvent(store, bus, { hostId, family: 'settings' });
       },
@@ -406,7 +389,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     needsYouCount: async (hostId) => {
       const runtime = runtimes.get(hostId);
-      return runtime === null ? null : (await approvals.needsYou(runtime)).items.length;
+      return runtime === null ? null : runNeedsYou(store, hostId).length;
     },
   });
   control = createAdaptorServer({ fetch: controlApp.fetch }) as Server;

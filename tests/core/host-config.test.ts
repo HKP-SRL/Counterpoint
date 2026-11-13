@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import type { GitFileReader } from '../../src/core/framework/port.ts';
 import {
   COUNTERPOINT_CONFIG_PATH,
@@ -68,9 +71,9 @@ describe('host config', () => {
     expect(lint).toEqual({
       name: 'lint',
       command: ['pnpm', 'lint'],
+      when: 'every',
       timeout: 600_000,
       testLock: false,
-      ports: [],
       services: [],
     });
     expect(unit?.timeout).toBe(1_200_000);
@@ -80,7 +83,50 @@ describe('host config', () => {
     expect(config.services.supabase?.env?.file).toBe('.env.local');
     expect(config.attempts).toBe(4);
     expect(config.preview?.command).toContain('{port}');
-    expect(config.protected).toEqual(['supabase/migrations/**']);
+    expect(config.tests).toEqual({ budget: 30 });
+    // Kept from earlier versions: accepted, and not part of the config any more.
+    expect(unit).not.toHaveProperty('ports');
+    expect(config).not.toHaveProperty('protected');
+  });
+
+  it("loads Cena's committed config unchanged (gate ports and protected are ignored)", () => {
+    const text = readFileSync(
+      join(import.meta.dirname, '..', 'fixtures', 'host-config', 'cena-2026-11-11.yaml'),
+      'utf8',
+    );
+    const config = parseHostConfig(parse(text, { schema: 'core', uniqueKeys: true }));
+    expect(config.gates.map((gate) => [gate.name, gate.when])).toEqual([
+      ['types', 'every'],
+      ['lint', 'every'],
+      ['build', 'every'],
+      ['unit', 'every'],
+    ]);
+    expect(config.gates.every((gate) => !('ports' in gate))).toBe(true);
+    expect(config).not.toHaveProperty('protected');
+    expect(config.services.supabase?.env?.file).toBe('.env.local');
+    expect(config.worktree.clone).toEqual(['node_modules']);
+    expect(config.attempts).toBe(3);
+  });
+
+  it('reads gate tiers, path patterns and the test budget', () => {
+    const config = parseHostConfig({
+      gates: [
+        { name: 'types', command: ['tsc'] },
+        { name: 'related', command: ['vitest', 'related', '{changed}'], paths: ['**/*.ts'] },
+        { name: 'unit', command: ['vitest', 'run'], when: 'final' },
+      ],
+      tests: { budget: 20 },
+    });
+    expect(config.gates.map((gate) => [gate.name, gate.when, gate.paths])).toEqual([
+      ['types', 'every', undefined],
+      ['related', 'every', ['**/*.ts']],
+      ['unit', 'final', undefined],
+    ]);
+    expect(config.tests.budget).toBe(20);
+    expect(() =>
+      parseHostConfig({ gates: [{ name: 'a', command: ['x'], when: 'nightly' }] }),
+    ).toThrow(/gates\.0\.when/);
+    expect(() => parseHostConfig({ tests: { budget: 120 } })).toThrow(/tests\.budget/);
   });
 
   it('defaults to no gates and three attempts without a config file', async () => {
@@ -89,8 +135,8 @@ describe('host config', () => {
       gates: [],
       services: {},
       attempts: 3,
+      tests: { budget: 30 },
       preview: null,
-      protected: [],
       worktree: { clone: [] },
     });
   });
@@ -116,7 +162,6 @@ describe('host config', () => {
     ],
     ['a bad duration', 'gates:\n  - { name: a, command: [x], timeout: 2d }\n', /timeout/],
     ['a too-long duration', 'gates:\n  - { name: a, command: [x], timeout: 7h }\n', /6 hours/],
-    ['a bad port', 'gates:\n  - { name: a, command: [x], ports: [70000] }\n', /ports/],
     [
       'a count without a group',
       "gates:\n  - { name: a, command: [x], testCount: 'Tests \\d+' }\n",
@@ -127,8 +172,11 @@ describe('host config', () => {
       "gates:\n  - { name: a, command: [x], testCount: '(' }\n",
       /regular expression/,
     ],
-    ['an escaping protected path', 'protected: [../other/**]\n', /inside the repository/],
-    ['an absolute protected path', 'protected: [/etc/**]\n', /inside the repository/],
+    [
+      'an escaping gate path',
+      'gates:\n  - { name: a, command: [x], paths: [../x/**] }\n',
+      /inside the repository/,
+    ],
     ['a preview without {port}', 'preview: { command: [pnpm, dev] }\n', /\{port\}/],
     ['zero attempts', 'attempts: 0\n', /attempts/],
     ['cloning .claude', 'worktree: { clone: [.claude] }\n', /worktree\.clone\.0/],

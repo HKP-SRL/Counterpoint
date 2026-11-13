@@ -1,9 +1,9 @@
 // Host services before gates (gates: owner decision on spike 3.4; design "Gates").
 //
-// Some gates need a local service the gate sandbox must not control itself: Cena's tests need the
-// Supabase stack, which runs in Docker. The gate runner starts and resets such a service itself,
-// outside any sandbox, with fixed commands from the host config read at the approved base (never
-// from the worktree), before each gate that names it:
+// Some gates need a local service: Cena's tests need the Supabase stack, which runs in Docker. The
+// gate runner starts and resets such a service itself, with fixed commands from the host config
+// read at the build's base commit (never from the worktree) and the run's environment (the
+// owner's), before each gate that names it:
 // - `start` once per run (it is expected to be idempotent, as `supabase start` is);
 // - `reset` before every gate that needs the service, under the test lock the gate holds;
 // - `env`: run the command, read its `KEY=value` lines, rename them by `map`, pass them into the
@@ -112,7 +112,7 @@ function isExecutableFile(path: string): boolean {
 }
 
 /** True when `program` can be run: a bare name found on `path`, or an executable absolute path. */
-function canRun(program: string, path: string): boolean {
+export function canRun(program: string, path: string): boolean {
   if (isAbsolute(program)) return isExecutableFile(program);
   // A relative path names a file in the worktree, which does not exist yet: judged when it runs.
   if (program.includes('/')) return true;
@@ -123,8 +123,8 @@ function canRun(program: string, path: string): boolean {
 
 /**
  * Every program of every service a gate names (start, reset, env) that cannot be run with the
- * PATH services get: Counterpoint's own, inherited from the terminal that started it. Checked
- * before a change builds, so a missing program stops the run before any session is spent.
+ * PATH services get: the run's (the owner's login shell's). Checked before a change builds, so a
+ * missing program stops the run before any session is spent.
  */
 export function missingServicePrograms(
   config: HostConfig,
@@ -160,17 +160,15 @@ export function describeMissingPrograms(missing: readonly MissingServiceProgram[
   const absolute = programs.every((program) => isAbsolute(program));
   if (absolute)
     return `${needs}, which ${programs.length === 1 ? 'is' : 'are'} not an executable file.`;
-  // Seen live: the owner restarted from a terminal opened before the install, so the advice
-  // says why an open terminal is not enough and gives a check to run first.
   const check = programs
     .filter((program) => !isAbsolute(program))
     .map((program) => `"command -v ${program}"`)
     .join(' and ');
   return (
-    `${needs}, which Counterpoint cannot find on its PATH. Counterpoint keeps the PATH of the ` +
-    'terminal that started it, and a terminal that was already open keeps its old PATH. Open a ' +
-    `new terminal window, check that ${check} prints a path, then run "counterpoint stop" and ` +
-    '"counterpoint".'
+    `${needs}, which ${programs.length === 1 ? 'is' : 'are'} not on your login shell's PATH. Install ` +
+    `${programs.length === 1 ? 'it' : 'them'} or add ${programs.length === 1 ? 'it' : 'them'} to ` +
+    `your shell's PATH (in a new terminal, ${check} should print a path), then start a new run. ` +
+    'No restart is needed.'
   );
 }
 

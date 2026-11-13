@@ -1,6 +1,6 @@
 // The build lane in the console: the host's run (current or last), the runway changes a run can
-// pick, the budget as tokens, and the doctor probe running now. Everything is read from the daemon;
-// `run` and `doctor` events refetch it (live.ts).
+// pick, and the budget as tokens. Everything is read from the daemon; `run` events refetch it
+// (live.ts).
 import { queryOptions } from '@tanstack/react-query';
 import { apiGet, apiPostAnswer, queryKeys } from './api';
 
@@ -16,19 +16,28 @@ export interface RunChangeView {
   previewUrl: string | null;
   /** The branch edits planning files: its PR is a draft, not offered for merge. */
   notForMerge?: boolean;
+  /** How much of the built change is tests, against the budget. */
+  testShare?: TestShare | null;
+  /** Tests are a larger share than the budget: marked, never failed. */
+  overBudget?: boolean;
+}
+
+export interface TestShare {
+  percent: number;
+  testLines: number;
+  addedLines: number;
+  budget: number;
+  editedTests: Array<{ path: string; status: string }>;
+}
+
+/** "Tests 44% (budget 30%)": the mark an over-budget change carries on its row. */
+export function overBudgetText(share: TestShare): string {
+  return `Tests ${share.percent}% (budget ${share.budget}%)`;
 }
 
 export interface RunActivity {
   change: string | null;
-  phase:
-    | 'doctor'
-    | 'calibrating'
-    | 'preparing'
-    | 'session'
-    | 'gates'
-    | 'delivering'
-    | 'waiting'
-    | 'stopping';
+  phase: 'calibrating' | 'preparing' | 'session' | 'gates' | 'delivering' | 'waiting' | 'stopping';
   session?: number;
   attempt?: number;
   gate?: string;
@@ -64,19 +73,11 @@ export interface RunwayPick {
   taskCount: number;
 }
 
-export interface DoctorStatus {
-  hostId: string;
-  phase: 'waiting' | 'tools' | 'signing-key' | 'integrity' | 'probe' | 'report';
-  startedAt: number;
-  source: 'console' | 'run';
-}
-
 export interface RunAnswer {
   hostId: string;
   run: RunView | null;
   runway: RunwayPick[];
   claudeVersion: string | null;
-  doctor: DoctorStatus | null;
 }
 
 async function fetchRun(hostId: string, signal?: AbortSignal): Promise<RunAnswer> {
@@ -89,7 +90,6 @@ async function fetchRun(hostId: string, signal?: AbortSignal): Promise<RunAnswer
     run: body.run ?? null,
     runway: Array.isArray(body.runway) ? body.runway : [],
     claudeVersion: typeof body.claudeVersion === 'string' ? body.claudeVersion : null,
-    doctor: body.doctor ?? null,
   };
 }
 
@@ -114,14 +114,6 @@ export const budgetQuery = (hostId: string, model: string, percent: number) =>
       };
     },
   });
-
-export const doctorStatusQuery = queryOptions({
-  queryKey: queryKeys.doctorStatus,
-  queryFn: async ({ signal }) => {
-    const body = (await apiGet('/api/doctor/status', signal)) as { doctor?: DoctorStatus | null };
-    return body.doctor ?? null;
-  },
-});
 
 /** `HH:MM` → the next time the clock shows it, as ISO (today, or tomorrow when already past). */
 export function nextOccurrence(time: string, now: Date = new Date()): string | null {
@@ -216,21 +208,12 @@ export function effortLabel(level: string): string {
 export const stopRun = (hostId: string) =>
   apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/run/stop`, {});
 
-export const runDoctor = (hostId: string) =>
-  apiPostAnswer(`/api/hosts/${encodeURIComponent(hostId)}/doctor/run`, {});
-
-export const withdrawRisk = (riskId: string) =>
-  apiPostAnswer(`/api/risks/${encodeURIComponent(riskId)}/withdraw`, {});
-
 export const stopCounterpoint = () => apiPostAnswer('/api/stop', {});
 
 /** Plain words for what the run is doing now. */
 export function activityText(now: RunActivity): string {
   const parts: string[] = [];
   switch (now.phase) {
-    case 'doctor':
-      parts.push('Checking the sandbox again (claude was updated)');
-      break;
     case 'calibrating':
       parts.push("Learning the model's context window");
       break;
@@ -327,6 +310,32 @@ export interface ReportChange {
     tail: string | null;
     logPath: string;
   } | null;
+  gates?: Array<{ gate: string; attempt: number; verdict: string | null }>;
+  testShare?: TestShare | null;
+}
+
+const GATE_WORD: Record<string, string> = {
+  pass: 'passed',
+  fail: 'failed',
+  skipped: 'skipped',
+  'not-run': 'not run',
+};
+
+/** "Gates (attempt 2): types passed · related skipped · suite not run", or null. */
+export function gatesText(change: Pick<ReportChange, 'gates'>): string | null {
+  const gates = change.gates ?? [];
+  const first = gates[0];
+  if (first === undefined) return null;
+  const words = gates.map((g) => `${g.gate} ${GATE_WORD[g.verdict ?? ''] ?? 'running'}`);
+  return `Gates (attempt ${first.attempt}): ${words.join(' · ')}`;
+}
+
+/** "Tests 44% of the change, budget 30%, over budget", or null when not measured. */
+export function testShareText(change: Pick<ReportChange, 'testShare'>): string | null {
+  const share = change.testShare;
+  if (share === undefined || share === null) return null;
+  const over = share.percent > share.budget;
+  return `Tests ${share.percent}% of the change, budget ${share.budget}%${over ? ', over budget' : ''}`;
 }
 
 export interface RunReport {

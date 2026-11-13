@@ -28,9 +28,6 @@ import {
   InvalidIdError,
   isChangeId,
   isHostId,
-  PROBE_CANARY_RE,
-  PROBE_GIT_ARTIFACT_RE,
-  PROBE_NONCE_RE,
 } from '../../src/core/ids.ts';
 import {
   commitAll,
@@ -44,8 +41,6 @@ import {
 afterAll(() => {
   removeScratchDirs();
 });
-
-const HEX32 = '0123456789abcdef0123456789abcdef';
 
 // ---------------------------------------------------------------------------------------------
 // ids
@@ -164,39 +159,6 @@ describe('hostIdFromName', () => {
   );
 });
 
-describe('sandbox-probe artifact names', () => {
-  it.each([
-    [HEX32, true],
-    [HEX32.slice(1), false],
-    [HEX32.toUpperCase(), false],
-    [`${HEX32}0`, false],
-  ])('PROBE_NONCE_RE %j -> %s', (value, ok) => {
-    expect(PROBE_NONCE_RE.test(value)).toBe(ok);
-  });
-
-  it.each([
-    [`.cp-canary-${HEX32}`, true],
-    [`.cp-canary-${HEX32.slice(1)}`, false],
-    [`.cp-canary-${HEX32.toUpperCase()}`, false],
-    [`cp-canary-${HEX32}`, false],
-    [`.cp-canary-${HEX32}x`, false],
-  ])('PROBE_CANARY_RE %j -> %s', (value, ok) => {
-    expect(PROBE_CANARY_RE.test(value)).toBe(ok);
-  });
-
-  it.each([
-    [`cp-${HEX32}`, true],
-    [`cp-${HEX32}-w`, true],
-    ['pre-commit', false],
-    ['cp-x', false],
-    ['exclude', false],
-    [`cp-${HEX32}-x`, false],
-    [`cp-${HEX32.toUpperCase()}`, false],
-  ])('PROBE_GIT_ARTIFACT_RE %j -> %s', (value, ok) => {
-    expect(PROBE_GIT_ARTIFACT_RE.test(value)).toBe(ok);
-  });
-});
-
 // ---------------------------------------------------------------------------------------------
 // home
 // ---------------------------------------------------------------------------------------------
@@ -285,7 +247,6 @@ describe('homePaths and hostDir', () => {
       token: '/Volumes/Dock/cp/token',
       logsDir: '/Volumes/Dock/cp/logs',
       daemonLog: '/Volumes/Dock/cp/logs/daemon.log',
-      trustDir: '/Volumes/Dock/cp/trust',
       hostsDir: '/Volumes/Dock/cp/hosts',
       tmpDir: '/Volumes/Dock/cp/tmp',
     });

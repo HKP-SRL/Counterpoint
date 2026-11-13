@@ -51,11 +51,11 @@ import {
 } from '../core/host/host-config.ts';
 import { isChangeId } from '../core/ids.ts';
 import type { ApprovalState, Runway } from '../core/runway/runway.ts';
-import { buildAgentSandboxSettings } from '../core/security/sandbox-settings.ts';
 import type { Store } from '../core/store/db.ts';
 import {
   activeRun,
   addRunChangeFlags,
+  addRunNotice,
   builderSessionCount,
   endRun,
   getRun,
@@ -72,11 +72,12 @@ import {
   recordFailedAttempt,
   runChangeHandoffPath,
   runChangeTicks,
+  type StoredTestShare,
   setRunStopping,
   updateRunChange,
 } from '../core/store/runs.ts';
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
-import { protectedPathsFor } from '../doctor/run.ts';
+import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
 import {
   type BuilderSessionResult,
   generatedHandoff,
@@ -84,7 +85,6 @@ import {
 } from './builder-session.ts';
 import { afterGateRound, runGateRound } from './gates.ts';
 import {
-  type DoctorGate,
   type Governor,
   GovernorRefusal,
   governedRunner,
@@ -92,8 +92,9 @@ import {
   transientBackoffMs,
 } from './governor.ts';
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
+import { type OwnerEnv, readOwnerEnv } from './owner-env.ts';
 import { builderPrompt, type GateFailure } from './prompt.ts';
-import { blocksMerge, checkProtectedPaths } from './protected-paths.ts';
+import { parseQuestions } from './questions.ts';
 import {
   createServiceSession,
   describeMissingPrograms,
@@ -101,8 +102,9 @@ import {
   missingServicePrograms,
 } from './services.ts';
 import { commitSession, type SessionCommit } from './session-commit.ts';
+import { describeMissingTools, missingRunTools } from './tools.ts';
 import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
-import { prepareWorktree, releaseWorktree, WorktreeRefusal, worktreePathFor } from './worktrees.ts';
+import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.ts';
 
 /** The longest one builder session may run. */
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -165,6 +167,10 @@ export interface RunView {
       previewUrl: string | null;
       /** The branch edits the host's planning files: its PR is not offered for merge. */
       notForMerge: boolean;
+      /** How much of the built change is tests, against the budget; null before it is built. */
+      testShare: StoredTestShare | null;
+      /** Tests are a larger share of the change than the budget (advice, never a failure). */
+      overBudget: boolean;
     }
   >;
   /** What the run is doing right now (only while it runs). */
@@ -175,15 +181,7 @@ export interface RunView {
 
 export interface RunActivity {
   change: string | null;
-  phase:
-    | 'doctor'
-    | 'calibrating'
-    | 'preparing'
-    | 'session'
-    | 'gates'
-    | 'delivering'
-    | 'waiting'
-    | 'stopping';
+  phase: 'calibrating' | 'preparing' | 'session' | 'gates' | 'delivering' | 'waiting' | 'stopping';
   session?: number;
   attempt?: number;
   gate?: string;
@@ -210,7 +208,7 @@ export interface DeliverContext {
   db: Store;
   hostId: string;
   host: HostContext;
-  /** The host config at the approved base (gates, preview). */
+  /** The host config at the build's base commit (gates, preview). */
   config: HostConfig;
   runId: string;
   runChangeId: number;
@@ -221,6 +219,10 @@ export interface DeliverContext {
   changeDir: string;
   flags: RunChangeFlag[];
   signal: AbortSignal;
+  /** The run's environment (the owner's): `gh` and the push run with it. */
+  env: Readonly<Record<string, string>>;
+  /** How much of the change is tests, against the host's budget (gates: Test budget). */
+  testShare: StoredTestShare | null;
 }
 
 export interface OrchestratorOptions {
@@ -232,13 +234,10 @@ export interface OrchestratorOptions {
     state(runtime: RunHost, changeId: string): Promise<ApprovalState>;
   };
   governor: Governor;
-  doctorGate: DoctorGate;
-  /** A runner for the claude installed now (resolved anew for each spawn). */
-  runnerFactory: () => AgentRunner;
-  /** Called with the installed version before each spawn (the doctor gate reads it). */
-  setInstalledVersion: (version: string | null) => void;
-  /** Runs doctor for the host through the governor; true when its verdict passes. */
-  runDoctor: (hostId: string, signal: AbortSignal) => Promise<{ passed: boolean; detail: string }>;
+  /** A runner for the claude installed now on the run's PATH (resolved anew for each spawn). */
+  runnerFactory: (env: Readonly<Record<string, string>>) => AgentRunner;
+  /** Reads the owner's environment at run start (default: their login shell, D-2). */
+  ownerEnv?: () => Promise<OwnerEnv>;
   consolePort: number;
   /** Tells open consoles something about the run changed (ids only). */
   publish: (hostId: string, payload: Record<string, unknown>) => void;
@@ -263,11 +262,16 @@ export interface OrchestratorOptions {
   /** Seams for tests. */
   startBuilderSession?: typeof startBuilderSession;
   runGateRound?: typeof runGateRound;
-  missingServicePrograms?: (config: HostConfig) => MissingServiceProgram[];
+  missingServicePrograms?: (
+    config: HostConfig,
+    env: Readonly<Record<string, string>>,
+  ) => MissingServiceProgram[];
+  missingRunTools?: (env: Readonly<Record<string, string>>) => string[];
   commitSession?: typeof commitSession;
   prepareWorktree?: typeof prepareWorktree;
   calibrateWindow?: typeof calibrateWindow;
-  checkProtectedPaths?: typeof checkProtectedPaths;
+  planningEdits?: typeof planningEdits;
+  measureTestShare?: typeof measureTestShare;
 }
 
 /** Why the loop stops early. */
@@ -309,6 +313,8 @@ function tasksLeft(open: readonly string[]): string {
 }
 
 const MAX_NOTE_IN_REASON = 1500;
+/** How a change skipped for a parked dependency starts its reason (the run report shows it). */
+const WAITS_ON = 'Waits on ';
 
 /** A builder's note, trimmed and capped for a parked reason (Needs You, the run report). */
 function clipNote(text: string): string {
@@ -338,6 +344,8 @@ interface ActiveRun {
   previews: Promise<void>[];
   /** Aborted when the owner stops the run: the lookups end at once. */
   previewStop: AbortController;
+  /** The owner's environment, read at run start: every session, gate and service uses it. */
+  env: Readonly<Record<string, string>>;
 }
 
 export class Orchestrator {
@@ -389,8 +397,6 @@ export class Orchestrator {
     if (this.#active !== null || activeRun(this.#o.db) !== undefined) {
       return { ok: false, status: 409, error: 'A run is already going. Stop it first.' };
     }
-    const gate = this.#o.doctorGate(hostId);
-    if (!gate.ok && gate.rerun !== true) return { ok: false, status: 409, error: gate.reason };
 
     const runway = await this.#o.approvals.runway(runtime);
     const onRunway = new Set(runway.onRunway.map((entry) => entry.changeId));
@@ -400,7 +406,7 @@ export class Orchestrator {
       return {
         ok: false,
         status: 409,
-        error: `Not on the runway now: ${off.join(', ')}. Only approved changes whose approval verifies can build.`,
+        error: `Not on the runway now: ${off.join(', ')}. Only approved changes can build.`,
       };
     }
     if (chosen.length === 0) return { ok: false, status: 409, error: 'The runway is empty.' };
@@ -488,6 +494,8 @@ export class Orchestrator {
         prUrl: change.prUrl,
         previewUrl: change.previewUrl,
         notForMerge: blocksMerge(change.flags),
+        testShare: change.testShare,
+        overBudget: change.testShare !== null && change.testShare.percent > change.testShare.budget,
       })),
       now: active?.activity ?? null,
       hold: run.state === 'ended' ? null : this.#o.governor.holdUntil(),
@@ -533,6 +541,7 @@ export class Orchestrator {
       done: Promise.resolve(),
       previews: [],
       previewStop: new AbortController(),
+      env: {},
     };
     if (stopReason !== null) active.stop.abort(new Error('The run is stopping.'));
     if (stopAt !== null) {
@@ -582,12 +591,48 @@ export class Orchestrator {
       if (run === undefined) throw new RunEnd('error', 'The run record is gone.');
       const settings = storedSettings(run.settings);
 
-      await this.#ensureDoctor(active);
-      const window = await this.#window(active, runtime, settings);
+      // The owner's environment, read now: a tool installed since the daemon started is found.
+      const owner = await (this.#o.ownerEnv ?? readOwnerEnv)();
+      active.env = owner.env;
+      if (owner.fallback !== null) {
+        addRunNotice(db, active.id, owner.fallback);
+        this.#publish(active.hostId, { runId: active.id, notice: true });
+      }
+
+      // What every session needs, checked before the first one: the run's tools on the owner's
+      // PATH, a readable host config, and its gates' service programs. Any of them missing is the
+      // machine's problem, not a change's: the run ends before any session and says which.
+      const tools = (this.#o.missingRunTools ?? missingRunTools)(active.env);
+      if (tools.length > 0) throw new RunEnd('error', describeMissingTools(tools));
+      await this.#checkConfig(active, runtime);
+
+      const window = await this.#window(active, settings);
       for (const change of listRunChanges(db, active.id)) {
         if (change.state !== 'queued' && change.state !== 'building') continue;
         if (active.stop.signal.aborted) break;
-        await this.#buildChange(active, runtime, settings, window, change);
+        try {
+          await this.#buildChange(active, runtime, settings, window, change);
+        } catch (error) {
+          if (error instanceof RunEnd) throw error;
+          // Something went wrong in Counterpoint for this change only: it parks with the error,
+          // and the run goes on with the rest (a parked change never ends the run).
+          this.#o.log?.('change-failed', {
+            runId: active.id,
+            change: change.change,
+            message: (error as Error).message,
+          });
+          parkRunChange(
+            db,
+            change.id,
+            `Counterpoint failed while building it: ${(error as Error).message}`,
+            this.#now(),
+          );
+          this.#publish(active.hostId, {
+            runId: active.id,
+            change: change.change,
+            state: 'parked',
+          });
+        }
       }
       if (active.stopReason !== null) {
         end = {
@@ -659,46 +704,25 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * The claude installed now: a runner for it, and its version. When the last doctor report checked
-   * another version, doctor runs again (governed) and the run goes on only if it passes.
-   */
+  /** The claude installed now on the run's PATH: a runner for it, and its version. */
   async #installed(active: ActiveRun): Promise<{ runner: AgentRunner; version: string }> {
-    const runner = this.#o.runnerFactory();
+    let runner: AgentRunner;
+    try {
+      runner = this.#o.runnerFactory(active.env);
+    } catch (error) {
+      throw new RunEnd('error', `claude could not be found: ${(error as Error).message}`);
+    }
     const version = (await runner.version?.()) ?? null;
-    this.#o.setInstalledVersion(version);
     if (version === null)
       throw new RunEnd('error', 'claude could not be run (claude --version failed).');
-    await this.#ensureDoctor(active);
     return { runner, version };
-  }
-
-  async #ensureDoctor(active: ActiveRun): Promise<void> {
-    const gate = this.#o.doctorGate(active.hostId);
-    if (gate.ok) return;
-    if (gate.rerun !== true) throw new RunEnd('refused', gate.reason);
-    this.#activity(active, {
-      change: active.activity?.change ?? null,
-      phase: 'doctor',
-      detail: 'claude was updated: checking the sandbox again',
-    });
-    const result = await this.#o.runDoctor(active.hostId, active.stop.signal);
-    if (active.stop.signal.aborted)
-      throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped while doctor ran.');
-    const again = this.#o.doctorGate(active.hostId);
-    if (!result.passed || !again.ok) {
-      throw new RunEnd(
-        'refused',
-        `claude was updated and doctor did not pass on the new version: ${result.detail}`,
-      );
-    }
   }
 
   /**
    * The model's window on the installed claude: learned, or from a calibration session. Stored
    * with the run's settings (with the claude version), so the console shows the budget as tokens.
    */
-  async #window(active: ActiveRun, runtime: RunHost, settings: StoredSettings): Promise<number> {
+  async #window(active: ActiveRun, settings: StoredSettings): Promise<number> {
     const { runner, version } = await this.#installed(active);
     const normalized = normalizeClaudeVersion(version);
     const record = (windowTokens: number): number => {
@@ -716,8 +740,6 @@ export class Orchestrator {
     });
     const dir = join(this.#runDir(active), 'calibration');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const paths = protectedPathsFor({ home: this.#o.home, host: runtime.host });
-    const profile = buildAgentSandboxSettings({ ...paths, workdir: dir });
     try {
       return record(
         await (this.#o.calibrateWindow ?? calibrateWindow)({
@@ -730,18 +752,15 @@ export class Orchestrator {
           hostId: active.hostId,
           model: settings.model,
           claudeVersion: normalized,
-          settings: profile.settings,
-          allowedTools: profile.allowedTools,
           cwd: dir,
           rawLogPath: join(dir, 'session.jsonl'),
           processTag: randomBytes(16).toString('hex'),
         }),
       );
     } catch (error) {
-      if (error instanceof GovernorRefusal && error.kind === 'aborted') {
+      if (error instanceof GovernorRefusal) {
         throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the first build.');
       }
-      if (error instanceof GovernorRefusal) throw new RunEnd('refused', error.message);
       throw new RunEnd(
         'error',
         `The model's context window could not be learned: ${(error as Error).message}`,
@@ -753,22 +772,53 @@ export class Orchestrator {
     return join(hostDir(this.#o.home, active.hostId), 'runs', active.id);
   }
 
-  /** True when the change's approval still verifies, on the runway, from the same signed commit. */
-  async #stillApproved(
-    runtime: RunHost,
-    change: string,
-    approvalCommit: string | null,
-  ): Promise<string | null> {
+  /** Null while the change is on the runway; otherwise why it is not (in a sentence). */
+  async #offRunway(runtime: RunHost, change: string): Promise<string | null> {
     const state = await this.#o.approvals.state(runtime, change);
-    if (state.state !== 'on-runway') {
-      return state.state === 'changed'
-        ? 'Its approved version changed on the base branch.'
-        : `Its approval no longer verifies (${state.state === 'invalid' ? state.reason : state.state}).`;
+    if (state.state === 'on-runway') return null;
+    switch (state.reason) {
+      case 'not-approved':
+        return 'Its approval was withdrawn.';
+      case 'built':
+        return 'It is built already.';
+      case 'unreadable':
+        return 'Its planning files cannot be read at the base-branch tip.';
+      case 'missing':
+        return 'It is no longer in the planning files at the base-branch tip.';
     }
-    if (approvalCommit !== null && state.commit !== approvalCommit) {
-      return 'It was approved again during the run; start a new run to build the new approval.';
+  }
+
+  /**
+   * The host config at the base-branch tip must be readable and its gates' service programs
+   * runnable from the run's environment; otherwise the run ends before any session.
+   */
+  async #checkConfig(active: ActiveRun, runtime: RunHost): Promise<void> {
+    const tip = await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`);
+    if (tip === null) {
+      throw new RunEnd('error', `The base branch ${runtime.host.baseBranch} cannot be read.`);
     }
-    return null;
+    let config: HostConfig;
+    try {
+      config = await readHostConfig(runtime.reader, tip);
+    } catch (error) {
+      if (!(error instanceof HostConfigError)) throw error;
+      throw new RunEnd('error', `The host config cannot be read: ${error.message}`);
+    }
+    const missing = (this.#o.missingServicePrograms ?? missingServicePrograms)(config, active.env);
+    if (missing.length > 0) throw new RunEnd('error', describeMissingPrograms(missing));
+  }
+
+  /** The changes of this run that a dependent must wait on: parked, or skipped for one. */
+  #blockedInRun(runId: string): Set<string> {
+    return new Set(
+      listRunChanges(this.#o.db, runId)
+        .filter(
+          (row) =>
+            row.state === 'parked' ||
+            (row.state === 'skipped' && (row.reason ?? '').startsWith(WAITS_ON)),
+        )
+        .map((row) => row.change),
+    );
   }
 
   async #buildChange(
@@ -786,32 +836,41 @@ export class Orchestrator {
     this.#activity(active, { change: row.change, phase: 'preparing' });
     this.#o.beforeBuild?.(active.hostId, row.change);
 
-    // 1. The approval, now.
-    const state = await this.#o.approvals.state(runtime, row.change);
-    if (state.state !== 'on-runway') {
-      const why = (await this.#stillApproved(runtime, row.change, null)) ?? 'Not on the runway.';
-      updateRunChange(db, row.id, { state: 'skipped', reason: why, endedAt: this.#now() });
+    // 1. The approval, now: only a change on the runway builds.
+    const off = await this.#offRunway(runtime, row.change);
+    if (off !== null) {
+      updateRunChange(db, row.id, { state: 'skipped', reason: off, endedAt: this.#now() });
+      this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'skipped' });
       return;
     }
-    if (row.approvalCommit !== null && state.commit !== row.approvalCommit) {
+    // The build starts from the base-branch tip now (D-5); a change resumed after a crash keeps
+    // the commit its build started from.
+    const baseCommit =
+      row.baseCommit ?? (await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`));
+    if (baseCommit === null) {
+      throw new RunEnd('error', `The base branch ${runtime.host.baseBranch} cannot be read.`);
+    }
+    const snapshot = await adapter.snapshot(runtime.reader, baseCommit);
+    const facts = findChange(snapshot.changes, row.change);
+    if (facts === undefined || facts.unreadable !== null) {
       updateRunChange(db, row.id, {
         state: 'skipped',
-        reason:
-          'It was approved again since this run began; start a new run to build the new approval.',
+        reason: 'Its planning files cannot be read at the base-branch tip.',
         endedAt: this.#now(),
       });
       return;
     }
-    const baseCommit = state.statement.base.commit;
-    const snapshot = await adapter.snapshot(runtime.reader, baseCommit);
-    const facts = findChange(snapshot.changes, row.change);
-    if (facts === undefined || facts === null || facts.unreadable !== null) {
-      parkRunChange(
-        db,
-        row.id,
-        'Its planning files cannot be read at the approved base commit.',
-        this.#now(),
-      );
+    // A change that depends on one that parked in this run waits for it (build-runs: A run ends
+    // only when it cannot go on).
+    const blocked = this.#blockedInRun(active.id);
+    const waitsOn = facts.dependsOn.filter((dep) => blocked.has(dep));
+    if (waitsOn.length > 0) {
+      updateRunChange(db, row.id, {
+        state: 'skipped',
+        reason: `${WAITS_ON}${waitsOn.join(', ')}, which did not get built in this run.`,
+        endedAt: this.#now(),
+      });
+      this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'skipped' });
       return;
     }
     let config: Awaited<ReturnType<typeof readHostConfig>>;
@@ -819,47 +878,33 @@ export class Orchestrator {
       config = await readHostConfig(runtime.reader, baseCommit);
     } catch (error) {
       if (!(error instanceof HostConfigError)) throw error;
-      parkRunChange(db, row.id, error.message, this.#now());
-      return;
+      throw new RunEnd('error', `The host config cannot be read: ${error.message}`);
     }
     // Every service program must be runnable before a session is spent: a missing one is the
     // machine's problem (every change needing it would fail), so the run stops and says why.
-    const missing = (this.#o.missingServicePrograms ?? missingServicePrograms)(config);
+    const missing = (this.#o.missingServicePrograms ?? missingServicePrograms)(config, active.env);
     if (missing.length > 0) throw new RunEnd('error', describeMissingPrograms(missing));
 
     // 2. The worktree.
-    const paths = protectedPathsFor({ home: this.#o.home, host: runtime.host });
     let worktree: string;
     let branch: string;
     try {
       const prepared = await (this.#o.prepareWorktree ?? prepareWorktree)({
-        home: this.#o.home,
         host: runtime.host,
         change: row.change,
         baseCommit,
         runId: active.id,
-        launchSettings: buildAgentSandboxSettings({
-          ...paths,
-          workdir: worktreePathFor(runtime.host.root, row.change),
-        }).settings,
-        homeDir: paths.homeDir,
         clone: config.worktree.clone,
       });
       worktree = prepared.path;
       branch = prepared.branch;
     } catch (error) {
       if (!(error instanceof WorktreeRefusal)) throw error;
-      // The host's integrity or project settings apply to every change: the run cannot go on.
-      if (error.reason === 'integrity' || error.reason === 'project-settings') {
-        parkRunChange(db, row.id, error.message, this.#now());
-        throw new RunEnd('error', error.message);
-      }
       parkRunChange(db, row.id, error.message, this.#now());
       return;
     }
     updateRunChange(db, row.id, {
       state: 'building',
-      approvalCommit: state.commit,
       baseCommit,
       branch,
       worktree,
@@ -867,7 +912,7 @@ export class Orchestrator {
     });
     this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'building' });
 
-    const services = createServiceSession({ config, worktree });
+    const services = createServiceSession({ config, worktree, parentEnv: active.env });
     let feedback: GateFailure | null = null;
     try {
       for (;;) {
@@ -883,6 +928,7 @@ export class Orchestrator {
           attempt,
           feedback,
           gates: config.gates,
+          testBudget: config.tests.budget,
         });
         if (built === 'stopped' || built === 'left-runway' || built === 'parked') return;
 
@@ -895,10 +941,10 @@ export class Orchestrator {
           attempt,
           config,
           worktree,
+          baseCommit,
           changeDir,
-          protectedPaths: paths,
-          consolePort: this.#o.consolePort,
           services,
+          parentEnv: active.env,
           signal: active.stop.signal,
           onGate: (event) => {
             if (event.phase === 'start') {
@@ -922,17 +968,33 @@ export class Orchestrator {
           continue;
         }
 
-        // 5. Green: the protected-path check, then delivery.
+        // 5. Green: the planning-file check, then delivery.
         this.#activity(active, { change: row.change, phase: 'delivering' });
         const tip = (await runGit(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
-        const flags = await (this.#o.checkProtectedPaths ?? checkProtectedPaths)({
+        const flags = await (this.#o.planningEdits ?? planningEdits)({
           repo: worktree,
           base: baseCommit,
           tip,
           isPlanningPath: (path) => adapter.isPlanningPath(path),
-          hostGlobs: config.protected,
         });
         addRunChangeFlags(db, row.id, flags);
+        // The test share: measured, shown, never a reason to hold the change back (D-10).
+        let testShare: StoredTestShare | null = null;
+        try {
+          const share = await (this.#o.measureTestShare ?? measureTestShare)({
+            repo: worktree,
+            base: baseCommit,
+            tip,
+            isPlanningPath: (path) => adapter.isPlanningPath(path),
+          });
+          testShare = { ...share, budget: config.tests.budget };
+          updateRunChange(db, row.id, { testShare });
+        } catch (error) {
+          this.#o.log?.('test-share-failed', {
+            change: row.change,
+            message: (error as Error).message,
+          });
+        }
         let delivered: Awaited<ReturnType<NonNullable<OrchestratorOptions['deliver']>>>;
         try {
           delivered = (await this.#o.deliver?.({
@@ -949,6 +1011,8 @@ export class Orchestrator {
             changeDir,
             flags: getRunChange(db, row.id)?.flags ?? flags,
             signal: active.stop.signal,
+            env: active.env,
+            testShare,
           })) ?? { prUrl: null, previewUrl: null };
         } catch (error) {
           this.#o.log?.('delivery-failed', {
@@ -1020,6 +1084,7 @@ export class Orchestrator {
       attempt: number;
       feedback: GateFailure | null;
       gates: readonly GateConfig[];
+      testBudget: number;
     },
   ): Promise<'built' | 'stopped' | 'left-runway' | 'parked'> {
     const { db } = this.#o;
@@ -1031,15 +1096,12 @@ export class Orchestrator {
     let open: string[] | null = null;
     for (let inAttempt = 0; inAttempt < settings.sessionsPerAttempt; inAttempt += 1) {
       if (active.stop.signal.aborted) return 'stopped';
-      const left = await this.#stillApproved(
-        runtime,
-        c.row.change,
-        getRunChange(db, c.row.id)?.approvalCommit ?? null,
-      );
+      // A change the owner withdrew stops here, at its next handoff; the branch keeps the work.
+      const left = await this.#offRunway(runtime, c.row.change);
       if (left !== null) {
         updateRunChange(db, c.row.id, {
           state: 'skipped',
-          reason: `Stopped building: ${left}`,
+          reason: `Stopped building: ${left} The branch ${c.branch} keeps the work so far.`,
           endedAt: this.#now(),
         });
         this.#publish(active.hostId, { runId: active.id, change: c.row.change, state: 'skipped' });
@@ -1060,9 +1122,8 @@ export class Orchestrator {
         gateFailure: gateFeedback,
         doneTasks: runChangeTicks(db, c.row.id),
         gates: c.gates,
+        testBudget: c.testBudget,
       });
-      const paths = protectedPathsFor({ home: this.#o.home, host: runtime.host });
-      const profile = buildAgentSandboxSettings({ ...paths, workdir: c.worktree });
       const processTag = randomBytes(16).toString('hex');
       const rawLogPath = join(c.changeDir, `session-${number}.jsonl`);
       const sessionId = insertAgentSession(db, {
@@ -1092,10 +1153,9 @@ export class Orchestrator {
             kind: 'builder',
             signal: active.stop.signal,
           }),
-          settings: profile.settings,
-          allowedTools: profile.allowedTools,
           model: settings.model,
           cwd: c.worktree,
+          env: active.env,
           rawLogPath,
           processTag,
           prompt,
@@ -1124,8 +1184,7 @@ export class Orchestrator {
         result = await session.done;
       } catch (error) {
         endAgentSession(db, sessionId, { reason: 'not-started', peakContextTokens: 0 });
-        if (error instanceof GovernorRefusal && error.kind === 'aborted') return 'stopped';
-        if (error instanceof GovernorRefusal) throw new RunEnd('refused', error.message);
+        if (error instanceof GovernorRefusal) return 'stopped';
         throw error;
       } finally {
         active.wrapUp = null;
@@ -1183,10 +1242,17 @@ export class Orchestrator {
       // The session ended by itself. The change is built only when no build task is left open.
       if (done === null || open === null || open.length === 0) return 'built';
       if (done.blocked !== null) {
+        // The tasks left wait on the owner: an `Owner:` step, or a question the builder asked
+        // before doing something it cannot undo (build-runs: Ask first before what cannot be
+        // undone). Needs You shows the question with its options.
+        const questions = parseQuestions(done.blocked.text);
+        if (questions.length > 0) updateRunChange(db, c.row.id, { questions });
         return this.#parkOpen(
           active,
           c,
-          `${tasksLeft(open)} still open, and the builder says ${open.length === 1 ? 'it' : 'they'} cannot be done in a build session:\n${clipNote(done.blocked.text)}\n`,
+          questions.length > 0
+            ? `${tasksLeft(open)} still open and wait on your answer to ${questions.length === 1 ? 'a question' : `${questions.length} questions`}.`
+            : `${tasksLeft(open)} still open and wait on you:\n${clipNote(done.blocked.text)}\n`,
         );
       }
       const progressed = done.commit !== null || done.ticked.length > ticksBefore;

@@ -2,18 +2,13 @@
 // preview starts when the owner opens it, never overnight).
 //
 // For a host without preview deploys, a green change's PR links to a console page. From there
-// the owner starts the host config's preview command (read at the change's approved base) in the
+// the owner starts the host config's preview command (read at the change's base commit) in the
 // change's worktree, on a free loopback port from 4174 up, and stops it again. Nothing is kept
 // across a daemon restart: the page simply offers Start again.
 //
-// The preview runs builder-written code, so it runs like a gate: under srt with the gate profile
-// (writes only the worktree and a temp dir, reads nothing protected, network only to the
-// config's listed ports), detached in its own process group, tagged for the sweep. The one
-// difference is local binding, which a server needs. Claude Code's docs and a live check
-// (2026-11-11, srt 0.0.82) agree that binding also lets the process connect to any loopback port,
-// the console's included; the console still demands the owner's session cookie and Origin, and a
-// preview only runs while the owner has it started. Starting a build of the change stops its
-// preview first.
+// The preview runs like a gate: as an ordinary child process with the owner's permissions and
+// environment (their login shell's, read when the preview starts), detached in its own process
+// group, tagged for the sweep. Starting a build of the change stops its preview first.
 import { spawn } from 'node:child_process';
 import {
   closeSync,
@@ -22,7 +17,6 @@ import {
   openSync,
   realpathSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { connect, createServer } from 'node:net';
@@ -33,10 +27,9 @@ import { HostConfigError, readHostConfig } from '../core/host/host-config.ts';
 import { HOST_ID_RE, isChangeId } from '../core/ids.ts';
 import type { Store } from '../core/store/db.ts';
 import { latestBuiltRunChange } from '../core/store/runs.ts';
-import { protectedPathsFor } from '../doctor/run.ts';
 import { GATE_TAG_ENV, gateEnv, lastLines, newGateTag, stripTerminal } from './gate-runner.ts';
-import { buildGateSandboxSettings, gateArgv } from './gate-sandbox.ts';
 import type { RunHost } from './orchestrator.ts';
+import { readOwnerEnv } from './owner-env.ts';
 import { sweepTagged } from './process-sweep.ts';
 import { worktreePathFor } from './worktrees.ts';
 
@@ -86,11 +79,8 @@ export interface LocalPreviewOptions {
   /** Seams for tests. */
   isPortFree?: (port: number) => Promise<boolean>;
   isListening?: (port: number) => Promise<boolean>;
-  argv?: (
-    settingsPath: string,
-    command: readonly string[],
-    env: Record<string, string>,
-  ) => string[];
+  /** The owner's environment (default: read from their login shell when a preview starts). */
+  env?: () => Promise<Readonly<Record<string, string>>>;
   readyTimeoutMs?: number;
   now?: () => number;
 }
@@ -212,7 +202,7 @@ export class LocalPreviews {
       return {
         ok: false,
         status: 422,
-        error: `The host config at the approved base could not be read: ${message}`,
+        error: `The host config at the build's base commit could not be read: ${message}`,
       };
     }
     if (preview === null) {
@@ -228,27 +218,10 @@ export class LocalPreviews {
 
     const scratch = join(hostDir(this.#o.home, hostId), 'previews', change);
     rmSync(scratch, { recursive: true, force: true });
-    const tmpDir = join(scratch, 'tmp');
-    mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-    const settings = buildGateSandboxSettings({
-      protectedPaths: protectedPathsFor({ home: this.#o.home, host: runtime.host }),
-      workdir: worktree,
-      tmpDir,
-      ports: preview.ports,
-      consolePort: this.#o.consolePort,
-    });
-    const settingsPath = join(scratch, 'preview-settings.json');
-    writeFileSync(
-      settingsPath,
-      JSON.stringify({ ...settings, network: { ...settings.network, allowLocalBinding: true } }),
-      { mode: 0o600, flag: 'wx' },
-    );
-    const command = preview.command.map((arg) => arg.replaceAll('{port}', String(port)));
+    mkdirSync(scratch, { recursive: true, mode: 0o700 });
+    const argv = preview.command.map((arg) => arg.replaceAll('{port}', String(port)));
     const tag = newGateTag();
-    const argv = (this.#o.argv ?? gateArgv)(settingsPath, command, {
-      TMPDIR: tmpDir,
-      PORT: String(port),
-    });
+    const ownerEnv = await (this.#o.env ?? (async () => (await readOwnerEnv()).env))();
     const log = openSync(join(scratch, 'preview.log'), 'a', 0o600);
     const status: PreviewStatus = {
       hostId,
@@ -269,7 +242,7 @@ export class LocalPreviews {
     };
     const child = spawn(argv[0] as string, argv.slice(1), {
       cwd: worktree,
-      env: gateEnv(process.env, {}, tag),
+      env: gateEnv(ownerEnv, { PORT: String(port) }, tag),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });

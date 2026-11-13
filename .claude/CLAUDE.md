@@ -13,7 +13,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 - **Agent runtime**: Claude Code only — spawn the owner's own `claude -p` binary and parse `stream-json` behind one swappable `AgentRunner` port (Agent SDK only as a later second implementation); sessions run non-`--bare` so subscription login and hooks work
 - **UI**: Counterpoint's console is React 19 + Astryx (`@astryxdesign/core`, MIT, beta 0.7.x, StyleX prebuilt CSS + themes) — no shadcn, no Tailwind; served as a prebuilt SPA by the local server, live updates over SSE
 - **Framework coupling**: core never knows which SDD framework is used — everything framework-specific goes through an adapter
-- **Security**: signing key and start/stop token must be unusable/unreadable by agents; approval key never cached
+- **Acts as the owner**: agent sessions, gates and services run with the owner's rights, login environment, tools and network — no sandbox. Approving is one click in the console; nothing is signed. Work reaches the base branch only through a PR the owner merges (decided 2026-11-12, `run-as-owner`)
 - **Isolation**: builds never touch the owner's checkout — worktrees only
 - **UI**: local server, host-agnostic, loopback-only
 - **Context windows**: no hard-coded window sizes; budgets follow the model
@@ -28,8 +28,8 @@ It reads planning truth from the host project's SDD framework through adapters (
 |---|----------|----------|
 | 1 | CLI + local web UI + live updates | One Node >=24 process: **Hono 4 + `@hono/node-server` 2** serving a prebuilt **Vite 8 / React 19 / Tailwind 4 / shadcn** SPA. **SSE** (not WebSocket) for server-to-UI push, plain `POST` for commands. Bound to `127.0.0.1` with Host/Origin checks. |
 | 2 | Driving Claude Code | **Claude Agent SDK for TypeScript (`@anthropic-ai/claude-agent-sdk`, exact-pinned)** behind one internal `AgentRunner` port, pointed at the owner's own `claude` binary via `pathToClaudeCodeExecutable`. Not raw `claude -p` spawning. Context budget is enforced by the orchestrator from per-message usage, not by a model-obeyed hook. |
-| 3 | Git, signing, PRs | Shell out to the real `git` and `gh` with **execa 10** (argument arrays, no shell). No git library. Signature check = `git -c gpg.ssh.allowedSignersFile=<outside-agent-reach> verify-commit` plus a pinned key fingerprint. |
-| 4 | State store | **SQLite via built-in `node:sqlite`** (WAL, STRICT tables, FTS5) for runs, items, attempts, gate results, events, council. **Files** for logs, screenshots, diffs. **Git** (host repo) for anything the owner signs (specs, decisions, approved mocks). |
+| 3 | Git, PRs | Shell out to the real `git` and `gh` with **execa 10** (argument arrays, no shell). No git library. (Signature checks were removed 2026-11-12.) |
+| 4 | State store | **SQLite via built-in `node:sqlite`** (WAL, STRICT tables, FTS5) for runs, items, approvals, attempts, gate results, events, council. **Files** for logs, screenshots, diffs. **Git** (host repo) for planning (specs, decisions, approved mocks). |
 | 5 | Gates | Child processes in their own process group, judged by exit code only, output streamed to a log file plus a tail kept in SQLite. Machine-wide test lock = SQLite exclusive lock (the owner's existing `test-lock.ts` technique). |
 | 6 | Visual gate | **`playwright-core` screenshots + `pixelmatch` 8** (with `pngjs`) as the exit-code check, **structural landmark comparison** as the second check, **vision-model review as advisory only**. Pixel diff needs hi-fi mocks. |
 | 7 | Persona browser agents | **`@playwright/mcp` (exact-pinned) headless + isolated**, passed to the SDK via `mcpServers`. **Not** Claude in Chrome (needs a headed, logged-in real Chrome; unusable unattended). Computer use is not needed. |
@@ -109,7 +109,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 - **Packaging.** Vite builds the SPA in CI into `dist/ui`; the npm package ships it. `npx @alex-profir/counterpoint` runs a server that does `serveStatic` on that folder. No Vite or React at runtime for users.
 - **SSE, not WebSocket.** Every live feature (gate row lighting up, log tail, meeting turns, runway counter, run status) is server-to-UI. Commands (start/stop, pick an option, interject into a meeting, pin a comment) are ordinary `POST`s. SSE gives free reconnection and `Last-Event-ID` replay. Make the SSE `id:` the autoincrement `events.id` from SQLite and a reconnecting UI resumes exactly where it left off with no extra protocol. Hono's `streamSSE()` (`writeSSE({id, event, data})`, `stream.aborted`) covers it. WebSocket would add a protocol, heartbeat and reconnect logic for no gain. `@hono/node-ws` 1.3.1 exists if a bidirectional need appears later (for example a live terminal).
 - **Loopback security (carry the prototype's lessons forward).** The Cena guard in `lib/factory/guard.ts` documents the key point: a Host-header check does not stop non-browser LAN clients, only the socket bind does. So: `serve({ hostname: '127.0.0.1' })` (never `0.0.0.0`, never `localhost` which can resolve to `::1` and v4 differently), plus a Host allowlist (`127.0.0.1:<port>`, `localhost:<port>`) against DNS rebinding, plus an Origin check on every non-GET (`hono/csrf`), plus `hono/secure-headers`. Start/Stop need a token. Bootstrap it by printing a URL with a one-time code that the server exchanges for an `HttpOnly; SameSite=Strict` cookie; keep the raw token in a `0600` file under the Counterpoint home, outside every worktree.
-- **Agents are the threat model.** Agents run as the same OS user and can `curl 127.0.0.1`. The token alone does not stop them. Run agent sessions with the SDK's `sandbox` option (filesystem `denyRead` for the token file, `~/.ssh`, and the Counterpoint home; network restrictions so they cannot reach the Counterpoint port). This is a first-class requirement (PROJECT.md: "Start/Stop protected by a local token agents cannot read"), not hardening.
+- **Agents run as the owner (2026-11-12).** No sandbox: sessions can read the token and reach the console, as the owner's own Claude Code sessions can. The loopback bind, Host/Origin checks and sign-in stay; they guard against web pages, not agents. History: the first slices treated agents as the threat model and sandboxed them; that stopped 4 of 7 Cena runs and was removed (`docs/decisions.md`, Direction).
 - **Mock serving.** Mocks are served from a separate path or port from the console UI so that mock JavaScript cannot touch console cookies (use a different port on `127.0.0.1`, which is a different origin).
 - **Keep the machine awake.** Wrap long runs with `caffeinate -i -w <pid>` on macOS (the prior art does the same).
 
@@ -127,13 +127,12 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Isolation | `--bare`, settings flags | `settingSources: []`, `strictMcpConfig`, `sandbox`, `managedSettings`, `allowedTools`/`disallowedTools` |
 | Install weight | None (uses user's `claude`) | 5 MB JS **plus a ~322 MB platform binary** (optional dependency) unless you point at the user's `claude` |
 
-## 3. Git worktrees, signed-commit verification, PRs
+## 3. Git worktrees and PRs
 
 - **Why not a library.** `isomorphic-git` (1.44.12) is a reimplementation of git that is not known to cover linked worktrees or SSH-signature verification (unverified; not worth testing); `simple-git` (4.0.2) is only a string-building wrapper around the same binary and adds an API surface with a history of command-injection fixes. Plain argument arrays against real git give exact parity with what the owner sees in the terminal, and the prior art (`worktree.sh`) is already expressed in git commands.
 - **Worktrees.** `git worktree add -b <branch> <path> <base>` into a sibling directory outside the repo (`<repo>-worktrees/<phase>`, as `speckit-auto` does; owner may relocate under `/Volumes/Dock`). List with `git worktree list --porcelain -z`. Use `git worktree lock --reason` while a run holds it and `git worktree prune`/`remove` on cleanup. Never run builder git commands in the owner's checkout.
 - **Rebase on conflict.** `git fetch` then `git rebase <base>`; a non-zero exit with unmerged paths hands the worktree to a resolver session, then gates re-run; N failures parks the item.
 - **PRs.** `gh pr create --head <branch> --base <default> --title ... --body-file ...`, `gh pr view --json number,url,headRefOid,mergeable,statusCheckRollup`, `gh pr merge --squash`/`--merge` only after verification. `gh` reuses the owner's existing auth, so Counterpoint stores no GitHub token. `gh` 2.102.0 is installed locally.
-- **Signed approval verification (tested locally against git 2.50.1 with real ed25519 keys):**
 
 ## 4. Durable state: SQLite vs files
 
@@ -141,7 +140,7 @@ It reads planning truth from the host project's SDD framework through adapters (
 |------|-------|-----|
 | Runs, work items, attempts, parking state, gate results, usage figures, run settings, council cards/threads/meetings/turns, pin comments, `events` outbox | **SQLite** | Relational queries ("what is parked", "gate pass rate", "runway length"), transactional state transitions, crash recovery, and an autoincrement `events` table that doubles as the SSE replay log. Plain files make multi-writer updates (builder, server, council all writing) racy; the prototype's `factory/*.yaml` is exactly what PROJECT.md retired. |
 | Gate logs, persona screenshots, diff images, raw SDK event streams | **Files** under `<home>/hosts/<host-id>/runs/<run>/...`; SQLite stores path, size, tail | Large and append-only; the UI needs "last lines one click away", which is a stored tail plus a file link. |
-| Specs, decisions, approved mocks, approval commits, backlog items | **The host git repo** (via the adapter) | The owner signs these; they must be versioned and reviewable. Counterpoint reads planning truth, it does not own it. |
+| Specs, decisions, approved mocks, backlog items | **The host git repo** (via the adapter) | They must be versioned and reviewable. Counterpoint reads planning truth, it does not own it. |
 | Seat definitions, host settings | **Config file in the host repo** (YAML parsed with `yaml`, validated with `zod`) | Reviewable, per-host, committed. |
 
 ## 5. Running gates
@@ -223,7 +222,6 @@ It reads planning truth from the host project's SDD framework through adapters (
 |-------|-----|-------------|
 | `gray-matter` 4.0.3 | Unmaintained since 2023, old `js-yaml`, default JS front-matter engine can execute code; `openspec/` content is agent-written | `remark-frontmatter` + `yaml` |
 | Shell-string process spawning (`exec`, `execa` with `shell: true`, template-string commands) | Injection via branch names, phase titles, comment text | `execFile`-style argument arrays through execa |
-| Repo-local git config for `gpg.ssh.allowedSignersFile` | Agents in the worktree can rewrite it and approve themselves | `-c` flags on the command line, file outside worktrees, pinned fingerprint |
 | A hard-coded context window (the prior art's `CONTEXT_WINDOW_TOKENS=1000000`) | Violates "budgets follow the model"; wrong for other models | `modelUsage[model].contextWindow` / `getContextUsage()` |
 | Model-obeyed "please stop" hooks as the only budget enforcement | The model can ignore or mis-time it | Orchestrator-owned wrap-up turn via `interrupt()` / `streamInput()` |
 | Parsing "limit reached" text for waits | Brittle across CLI versions and locales | Structured `rate_limit_event` and `api_retry` events (regex only as fallback) |
@@ -235,7 +233,6 @@ It reads planning truth from the host project's SDD framework through adapters (
 | Drizzle 0.45 / Prisma for the store | Drizzle 1.0 not stable, no first-class `node:sqlite`; Prisma is heavy and native | Thin repositories over `node:sqlite` |
 | `remark-stringify` round-tripping for write-back | Rewrites the whole document, creating noisy diffs in the host's planning files | Offset-based string splicing guided by mdast positions |
 | `node-pty` for gates | Native addon, complicates `npx`; gates are exit-code-judged and need no TTY | `execa` with piped output |
-| Caching the signing key (ssh-agent, keychain) | Violates "approval key never cached"; lets an agent sign | Passphrase typed in the owner's terminal per approval |
 | Putting runtime state in the host repo as YAML/JSON (`factory/*.yaml` style) | Explicitly out of scope; races, noisy git history | SQLite store plus files |
 
 ## Stack Patterns by Variant

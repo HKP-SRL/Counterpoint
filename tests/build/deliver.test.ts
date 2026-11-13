@@ -4,6 +4,7 @@
 import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { blocksMerge } from '../../src/build/branch-diff.ts';
 import {
   createDeliver,
   DeliveryError,
@@ -17,8 +18,6 @@ import {
   pushCredentials,
   pushTarget,
 } from '../../src/build/deliver.ts';
-import { blocksMerge } from '../../src/build/protected-paths.ts';
-import { snapshotIntegrity, writeBaseline } from '../../src/core/approvals/integrity.ts';
 import type { ChangeFacts } from '../../src/core/framework/port.ts';
 import { runGit } from '../../src/core/git/run.ts';
 import { EMPTY_HOST_CONFIG } from '../../src/core/host/host-config.ts';
@@ -85,11 +84,12 @@ describe('push credentials', () => {
     });
   });
 
-  it('runs gh with its config and keychain only, never a prompt', () => {
-    const env = ghEnv({ PATH: '/bin', HOME: '/Users/o', GH_TOKEN: 'x', SSH_AUTH_SOCK: '/s' });
+  it("runs gh with the run's environment (the owner's), never a prompt", () => {
+    const env = ghEnv({ PATH: '/bin', HOME: '/Users/o', GH_TOKEN: 'x', COUNTERPOINT_HOME: '/cp' });
     expect(env).toEqual({
       PATH: '/bin',
       HOME: '/Users/o',
+      GH_TOKEN: 'x',
       GH_PROMPT_DISABLED: '1',
       GH_NO_UPDATE_NOTIFIER: '1',
       GH_SPINNER_DISABLED: '1',
@@ -112,13 +112,6 @@ async function hostWithRemote(url?: string, before?: (root: string, bare: string
     gitCommonDir: join(repo.root, '.git'),
     baseBranch: 'master',
   };
-  writeBaseline(
-    home,
-    'cena',
-    await snapshotIntegrity(host.gitCommonDir, {
-      project: { root: repo.root, baseBranch: 'master' },
-    }),
-  );
   return { repo, bare, home, host };
 }
 
@@ -149,8 +142,8 @@ describe('pushBranch', () => {
   });
 
   it('pushes the branch with hooks off', async () => {
-    // The hook is part of the baseline (the owner accepted it), and still never runs.
-    const { repo, bare, home, host } = await hostWithRemote(undefined, (root, remote) => {
+    // A hook in the host repository never runs on Counterpoint's push.
+    const { repo, bare, host } = await hostWithRemote(undefined, (root, remote) => {
       const hook = writeFileIn(
         root,
         '.git/hooks/pre-push',
@@ -159,7 +152,6 @@ describe('pushBranch', () => {
       chmodSync(hook, 0o755);
     });
     await pushBranch({
-      home,
       host,
       branch: 'cp/a-thing',
       target: target(bare),
@@ -171,26 +163,10 @@ describe('pushBranch', () => {
   });
 
   it("refuses a branch that is not Counterpoint's", async () => {
-    const { bare, home, host } = await hostWithRemote();
+    const { bare, host } = await hostWithRemote();
     await expect(
-      pushBranch({ home, host, branch: 'master', target: target(bare), ssh: '/usr/bin/ssh' }),
+      pushBranch({ host, branch: 'master', target: target(bare), ssh: '/usr/bin/ssh' }),
     ).rejects.toThrow(/not a Counterpoint branch/);
-  });
-
-  it('pushes nothing when the git config changed since the baseline', async () => {
-    const { repo, bare, home, host } = await hostWithRemote();
-    await runGit(repo.root, [
-      'config',
-      'remote.origin.receivepack',
-      'touch /tmp/x; git-receive-pack',
-    ]);
-    await expect(
-      pushBranch({ home, host, branch: 'cp/a-thing', target: target(bare), ssh: '/usr/bin/ssh' }),
-    ).rejects.toThrow(/changed since your baseline/);
-    const ref = await runGit(bare, ['rev-parse', '--verify', '--quiet', 'refs/heads/cp/a-thing'], {
-      allowExitCodes: [0, 1],
-    });
-    expect(ref.exitCode).toBe(1);
   });
 });
 
@@ -219,6 +195,7 @@ const bodyInput = (over: Partial<PrBodyInput> = {}): PrBodyInput => ({
   ticked: ['1.1 Do it'],
   assumptions: '<!-- session 1 -->\n- Chose euros, ping @alex if wrong.',
   flags: [],
+  testShare: { percent: 20, testLines: 20, addedLines: 100, budget: 30, editedTests: [] },
   gates: [
     { gate: 'unit', attempt: 1, verdict: 'fail', durationMs: 4000 },
     { gate: 'unit', attempt: 2, verdict: 'pass', durationMs: 5000 },
@@ -238,8 +215,12 @@ describe('prBody', () => {
     expect(body).toContain('> - Chose euros, ping @​alex if wrong.');
     expect(body).not.toContain('<!-- session');
     expect(body).toContain('Every gate passed on attempt 2.');
-    expect(body).toContain('| unit | pass | 5 s |');
-    expect(body).toContain('| lint | pass | 1 s |');
+    expect(body).toContain('| unit | passed | 5 s |');
+    expect(body).toContain('| lint | passed | 1 s |');
+    expect(body).toContain(
+      "Tests are 20% of this change's added lines (20 of 100), against a budget of 30%.",
+    );
+    expect(body).toContain('No existing test was edited or deleted.');
     expect(body).toContain('run `run-1`, 3 builder sessions, from `aaaaaaaaaaaa` on `cp/a-thing`');
     expect(body).not.toContain('[!WARNING]');
   });
@@ -257,6 +238,38 @@ describe('prBody', () => {
       ),
     ).toContain("**Preview:** none. The host's preview deploy failed.");
     expect(prBody(bodyInput({ preview: { kind: 'none' } }))).toContain('names no preview command');
+  });
+
+  it('gives the test share and names the one existing test the build edited', () => {
+    const body = prBody(
+      bodyInput({
+        testShare: {
+          percent: 44,
+          testLines: 44,
+          addedLines: 100,
+          budget: 30,
+          editedTests: [{ path: 'src/menu.test.ts', status: 'modified' }],
+        },
+      }),
+    );
+    expect(body).toContain(
+      "Tests are 44% of this change's added lines (44 of 100), against a budget of 30%: over budget.",
+    );
+    expect(body).toContain(
+      'Existing tests this change edited or deleted:\n- `src/menu.test.ts` (modified)',
+    );
+  });
+
+  it('shows skipped and not-run gates as such', () => {
+    const body = prBody(
+      bodyInput({
+        gates: [
+          { gate: 'types', attempt: 1, verdict: 'pass', durationMs: 1000 },
+          { gate: 'related', attempt: 1, verdict: 'skipped', durationMs: 0 },
+        ],
+      }),
+    );
+    expect(body).toContain('| related | skipped (no matching files changed) | 0 s |');
   });
 
   it('says so when the builder assumed nothing', () => {
@@ -422,6 +435,8 @@ describe('createDeliver', () => {
       changeDir,
       flags: [],
       signal: new AbortController().signal,
+      env: { PATH: process.env.PATH ?? '' },
+      testShare: null,
     };
     return { repo, db, context, changeDir };
   }

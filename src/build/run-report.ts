@@ -21,11 +21,12 @@ import {
   type RunChangeFlag,
   type RunChangeRow,
   type RunEndReason,
+  type StoredTestShare,
   setRunReportPath,
 } from '../core/store/runs.ts';
-import { defuse, readSmallFile } from './deliver.ts';
+import { blocksMerge } from './branch-diff.ts';
+import { defuse, gateWord, readSmallFile } from './deliver.ts';
 import type { RunHost } from './orchestrator.ts';
-import { blocksMerge } from './protected-paths.ts';
 
 export interface ReportFailure {
   gate: string;
@@ -47,6 +48,10 @@ export interface ReportChange {
   attempts: number;
   /** The last failing gate, for a parked change. */
   lastFailure: ReportFailure | null;
+  /** Every gate of the change's last attempt, with its outcome (skipped and not run included). */
+  gates: Array<{ gate: string; attempt: number; verdict: string | null }>;
+  /** How much of the built change is tests, against the budget. */
+  testShare: StoredTestShare | null;
 }
 
 export interface RunReport {
@@ -85,6 +90,14 @@ export function factsFromRuntime(runtime: RunHost | null): FactsAt {
     }
     return findChange((await snapshot).changes, change) ?? null;
   };
+}
+
+/** The gates of the latest attempt, in the order they ran. */
+function lastAttempt(gates: readonly GateResultRow[]): ReportChange['gates'] {
+  const attempt = Math.max(0, ...gates.map((g) => g.attempt));
+  return gates
+    .filter((g) => g.attempt === attempt)
+    .map((g) => ({ gate: g.gate, attempt: g.attempt, verdict: g.verdict }));
 }
 
 function lastFailure(gates: readonly GateResultRow[]): ReportFailure | null {
@@ -145,6 +158,7 @@ export async function buildRunReport(input: {
 
   for (const row of listRunChanges(input.db, run.id)) {
     const facts = (await input.factsAt?.(row.change, row.baseCommit).catch(() => null)) ?? null;
+    const gateRows = listGateResults(input.db, row.id);
     const entry: ReportChange = {
       change: row.change,
       title: facts?.title ?? row.change,
@@ -154,7 +168,9 @@ export async function buildRunReport(input: {
       prUrl: row.prUrl,
       previewUrl: row.previewUrl,
       attempts: row.attempts,
-      lastFailure: row.state === 'parked' ? lastFailure(listGateResults(input.db, row.id)) : null,
+      lastFailure: row.state === 'parked' ? lastFailure(gateRows) : null,
+      gates: lastAttempt(gateRows),
+      testShare: row.testShare,
     };
     if (row.state === 'green') {
       (blocksMerge(row.flags) ? report.notForMerge : report.ready).push(entry);
@@ -207,11 +223,29 @@ function quote(text: string): string {
     .join('\n');
 }
 
+/** "Gates (attempt 2): types passed · related skipped · suite not run", or null without gates. */
+export function gatesLine(c: Pick<ReportChange, 'gates'>): string | null {
+  const first = c.gates[0];
+  if (first === undefined) return null;
+  const words = c.gates.map((g) => `${g.gate} ${gateWord(g.verdict).replace(/ \(.*\)$/, '')}`);
+  return `Gates (attempt ${first.attempt}): ${words.join(' · ')}`;
+}
+
+/** "Tests: 44% of the change, budget 30% (over budget)", or null when not measured. */
+export function testShareLine(c: Pick<ReportChange, 'testShare'>): string | null {
+  const share = c.testShare;
+  if (share === null) return null;
+  const over = share.percent > share.budget;
+  const edited = share.editedTests.length;
+  return `Tests: ${share.percent}% of the change, budget ${share.budget}%${over ? ' (over budget)' : ''}${edited > 0 ? `; ${edited} existing test ${edited === 1 ? 'file' : 'files'} edited or deleted` : ''}`;
+}
+
 function changeLine(c: ReportChange): string {
   const parts = [`**${line(c.title)}** (\`${c.change}\`)`];
   if (c.prUrl !== null) parts.push(`PR ${c.prUrl}`);
   parts.push(c.previewUrl !== null ? `preview ${c.previewUrl}` : 'no preview');
-  return `- ${parts.join(' · ')}`;
+  const extra = [gatesLine(c), testShareLine(c)].filter((l): l is string => l !== null);
+  return [`- ${parts.join(' · ')}`, ...extra.map((l) => `  ${l}`)].join('\n');
 }
 
 /** The report as Markdown (the file, and what `counterpoint run report` prints). */
@@ -241,6 +275,8 @@ export function reportMarkdown(r: RunReport): string {
   if (r.parked.length === 0) out.push('None.', '');
   for (const c of r.parked) {
     out.push(`- **${line(c.title)}** (\`${c.change}\`): ${line(c.reason ?? 'parked')}`);
+    const gates = gatesLine(c);
+    if (gates !== null) out.push(`  ${gates}`);
     if (c.lastFailure !== null) {
       const f = c.lastFailure;
       out.push(

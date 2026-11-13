@@ -48,8 +48,8 @@ export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly Qu
   ],
   runway: (hostId) => [queryKeys.runway(hostId)],
   'needs-you': (hostId) => [queryKeys.needsYou(hostId)],
-  // A doctor run's phases and its end: the Trust page's report and the running probe's status.
-  doctor: (hostId) => [queryKeys.doctor(hostId), queryKeys.doctorStatus, queryKeys.run(hostId)],
+  // Stored by earlier versions only; nothing publishes it now.
+  doctor: () => [],
   // A build run moved on: the Run card, and what it changes (parked items, the runway).
   run: (hostId) => [queryKeys.run(hostId), queryKeys.needsYou(hostId), queryKeys.runway(hostId)],
   // A project's run settings were saved: the Settings page and the Run card's summary.

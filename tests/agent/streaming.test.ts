@@ -68,14 +68,42 @@ describe('context meter on real streams (claude 2.1.322)', () => {
   });
 });
 
-describe('buildClaudeArgv with streaming input', () => {
-  const base = {
-    settings: { permissions: { deny: [] }, sandbox: {} } as never,
-    model: 'haiku',
-    maxTurns: 5,
-    maxBudgetUsd: 1,
-    allowedTools: ['Bash'],
-  };
+describe('buildClaudeArgv', () => {
+  const base = { model: 'haiku', maxTurns: 5, maxBudgetUsd: 1 };
+
+  it('launches a plain headless session as the owner: no profile, auto mode, prompts denied', () => {
+    expect(buildClaudeArgv({ ...base, effort: 'high', streamInput: true })).toEqual([
+      '-p',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--no-session-persistence',
+      '--model',
+      'haiku',
+      '--effort',
+      'high',
+      '--max-turns',
+      '5',
+      '--max-budget-usd',
+      '1',
+      '--setting-sources',
+      'user,project',
+      '--strict-mcp-config',
+      '--permission-mode',
+      'auto',
+      '--permission-prompts',
+      'none',
+    ]);
+  });
+
+  it('adds a tool list only when one is given', () => {
+    expect(buildClaudeArgv({ ...base, prompt: 'hi', allowedTools: ['Read'] }).slice(-2)).toEqual([
+      '--allowedTools',
+      'Read',
+    ]);
+  });
 
   it('reads input from stdin and takes no prompt argument', () => {
     const argv = buildClaudeArgv({ ...base, streamInput: true });

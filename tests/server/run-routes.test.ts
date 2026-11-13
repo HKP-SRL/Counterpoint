@@ -1,14 +1,12 @@
-// The console's build-lane actions (build-runs: Start and stop a run from the console; doctor:
-// Doctor and risk withdrawal from the console; daemon-lifecycle: Stop Counterpoint from the
+// The console's build-lane actions (build-runs: Start and stop a run from the console;
+// daemon-lifecycle: Stop Counterpoint from the
 // console) and their control-socket twins (`counterpoint run`, `run stop`, `run status`). The
 // orchestrator is a recording stand-in here: these tests are about the HTTP surface and its guards.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Governor } from '../../src/build/governor.ts';
 import { DEFAULT_HOST_SETTINGS } from '../../src/build/host-settings.ts';
 import type { Orchestrator, RunView } from '../../src/build/orchestrator.ts';
 import { detectFramework } from '../../src/compose.ts';
 import { registerHost } from '../../src/core/host/registry.ts';
-import { readAcceptedRisks, writeAcceptedRisk } from '../../src/core/security/accepted-risks.ts';
 import { mintLoginCode } from '../../src/core/security/login.ts';
 import { hostRegistryStore, openStore, type Store } from '../../src/core/store/db.ts';
 import { EventBus } from '../../src/core/store/events.ts';
@@ -22,7 +20,6 @@ import {
 import { createApp } from '../../src/server/app.ts';
 import { createApprovalViews } from '../../src/server/approval-views.ts';
 import { createControlApp, hashToken } from '../../src/server/control.ts';
-import { createDoctorService, type DoctorService } from '../../src/server/doctor-service.ts';
 import { createHostRuntimes } from '../../src/server/hosts.ts';
 import { type FixtureRepo, materializeFixtureRepo } from '../helpers/fixture-repo.ts';
 import { makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
@@ -39,7 +36,6 @@ let hostId = '';
 let cookie = '';
 let uiDir = '';
 let stopped = 0;
-let withdrawnEvents = 0;
 const settingsEvents: string[] = [];
 const previewCalls: string[] = [];
 const previewStatus = (state: string) => ({
@@ -67,8 +63,6 @@ const previews = {
 } as never;
 const started: Array<{ hostId: string; input: unknown }> = [];
 const stops: Array<string | undefined> = [];
-let doctor: DoctorService;
-let releaseDoctor: () => void = () => {};
 
 const VIEW = { id: 'r1', hostId: 'x', state: 'running', changes: [] } as unknown as RunView;
 
@@ -98,16 +92,12 @@ function app() {
     bus: new EventBus(),
     runtimes,
     home,
-    approvals: createApprovalViews({ home }),
+    approvals: createApprovalViews({ store: db }),
     run: {
       orchestrator,
-      doctor,
       claudeVersion: async () => '2.1.322 (Claude Code)',
       stopDaemon: () => {
         stopped += 1;
-      },
-      onRiskWithdrawn: () => {
-        withdrawnEvents += 1;
       },
       onSettingsChanged: (id) => {
         settingsEvents.push(id);
@@ -144,31 +134,6 @@ beforeAll(async () => {
     detectFramework,
   });
   hostId = host.id;
-  doctor = createDoctorService({
-    home,
-    store: db,
-    governor: new Governor({ db, doctorGate: () => ({ ok: true }) }),
-    runnerFactory: () => ({
-      run: async () => {
-        throw new Error('no');
-      },
-      version: async () => null,
-    }),
-    setInstalledVersion: () => {},
-    publish: () => {},
-    runDoctor: (input) =>
-      new Promise((resolve) => {
-        input.onProgress?.('probe');
-        releaseDoctor = () =>
-          resolve({
-            report: { probe: [] } as never,
-            reportPath: '',
-            logDir: '',
-            recordedRisks: [],
-            acceptedRisksProblem: null,
-          });
-      }),
-  });
   const code = mintLoginCode(db);
   const login = await app().request(`http://${HOST}/login?code=${code}`, {
     headers: { host: HOST },
@@ -190,7 +155,6 @@ describe('runs from the console', () => {
       run: VIEW,
       runway: [],
       claudeVersion: '2.1.322 (Claude Code)',
-      doctor: null,
     });
   });
 
@@ -389,31 +353,7 @@ describe('local previews from the console', () => {
   });
 });
 
-describe('doctor, risks and stop from the console', () => {
-  it('runs doctor with a guarded POST, one probe at a time, with its phase visible', async () => {
-    expect((await request('POST', `/api/hosts/${hostId}/doctor/run`, {})).status).toBe(202);
-    const busy = await request('POST', `/api/hosts/${hostId}/doctor/run`, {});
-    expect(busy.status).toBe(409);
-    const status = (await (await request('GET', '/api/doctor/status')).json()) as {
-      doctor: { hostId: string; phase: string; source: string } | null;
-    };
-    expect(status.doctor).toMatchObject({ hostId, phase: 'probe', source: 'console' });
-    releaseDoctor();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(doctor.status()).toBeNull();
-  });
-
-  it('withdraws an accepted risk, never records one', async () => {
-    writeAcceptedRisk(home, { reason: 'the gh keyring entry' });
-    expect((await request('POST', '/api/risks/gh-keychain/withdraw', {})).status).toBe(200);
-    const record = readAcceptedRisks(home);
-    expect(record.ok && record.risks).toEqual([]);
-    expect(withdrawnEvents).toBe(1);
-    expect((await request('POST', '/api/risks/something-else/withdraw', {})).status).toBe(404);
-    // There is no route to record one.
-    expect((await request('POST', '/api/risks/gh-keychain/accept', {})).status).toBe(404);
-  });
-
+describe('stop from the console', () => {
   it('stops Counterpoint with a guarded POST', async () => {
     const response = await request('POST', '/api/stop', {});
     expect(response.status).toBe(202);

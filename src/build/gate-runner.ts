@@ -1,13 +1,10 @@
-// One gate command, run under the gate sandbox and judged by its exit code only (gates: Exit code
-// is the only verdict; Gate output kept; Zero-test guard).
+// One gate command, judged by its exit code only (gates: Exit code is the only verdict; Gate
+// output kept; Zero-test guard; owner-identity: Gates and services run as the owner).
 //
-// The command comes from the host config read at the approved base, never from the worktree. It
-// runs builder-written code, so:
-// - under `srt` with the gate profile (build/gate-sandbox.ts): writes only the worktree and the
-//   gate's own temp dir, reads nothing protected, reaches only the loopback ports the gate lists;
-// - with a reduced environment: an allow-list from the daemon's own, `CI=1`, no colors, and the
-//   gate's tag `CP_GATE_RUN=<id>`, plus the service environment and the test-lock marker the caller
-//   passes. No token or socket of the owner's crosses;
+// The command comes from the host config read at the build's base commit, never from the
+// worktree. It runs as an ordinary child process with the owner's permissions:
+// - with the run's environment (the owner's), plus `CI=1`, no colors, and the gate's tag
+//   `CP_GATE_RUN=<id>`, plus the service environment and the test-lock marker the caller passes;
 // - detached, in its own process group, with no stdin. On timeout or stop the whole group gets
 //   SIGTERM, then SIGKILL after a grace period; when the command ends, anything left in its group
 //   is killed, and the owner's processes are swept for its tag (process-sweep.ts). What the sweep
@@ -17,50 +14,33 @@
 //
 // The verdict: exit code 0 is the only pass, and with a test-count pattern the last count printed
 // must be above zero. Every other ending fails with its own reason: `spawn`, `stopped`, `timeout`,
-// `signal` (srt or the command died from a signal; the wrapper reports a command's signal as
-// 128+n), `exit-code`, `no-test-count` or `zero-tests`.
+// `signal` (the command died from a signal, or a shell reported one as 128+n), `exit-code`,
+// `no-test-count` or `zero-tests`.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { killGroup } from '../agent/runner.ts';
 import type { GateConfig } from '../core/host/host-config.ts';
-import type { ProtectedPaths } from '../core/security/sandbox-settings.ts';
 import type { GateEnd, GateFailReason, GateSurvivor } from '../core/store/runs.ts';
-import { buildGateSandboxSettings, gateArgv } from './gate-sandbox.ts';
+import { withoutCounterpoint } from './owner-env.ts';
 import { sweepTagged } from './process-sweep.ts';
 
 export const GATE_TAG_ENV = 'CP_GATE_RUN';
-/**
- * Parent variables a gate may inherit. Nothing else crosses. `COREPACK_HOME` tells Corepack where
- * the owner keeps the package managers it already downloaded; without it a gate's `pnpm` tries to
- * download one and fails, since gates have no internet.
- */
-export const GATE_ENV_ALLOW = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'LANG',
-  'LC_ALL',
-  'SHELL',
-  'COREPACK_HOME',
-] as const;
 const TAIL_LINES = 60;
 const KEEP_BYTES = 256 * 1024;
 const DEFAULT_KILL_GRACE_MS = 5000;
 
 export interface GateRunInput {
   gate: GateConfig;
+  /** The command to run, when it differs from the gate's (its `{changed}` expanded). */
+  command?: readonly string[];
   worktree: string;
-  /** A private folder for this gate run, outside the worktree: the profile and the temp dir. */
-  scratchDir: string;
   logPath: string;
-  protectedPaths: Omit<ProtectedPaths, 'workdir'>;
-  consolePort: number;
   /** Service environment and the test-lock marker. */
   env?: Readonly<Record<string, string>>;
+  /** The run's environment (the owner's). Defaults to the daemon's own. */
   parentEnv?: NodeJS.ProcessEnv;
   /** Aborts the gate (the run is stopping). */
   signal?: AbortSignal;
@@ -126,19 +106,14 @@ function signalName(code: number): string | null {
   return null;
 }
 
-/** The gate's environment: the allow-list, CI markers, the caller's extras, then the tag. */
+/** The gate's environment: the run's, CI markers, the caller's extras, then the tag. */
 export function gateEnv(
   parentEnv: NodeJS.ProcessEnv,
   extra: Readonly<Record<string, string>>,
   tag: string,
 ): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of GATE_ENV_ALLOW) {
-    const value = parentEnv[key];
-    if (typeof value === 'string') env[key] = value;
-  }
   return {
-    ...env,
+    ...withoutCounterpoint(parentEnv),
     CI: '1',
     FORCE_COLOR: '0',
     NO_COLOR: '1',
@@ -151,24 +126,7 @@ export async function runGate(input: GateRunInput): Promise<GateRunResult> {
   const tag = input.processTag ?? newGateTag();
   const graceMs = input.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const started = Date.now();
-  const tmpDir = join(input.scratchDir, 'tmp');
-  mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
   mkdirSync(dirname(input.logPath), { recursive: true, mode: 0o700 });
-  const settingsPath = join(input.scratchDir, 'gate-settings.json');
-  rmSync(settingsPath, { force: true });
-  writeFileSync(
-    settingsPath,
-    JSON.stringify(
-      buildGateSandboxSettings({
-        protectedPaths: input.protectedPaths,
-        workdir: input.worktree,
-        tmpDir,
-        ports: input.gate.ports,
-        consolePort: input.consolePort,
-      }),
-    ),
-    { mode: 0o600, flag: 'wx' },
-  );
   const log = openSync(input.logPath, 'a', 0o600);
   let kept = '';
   const keep = (chunk: string) => {
@@ -176,7 +134,7 @@ export async function runGate(input: GateRunInput): Promise<GateRunResult> {
     kept = (kept + chunk).slice(-KEEP_BYTES);
   };
 
-  const argv = gateArgv(settingsPath, input.gate.command, { TMPDIR: tmpDir });
+  const argv = input.command ?? input.gate.command;
   let stopped = false;
   let timedOut = false;
   let spawnError: string | null = null;
@@ -246,7 +204,6 @@ export async function runGate(input: GateRunInput): Promise<GateRunResult> {
   if (swept.error !== null)
     keep(`\n[counterpoint] the process sweep could not run: ${swept.error}\n`);
   closeSync(log);
-  rmSync(input.scratchDir, { recursive: true, force: true });
 
   const output = stripTerminal(kept);
   let reason: GateFailReason | null = null;

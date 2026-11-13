@@ -1,5 +1,6 @@
 // The Counterpoint home (daemon-lifecycle: Home must exist before start): where the store, token,
-// logs and trust material live.
+// logs and run folders live. Earlier versions kept `trust/` and each host's `doctor.json` and
+// `integrity.json` here; they are left on disk and no longer read.
 //
 // Resolution: COUNTERPOINT_HOME, else the platform default. A missing home is refused and never
 // created here; only `counterpoint init` creates it, so state can never silently land on the
@@ -88,7 +89,6 @@ export interface HomePaths {
   token: string;
   logsDir: string;
   daemonLog: string;
-  trustDir: string;
   hostsDir: string;
   tmpDir: string;
 }
@@ -111,7 +111,6 @@ export function homePaths(home: string): HomePaths {
     token: join(root, 'token'),
     logsDir,
     daemonLog: join(logsDir, 'daemon.log'),
-    trustDir: join(root, 'trust'),
     hostsDir: join(root, 'hosts'),
     tmpDir: join(root, 'tmp'),
   };

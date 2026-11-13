@@ -16,6 +16,25 @@ export interface RunChangeFlag {
   detail?: string;
 }
 
+/** A question the builder asked before doing something it cannot undo (build/questions.ts). */
+export interface ChangeQuestion {
+  task: string | null;
+  text: string;
+  options: string[];
+  recommended: number | null;
+  waiting: string[];
+}
+
+/** How much of a built change is tests (build/branch-diff.ts), with the budget it was held to. */
+export interface StoredTestShare {
+  percent: number;
+  testLines: number;
+  addedLines: number;
+  /** The host's `tests.budget` at the build's base commit. */
+  budget: number;
+  editedTests: Array<{ path: string; status: string }>;
+}
+
 export interface RunChangeRow {
   id: number;
   runId: string;
@@ -34,9 +53,17 @@ export interface RunChangeRow {
   handoffPath: string | null;
   startedAt: number | null;
   endedAt: number | null;
+  /** The builder's ask-first questions, when the change parked on them. */
+  questions: ChangeQuestion[];
+  /** The test share of a built change, or null. */
+  testShare: StoredTestShare | null;
 }
 
-export type GateVerdict = 'pass' | 'fail';
+/**
+ * `skipped`: the gate's changed-file list was empty, so it had nothing to check. `not-run`: an
+ * earlier gate of the attempt failed, so this one never started.
+ */
+export type GateVerdict = 'pass' | 'fail' | 'skipped' | 'not-run';
 
 /** Why a gate failed. Each is distinct, so the owner and the builder see what happened. */
 export type GateFailReason =
@@ -109,6 +136,8 @@ export interface RunRow {
   endReason: RunEndReason | null;
   endDetail: string | null;
   reportPath: string | null;
+  /** Notes the run left for the owner while it went on (Needs You shows them). */
+  notices: string[];
 }
 
 function toRun(row: Record<string, SQLOutputValue>): RunRow {
@@ -123,6 +152,7 @@ function toRun(row: Record<string, SQLOutputValue>): RunRow {
     endReason: str(row.end_reason) as RunEndReason | null,
     endDetail: str(row.end_detail),
     reportPath: str(row.report_path),
+    notices: json<string[]>(row.notices, []).filter((note) => typeof note === 'string'),
   };
 }
 
@@ -173,6 +203,18 @@ export function endRun(
   ).run(now, end.reason, end.detail?.slice(0, 2000) ?? null, id);
 }
 
+/** Adds a note for the owner to the run (once per text). */
+export function addRunNotice(db: Store, id: string, notice: string): void {
+  const row = db.prepare('SELECT notices FROM runs WHERE id = ?').get(id);
+  if (row === undefined) return;
+  const notices = json<string[]>(row.notices, []);
+  if (notices.includes(notice)) return;
+  db.prepare('UPDATE runs SET notices = ? WHERE id = ?').run(
+    JSON.stringify([...notices, notice]),
+    id,
+  );
+}
+
 export function setRunReportPath(db: Store, id: string, path: string): void {
   db.prepare('UPDATE runs SET report_path = ? WHERE id = ?').run(path, id);
 }
@@ -212,6 +254,8 @@ function toRunChange(row: Record<string, SQLOutputValue>): RunChangeRow {
     handoffPath: str(row.handoff_path),
     startedAt: num(row.started_at),
     endedAt: num(row.ended_at),
+    questions: json<ChangeQuestion[]>(row.questions, []),
+    testShare: json<StoredTestShare | null>(row.test_share, null),
   };
 }
 
@@ -266,6 +310,8 @@ export interface RunChangeUpdate {
   handoffPath?: string | null;
   startedAt?: number | null;
   endedAt?: number | null;
+  questions?: ChangeQuestion[];
+  testShare?: StoredTestShare | null;
 }
 
 const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
@@ -281,6 +327,8 @@ const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
   handoffPath: 'handoff_path',
   startedAt: 'started_at',
   endedAt: 'ended_at',
+  questions: 'questions',
+  testShare: 'test_share',
 };
 
 export function updateRunChange(db: Store, id: number, update: RunChangeUpdate): void {
@@ -293,7 +341,7 @@ export function updateRunChange(db: Store, id: number, update: RunChangeUpdate):
     const value = update[key];
     sets.push(`${column} = ?`);
     values.push(
-      Array.isArray(value)
+      Array.isArray(value) || (typeof value === 'object' && value !== null)
         ? JSON.stringify(value)
         : ((value as string | number | null | undefined) ?? null),
     );

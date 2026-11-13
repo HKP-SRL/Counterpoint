@@ -1,11 +1,10 @@
 // Folders cloned from the owner's checkout into a new worktree (owner decision 2026-11-11: the host
 // config's `worktree.clone`, for example `node_modules`).
 //
-// A fresh worktree has no installed dependencies, and nothing in a run may install them: gates and
-// builders have no internet, and an install outside the sandbox would run package scripts the
-// builder could have changed. So the host can name folders that are copied from the owner's own
-// checkout when a worktree is made, as an APFS copy-on-write clone (`cp -c`, seconds and almost no
-// disk; a plain copy where cloning is not supported). A symlink to the checkout was tried and
+// A fresh worktree has no installed dependencies. Builders may install them, but a full install
+// is slow, so the host can name folders that are copied from the owner's own checkout when a
+// worktree is made, as an APFS copy-on-write clone (`cp -c`, seconds and almost no disk; a plain
+// copy where cloning is not supported). A symlink to the checkout was tried and
 // rejected: Turbopack refuses a `node_modules` that points outside the project, and a link would
 // let anything that writes through it reach the owner's checkout.
 //

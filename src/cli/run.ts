@@ -8,16 +8,15 @@
 //   counterpoint run stop [host]
 //   counterpoint run status [host]
 //
-// The daemon decides everything: it refuses a run while doctor fails or a chosen change is not on
-// the runway, and it builds; the CLI only asks and prints.
+// The daemon decides everything: it refuses a run when a chosen change is not on the runway, and
+// it builds; the CLI only asks and prints.
 import { EFFORT_LEVELS } from '../agent/claude-argv.ts';
 import { readSmallFile } from '../build/deliver.ts';
 import type { RunView } from '../build/orchestrator.ts';
 import { openStoreReadOnly } from '../core/store/db.ts';
 import { latestReportedRun } from '../core/store/runs.ts';
 import { controlRequest, DaemonUnreachableError } from './control-client.ts';
-import { resolveHostForCommand } from './doctor.ts';
-import { printable } from './trust.ts';
+import { printable, resolveHostForCommand } from './hosts.ts';
 
 const START_TIMEOUT_MS = 120_000;
 const NOT_RUNNING = 'Counterpoint is not running. Start it with: counterpoint';

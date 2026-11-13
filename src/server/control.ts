@@ -149,7 +149,7 @@ export function createControlApp(options: ControlAppOptions): Hono {
     return c.json({ url: `http://127.0.0.1:${options.port}/login?code=${code}` });
   });
 
-  // The generic nudge (doctor report written, approval landed): a host id and a family, nothing
+  // The generic nudge (an approval changed): a host id and a family, nothing
   // else. publishEvent = appendEvent to the SQLite outbox, then emit on the bus to every open
   // console stream. A strict
   // body keeps file contents or free text from ever travelling through here.

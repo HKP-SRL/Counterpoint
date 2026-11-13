@@ -1,5 +1,5 @@
-// Git plumbing wrappers for the approval mechanics (signed-approvals: One-file signed commit on
-// the base branch).
+// Git plumbing wrappers for writes to a host's base branch without a checkout (planning-writes:
+// Single serialized write path).
 //
 // Everything goes through runGit (absolute git, allow-listed environment, hooks and fsmonitor
 // disabled, replace refs and grafts ignored). On top of that, every call here also:

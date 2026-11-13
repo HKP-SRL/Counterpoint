@@ -19,7 +19,14 @@ import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery } from '@tanstack/react-query';
 import { type ReactNode, useEffect } from 'react';
-import { effortLabel, type ReportChange, type RunReport, runReportQuery } from '../run';
+import {
+  effortLabel,
+  gatesText,
+  type ReportChange,
+  type RunReport,
+  runReportQuery,
+  testShareText,
+} from '../run';
 
 const ENDED: Record<NonNullable<RunReport['endReason']>, string> = {
   finished: 'The run finished: every chosen change was built or parked.',
@@ -73,6 +80,23 @@ function ChangeLinks({ hostId, change }: { hostId: string; change: ReportChange 
   );
 }
 
+/** The last attempt's gates (skipped and not run shown as such) and the test share. */
+function GateLines({ change }: { change: ReportChange }) {
+  const lines = [gatesText(change), testShareText(change)].filter(
+    (line): line is string => line !== null,
+  );
+  if (lines.length === 0) return null;
+  return (
+    <VStack gap={0.5}>
+      {lines.map((line) => (
+        <Text key={line} type="supporting" color="secondary">
+          {line}
+        </Text>
+      ))}
+    </VStack>
+  );
+}
+
 function Changes({ hostId, changes }: { hostId: string; changes: ReportChange[] }) {
   if (changes.length === 0) return <None />;
   return (
@@ -81,7 +105,12 @@ function Changes({ hostId, changes }: { hostId: string; changes: ReportChange[] 
         <ListItem
           key={change.change}
           label={<Text weight="semibold">{change.title}</Text>}
-          description={<ChangeLinks hostId={hostId} change={change} />}
+          description={
+            <VStack gap={1}>
+              <ChangeLinks hostId={hostId} change={change} />
+              <GateLines change={change} />
+            </VStack>
+          }
         />
       ))}
     </List>
@@ -159,6 +188,7 @@ function Report({ hostId, report }: { hostId: string; report: RunReport }) {
                   <Link href={`/h/${hostId}/changes/${change.change}`}>{change.change}</Link>
                 </HStack>
                 {change.reason !== null ? <Text color="secondary">{change.reason}</Text> : null}
+                <GateLines change={change} />
                 {change.lastFailure !== null ? (
                   <>
                     <Text type="supporting" color="secondary">

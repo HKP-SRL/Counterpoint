@@ -1,10 +1,9 @@
 // The `counterpoint` command. The default action starts (or attaches to) the one background
 // daemon, registers the current repository and prints a one-time sign-in link; `open` prints a
-// fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon. The CLI
-// re-enters itself as the daemon through the hidden `__daemon` command, so the daemon runs the
-// same code. The owner's setup commands (`init-key`, `trust-key`, `trust`, `approve`) and the
-// accepted-risk commands (`accept-risk gh-keychain`, which needs a terminal, and `revoke-risk`)
-// are the owner's act at a terminal; no console route or agent reaches them.
+// fresh link; `status` lists hosts; `init` creates the home; `stop` stops the daemon; `run`
+// starts, stops and reports build runs (the console offers the same). The CLI re-enters itself as
+// the daemon through the hidden `__daemon` command, so the daemon runs the same code. Approving is
+// a click in the console.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -20,7 +19,6 @@ import {
   statSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Command, InvalidArgumentError } from 'commander';
@@ -37,20 +35,10 @@ import {
   SocketPathTooLongError,
   tightenHome,
 } from '../core/host/home.ts';
-import { daemonEnv } from '../core/security/agent-env.ts';
 import { packageRoot } from '../server/app.ts';
-import { approveCommand } from './approve.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
-import { doctorCommand } from './doctor.ts';
-import { acceptRiskCommand, revokeRiskCommand } from './risk.ts';
 import { runReportCommand, runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
-import {
-  initKeyCommand,
-  type TrustCommandOptions,
-  trustHostCommand,
-  trustKeyCommand,
-} from './trust.ts';
 
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 10_000;
@@ -168,7 +156,9 @@ function spawnDaemon(paths: HomePaths, port: number): { exited: () => boolean } 
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
   rmSync(paths.startResult, { force: true });
   const logFd = openSync(paths.daemonLog, 'a', 0o600);
-  const env = daemonEnv();
+  // The daemon acts as the owner: it gets the whole environment of the terminal that started it.
+  // Each run reads the owner's login shell again, so a later PATH change needs no restart.
+  const env = { ...process.env };
   let exited = false;
   try {
     const child = spawn(
@@ -480,39 +470,9 @@ async function stop(): Promise<void> {
   );
 }
 
-/** Owner confirmation at the terminal: both stdin and stdout must be a TTY. */
-function terminalPrompt(): TrustCommandOptions {
-  return {
-    isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
-    confirm: async (question) => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        return await rl.question(question);
-      } finally {
-        rl.close();
-      }
-    },
-  };
-}
-
 /** Turns a command's exit code into the CLI's exit (0 returns normally). */
 function exitWith(code: number): void {
   if (code !== 0) throw new CliExit(code);
-}
-
-async function trustKey(pub: string): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(await trustKeyCommand(home, pub, terminalPrompt()));
-}
-
-async function trustHost(hostId: string): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(await trustHostCommand(home, hostId, terminalPrompt()));
-}
-
-async function doctor(hostId: string | undefined): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(await doctorCommand(home, hostId));
 }
 
 async function runStart(
@@ -536,28 +496,6 @@ async function runStatus(hostId: string | undefined): Promise<void> {
 function runReport(hostId: string | undefined): void {
   const { home } = homeOrExit();
   exitWith(runReportCommand(home, hostId));
-}
-
-async function acceptRisk(risk: string): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(await acceptRiskCommand(home, risk, terminalPrompt()));
-}
-
-function revokeRisk(risk: string): void {
-  const { home } = homeOrExit();
-  exitWith(revokeRiskCommand(home, risk));
-}
-
-async function approve(hostId: string, changeId: string): Promise<void> {
-  const { home } = homeOrExit();
-  exitWith(
-    await approveCommand({
-      home,
-      hostId,
-      changeId,
-      isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
-    }),
-  );
 }
 
 async function daemon(options: { port?: number; instance?: string }): Promise<void> {
@@ -603,12 +541,6 @@ export function buildProgram(): Command {
     .description('stop the background daemon')
     .action(() => stop());
 
-  program
-    .command('doctor')
-    .description('check tools, the approval key and the agent sandbox (live probe) for a project')
-    .argument('[host]', 'the registered project id (default: the project you are in)')
-    .action((hostId: string | undefined) => doctor(hostId));
-
   const run = program
     .command('run')
     .description('start a build run of approved changes (the console offers the same)')
@@ -648,46 +580,6 @@ export function buildProgram(): Command {
     .description("show the project's current or last run")
     .argument('[host]', 'the registered project id')
     .action((hostId: string | undefined) => runStatus(hostId));
-
-  program
-    .command('accept-risk')
-    .description(
-      'record that you accept a known sandbox risk (only gh-keychain; asks you to confirm)',
-    )
-    .argument('<risk>', 'the risk id: gh-keychain')
-    .action((risk: string) => acceptRisk(risk));
-
-  program
-    .command('revoke-risk')
-    .description('withdraw an accepted sandbox risk')
-    .argument('<risk>', 'the risk id: gh-keychain')
-    .action((risk: string) => revokeRisk(risk));
-
-  program
-    .command('init-key')
-    .description('print how to create the dedicated, passphrase-protected approval key')
-    .action(() => initKeyCommand());
-
-  program
-    .command('trust-key')
-    .description('trust a public key for signing approvals (asks you to confirm)')
-    .argument('<pub>', 'the public key file, for example ~/.ssh/counterpoint_approval.pub')
-    .action((pub: string) => trustKey(pub));
-
-  program
-    .command('trust')
-    .description("review a project's .git config and hooks and accept them as the baseline")
-    .argument('<host>', 'the registered project id')
-    .action((hostId: string) => trustHost(hostId));
-
-  program
-    .command('approve')
-    .description(
-      'sign a planned change into the runway with your approval key (asks for its passphrase)',
-    )
-    .argument('<host>', 'the registered project id')
-    .argument('<change>', 'the change name, for example qr-menu-browsing')
-    .action((hostId: string, changeId: string) => approve(hostId, changeId));
 
   program
     .command('__daemon', { hidden: true })

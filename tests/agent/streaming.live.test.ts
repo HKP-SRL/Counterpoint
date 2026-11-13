@@ -1,20 +1,18 @@
-// Live check of the streaming runner on the owner's real `claude`, with the production launch
-// profile. Gated by COUNTERPOINT_LIVE_PROBE=1 (signed-in claude, a few cents of haiku). Every
-// protected directory is a scratch directory; the owner's real ones are never targeted.
+// Live check of the streaming runner on the owner's real `claude`, launched as builders are.
+// Gated by COUNTERPOINT_LIVE=1 (signed-in claude, a few cents of haiku).
 //
 // It answers: does a session started through `runner.start` deliver usage live, take a message
-// mid-turn, answer an interrupt, and do its sandboxed Bash commands inherit the `CP_AGENT_RUN`
-// tag that crash recovery sweeps for?
+// mid-turn, answer an interrupt, and do its Bash commands inherit the `CP_AGENT_RUN` tag that
+// crash recovery sweeps for?
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildClaudeArgv } from '../../src/agent/claude-argv.ts';
 import { ClaudeCliRunner, type KnownStreamEvent } from '../../src/agent/runner.ts';
 import { ContextMeter, resultWindows } from '../../src/agent/usage.ts';
-import { buildAgentSandboxSettings } from '../../src/core/security/sandbox-settings.ts';
 import { initScratchRepo, makeScratchDir, removeScratchDirs } from '../helpers/scratch.ts';
 
-const LIVE = process.env.COUNTERPOINT_LIVE_PROBE === '1';
+const LIVE = process.env.COUNTERPOINT_LIVE === '1';
 
 afterAll(() => {
   if (LIVE) removeScratchDirs();
@@ -23,29 +21,13 @@ afterAll(() => {
 describe.skipIf(!LIVE)('streaming session (live claude)', () => {
   it('streams usage, takes a mid-turn message, interrupts, and tags Bash', async () => {
     const root = makeScratchDir('cp-live-stream');
-    const home = join(root, 'home');
-    for (const dir of ['.ssh', '.config/gh', 'cp-home', 'key']) {
-      mkdirSync(join(home, dir), { recursive: true });
-    }
-    const repo = join(root, 'repo');
-    mkdirSync(repo);
-    await initScratchRepo(repo);
     const workdir = join(root, 'work');
     mkdirSync(workdir);
-    const profile = buildAgentSandboxSettings({
-      homeDir: home,
-      counterpointHome: join(home, 'cp-home'),
-      signingKeyDir: join(home, 'key'),
-      ghConfigDir: join(home, '.config/gh'),
-      hostGitDir: join(repo, '.git'),
-      workdir,
-    });
+    await initScratchRepo(workdir);
     const argv = buildClaudeArgv({
-      settings: profile.settings,
       model: 'haiku',
       maxTurns: 20,
       maxBudgetUsd: 0.5,
-      allowedTools: profile.allowedTools,
       streamInput: true,
     });
 

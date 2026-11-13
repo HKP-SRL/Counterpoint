@@ -2,9 +2,10 @@
 //
 // Counterpoint drives the owner's own `claude` binary (non-`--bare`, so the subscription login
 // and user settings work). Everything else about the session comes from the argv built by
-// buildClaudeArgv. The process gets an allow-listed environment (agentEnv), stdin is ignored
-// (claude otherwise waits 3 s for stdin), and the raw stream is appended to a
-// log file so a verdict can always be traced back to what the session actually printed.
+// buildClaudeArgv. The process gets the run's environment, the owner's own (sessionEnv; owner-
+// identity: Sessions run as the owner), stdin is ignored (claude otherwise waits 3 s for stdin),
+// and the raw stream is appended to a log file so a verdict can always be traced back to what the
+// session actually printed.
 //
 // Builders use the streaming mode instead (`start`): stdin carries stream-json user messages and
 // control requests, events are delivered as they arrive, and the session runs in its own process
@@ -24,7 +25,7 @@ import {
 } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { execa } from 'execa';
-import { agentEnv } from '../core/security/agent-env.ts';
+import { withoutCounterpoint } from '../build/owner-env.ts';
 
 /** A stream-json event as printed by claude (`system`, `assistant`, `user`, `result`, ...). */
 export interface KnownStreamEvent {
@@ -46,7 +47,7 @@ export interface AgentRunRequest {
   argv: readonly string[];
   /** The session's working directory. */
   cwd: string;
-  /** Parent environment; reduced through agentEnv before spawning. Defaults to process.env. */
+  /** The run's environment (the owner's). Defaults to the daemon's own. */
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   /** The raw stdout stream is appended here (created 0600 if missing). */
@@ -80,7 +81,7 @@ export interface AgentSessionRequest {
   /** Arguments after the binary, from buildClaudeArgv with `streamInput: true`. */
   argv: readonly string[];
   cwd: string;
-  /** Parent environment; reduced through agentEnv before spawning. Defaults to process.env. */
+  /** The run's environment (the owner's). Defaults to the daemon's own. */
   env?: NodeJS.ProcessEnv;
   /** Hard limit for the whole session; the process group is killed when it passes. */
   timeoutMs: number;
@@ -122,6 +123,16 @@ export interface AgentSession {
 
 const STDERR_KEEP = 64 * 1024;
 
+/**
+ * The environment a session runs with: the run's (the owner's whole environment, without
+ * Counterpoint's own variables), with Claude Code's subprocess scrub opted out. On claude 2.1.321
+ * the scrub forced `--permission-mode auto` down to `default` in every session (seen live,
+ * 2026-11-10), so sessions never ran in the auto mode the owner chose.
+ */
+export function sessionEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return { ...withoutCounterpoint(env), CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0' };
+}
+
 /** Signals a whole process group; a group that is already gone is fine. */
 export function killGroup(pgid: number, signal: NodeJS.Signals): void {
   try {
@@ -135,7 +146,7 @@ function startSession(binary: string, request: AgentSessionRequest): AgentSessio
   if (!PROCESS_TAG_RE.test(request.processTag)) throw new Error('Invalid process tag.');
   mkdirSync(dirname(request.rawLogPath), { recursive: true, mode: 0o700 });
   const log = openSync(request.rawLogPath, 'a', 0o600);
-  const env = { ...agentEnv(request.env ?? process.env), [AGENT_TAG_ENV]: request.processTag };
+  const env = { ...sessionEnv(request.env), [AGENT_TAG_ENV]: request.processTag };
   const child = spawn(binary, [...request.argv], {
     cwd: request.cwd,
     env,
@@ -338,10 +349,13 @@ export function resolveClaudeBinary(parentEnv: NodeJS.ProcessEnv = process.env):
 }
 
 /** `claude --version`, trimmed; null when it cannot be run. */
-export async function claudeVersion(binary?: string): Promise<string | null> {
+export async function claudeVersion(
+  binary?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
   try {
-    const result = await execa(binary ?? resolveClaudeBinary(), ['--version'], {
-      env: agentEnv(process.env),
+    const result = await execa(binary ?? resolveClaudeBinary(env), ['--version'], {
+      env: sessionEnv(env),
       extendEnv: false,
       stdin: 'ignore',
       timeout: 15_000,
@@ -356,10 +370,13 @@ export async function claudeVersion(binary?: string): Promise<string | null> {
 
 export class ClaudeCliRunner implements AgentRunner {
   readonly binary: string;
+  /** The environment sessions get when a request names none (the run's). */
+  readonly #env: NodeJS.ProcessEnv;
 
-  constructor(options: { binary?: string } = {}) {
-    // Resolved once, to an absolute real path, so a later PATH change cannot swap the binary.
-    this.binary = options.binary ?? resolveClaudeBinary();
+  constructor(options: { binary?: string; env?: NodeJS.ProcessEnv } = {}) {
+    this.#env = options.env ?? process.env;
+    // Resolved once, from the run's PATH, to an absolute real path.
+    this.binary = options.binary ?? resolveClaudeBinary(this.#env);
     if (!isAbsolute(this.binary)) throw new Error('The claude binary path must be absolute.');
   }
 
@@ -367,7 +384,7 @@ export class ClaudeCliRunner implements AgentRunner {
     mkdirSync(dirname(request.rawLogPath), { recursive: true, mode: 0o700 });
     const result = await execa(this.binary, [...request.argv], {
       cwd: request.cwd,
-      env: agentEnv(request.env ?? process.env),
+      env: sessionEnv(request.env ?? this.#env),
       extendEnv: false,
       stdin: 'ignore',
       timeout: request.timeoutMs,
@@ -391,10 +408,10 @@ export class ClaudeCliRunner implements AgentRunner {
   }
 
   async start(request: AgentSessionRequest): Promise<AgentSession> {
-    return startSession(this.binary, request);
+    return startSession(this.binary, { ...request, env: request.env ?? this.#env });
   }
 
   version(): Promise<string | null> {
-    return claudeVersion(this.binary);
+    return claudeVersion(this.binary, this.#env);
   }
 }

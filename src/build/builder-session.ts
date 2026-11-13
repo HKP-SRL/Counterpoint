@@ -13,7 +13,6 @@
 import { buildClaudeArgv, type EffortLevel } from '../agent/claude-argv.ts';
 import type { AgentRunner, AgentSessionEnd, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter } from '../agent/usage.ts';
-import type { AgentSettings } from '../core/security/sandbox-settings.ts';
 import { classifySession, type SessionOutcome } from './governor.ts';
 import { wrapUpMessage } from './prompt.ts';
 import { budgetTokens } from './windows.ts';
@@ -24,10 +23,10 @@ const FORCED_EXIT_GRACE_MS = 30_000;
 
 export interface BuilderSessionInput {
   runner: AgentRunner;
-  settings: AgentSettings;
-  allowedTools: readonly string[];
   model: string;
   cwd: string;
+  /** The run's environment (the owner's). */
+  env?: Readonly<Record<string, string>>;
   rawLogPath: string;
   processTag: string;
   prompt: string;
@@ -76,12 +75,10 @@ export async function startBuilderSession(input: BuilderSessionInput): Promise<B
   let forced = false;
 
   const argv = buildClaudeArgv({
-    settings: input.settings,
     model: input.model,
     ...(input.effort === undefined ? {} : { effort: input.effort }),
     maxTurns: input.maxTurns ?? 400,
     maxBudgetUsd: input.maxBudgetUsd ?? 50,
-    allowedTools: input.allowedTools,
     streamInput: true,
   });
 
@@ -109,6 +106,7 @@ export async function startBuilderSession(input: BuilderSessionInput): Promise<B
   session = await input.runner.start({
     argv,
     cwd: input.cwd,
+    ...(input.env === undefined ? {} : { env: input.env }),
     timeoutMs: input.timeoutMs,
     rawLogPath: input.rawLogPath,
     processTag: input.processTag,

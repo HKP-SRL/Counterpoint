@@ -1,12 +1,12 @@
 // The OpenSpec adapter against committed content: detection, the snapshot (facts, order, archived
 // listing, one unreadable change never affecting the others) and the approval inputs (every file
 // of the change, tasks.md normalized, unsafe entries refused).
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { TASKS_NORMALIZER } from '../../../src/adapters/openspec/tasks.ts';
-import { sha256Digest } from '../../../src/core/approvals/digest.ts';
 import { AmbiguousChangeError, ChangeNotFoundError } from '../../../src/core/framework/port.ts';
 import { createGitFileReader, UnsafeTreeEntryError } from '../../../src/core/git/reader.ts';
 import { InvalidIdError } from '../../../src/core/ids.ts';
@@ -22,6 +22,9 @@ import {
   SYNTHETIC_FILES,
 } from '../../helpers/fixture-repo.ts';
 import { removeScratchDirs } from '../../helpers/scratch.ts';
+
+const sha256Digest = (bytes: Uint8Array): string =>
+  `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 const adapter = createOpenSpecAdapter();
 const READY_DIR = `openspec/changes/${SYNTHETIC.ready}`;
@@ -161,7 +164,13 @@ describe('snapshot memo', () => {
       'openspec/changes/a-change/proposal.md': '# A\n',
     });
     const r = createGitFileReader(repo.root);
-    const countingRepo = { ...r, list: (c: string, d: string) => (lists++, r.list(c, d)) };
+    const countingRepo = {
+      ...r,
+      list: (c: string, d: string) => {
+        lists++;
+        return r.list(c, d);
+      },
+    };
     const first = await own.snapshot(countingRepo, repo.commit);
     const afterFirst = lists;
     first.changes[0]?.dependsOn.push('mutated');
@@ -174,7 +183,13 @@ describe('snapshot memo', () => {
     const own = createOpenSpecAdapter();
     const r = createGitFileReader(synthetic.root);
     let lists = 0;
-    const counting = { ...r, list: (c: string, d: string) => (lists++, r.list(c, d)) };
+    const counting = {
+      ...r,
+      list: (c: string, d: string) => {
+        lists++;
+        return r.list(c, d);
+      },
+    };
     await own.snapshot(counting, synthetic.commit);
     const once = lists;
     await own.snapshot(counting, synthetic.commit);

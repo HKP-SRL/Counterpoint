@@ -1,24 +1,30 @@
 // The host's Counterpoint config, `.counterpoint/config.yaml` (gates: Gate commands from the
 // approved base).
 //
-// It is always read from a commit through the hardened git reader, never from a working tree:
-// a run reads it at the approved base commit (the signed statement's `base.commit`), so every key
-// here, not only the `gates` digest, is fixed by the owner's signature. A builder that edits the
-// file in its worktree changes nothing about how its own change is judged.
+// It is always read from a commit through the hardened git reader, never from a working tree: a
+// build reads it at the commit the build started from (the base-branch tip then). A builder that
+// edits the file in its worktree changes nothing about how its own change is judged.
 //
 // Counterpoint ships no knowledge of any test tool: gates and services are commands (argument
 // arrays, never shell strings) the host names. The shape is strict: an unknown or misspelt key is
-// an error, so a typo can never silently drop a protected path or a gate.
+// an error, so a typo can never silently drop a gate. Two keys of earlier versions, the gate
+// `ports` and the top-level `protected`, are still accepted and ignored, so a committed config
+// keeps loading.
 //
 //   gates:                      # run in order; exit code 0 is the only pass
+//     - name: types
+//       command: [pnpm, tsc, --noEmit]
+//     - name: related
+//       command: [pnpm, vitest, related, --run, '{changed}']   # the changed files, one each
+//       paths: ['**/*.ts', '**/*.tsx']   # narrow {changed}; none left: the gate is skipped
 //     - name: unit
 //       command: [pnpm, vitest, run]
+//       when: final             # every (default): every attempt; final: once, after the rest pass
 //       timeout: 20m            # Ns, Nm, Nh or integer seconds; default 10m
 //       testLock: true          # take the machine-wide test lock
-//       ports: [54321]          # loopback ports the gate may reach (nothing else)
 //       services: [supabase]    # services to start (and reset) before this gate
 //       testCount: 'Tests\s+(\d+) passed'   # zero-test guard: first group is the count
-//   services:                   # run OUTSIDE the sandbox, from the worktree: never worktree code
+//   services:                   # run from the worktree with the owner's environment
 //     supabase:
 //       start: [supabase, start]
 //       reset: [supabase, db, reset]
@@ -27,11 +33,11 @@
 //         map: { NEXT_PUBLIC_SUPABASE_URL: API_URL }
 //         file: .env.local      # also written into the worktree while gates run
 //   attempts: 3                 # failed gate rounds before the change parks
+//   tests:
+//     budget: 30                # % of a change's added lines that should be tests (advice only)
 //   preview:
 //     command: [pnpm, dev, --port, '{port}']
 //     ports: [54321]
-//   protected:                  # extra protected paths (globs), flagged on the branch diff
-//     - src/core/security/**
 //   worktree:
 //     clone: [node_modules]     # git-ignored folders copied (APFS clone) from your checkout
 import { isAbsolute, normalize } from 'node:path';
@@ -149,15 +155,32 @@ const TestCount = z
     if (groups < 2) ctx.addIssue({ code: 'custom', message: 'Needs a capture group.' });
   });
 
-const Gate = z.strictObject({
-  name: z.string().regex(NAME_RE, 'Lowercase letters, digits and dashes.'),
-  command: Argv,
-  timeout: Duration.prefault(600),
-  testLock: z.boolean().default(false),
-  ports: z.array(Port).max(16).default([]),
-  services: z.array(z.string().regex(NAME_RE)).max(8).default([]),
-  testCount: TestCount.optional(),
-});
+/** The placeholder a gate command may hold: the change's added and modified files, one each. */
+export const CHANGED_PLACEHOLDER = '{changed}';
+
+const Gate = z
+  .strictObject({
+    name: z.string().regex(NAME_RE, 'Lowercase letters, digits and dashes.'),
+    command: Argv,
+    /** `every` attempt (the default), or once as a `final` gate after the others pass. */
+    when: z.enum(['every', 'final']).default('every'),
+    /** Narrows `{changed}` to the files matching any of these patterns. */
+    paths: z.array(RepoPath).min(1).max(32).optional(),
+    timeout: Duration.prefault(600),
+    testLock: z.boolean().default(false),
+    services: z.array(z.string().regex(NAME_RE)).max(8).default([]),
+    testCount: TestCount.optional(),
+    /** Accepted and ignored (gates had a network allow-list while they ran sandboxed). */
+    ports: z.unknown().optional(),
+  })
+  .refine(
+    (gate) =>
+      gate.command.every(
+        (arg) => arg === CHANGED_PLACEHOLDER || !arg.includes(CHANGED_PLACEHOLDER),
+      ),
+    { path: ['command'], message: `${CHANGED_PLACEHOLDER} must be an argument of its own.` },
+  )
+  .transform(({ ports: _ignored, ...gate }) => gate);
 
 const ServiceEnv = z.strictObject({
   command: Argv,
@@ -193,13 +216,20 @@ const Preview = z.strictObject({
   ports: z.array(Port).max(16).default([]),
 });
 
+/** The test budget (gates: Test budget): advice for builders, never a gate. */
+const Tests = z.strictObject({
+  budget: z.number().int().min(0).max(100).default(30),
+});
+
 const HostConfigSchema = z
   .strictObject({
     gates: z.array(Gate).max(32).nullish(),
     services: z.record(z.string().regex(NAME_RE), Service).nullish(),
     attempts: z.number().int().min(1).max(10).default(3),
+    tests: Tests.nullish(),
     preview: Preview.nullish(),
-    protected: z.array(RepoPath).max(256).nullish(),
+    /** Accepted and ignored (paths that used to be flagged on a branch's diff). */
+    protected: z.unknown().optional(),
     worktree: Worktree.nullish(),
   })
   .superRefine((config, ctx) => {
@@ -225,12 +255,15 @@ export type GateConfig = z.output<typeof Gate>;
 export type ServiceConfig = z.output<typeof Service>;
 export type PreviewConfig = z.output<typeof Preview>;
 
+/** The test budget when the host config sets none (gates: Test budget). */
+export const DEFAULT_TEST_BUDGET = 30;
+
 export interface HostConfig {
   gates: GateConfig[];
   services: Record<string, ServiceConfig>;
   attempts: number;
+  tests: { budget: number };
   preview: PreviewConfig | null;
-  protected: string[];
   worktree: { clone: string[] };
 }
 
@@ -239,8 +272,8 @@ export const EMPTY_HOST_CONFIG: Readonly<HostConfig> = Object.freeze({
   gates: [],
   services: {},
   attempts: 3,
+  tests: { budget: DEFAULT_TEST_BUDGET },
   preview: null,
-  protected: [],
   worktree: { clone: [] },
 });
 
@@ -251,7 +284,7 @@ export function parseHostConfig(document: Record<string, unknown> | null): HostC
       ...EMPTY_HOST_CONFIG,
       gates: [],
       services: {},
-      protected: [],
+      tests: { budget: DEFAULT_TEST_BUDGET },
       worktree: { clone: [] },
     };
   }
@@ -268,13 +301,13 @@ export function parseHostConfig(document: Record<string, unknown> | null): HostC
     gates: config.gates ?? [],
     services: config.services ?? {},
     attempts: config.attempts,
+    tests: { budget: config.tests?.budget ?? DEFAULT_TEST_BUDGET },
     preview: config.preview ?? null,
-    protected: config.protected ?? [],
     worktree: { clone: config.worktree?.clone ?? [] },
   };
 }
 
-/** The host config at `commit` (the approved base commit for a run). */
+/** The host config at `commit` (the commit a build started from). */
 export async function readHostConfig(reader: GitFileReader, commit: string): Promise<HostConfig> {
   return parseHostConfig(await readConfigDocument(reader, commit));
 }

@@ -6,6 +6,9 @@
 // snapshot from GET /api/hosts/{id}/changes, refetched when a `planning` or `approval` event
 // arrives; a refresh keeps the current rows on screen.
 //
+// Approving is one click (approvals: Approve in one click): `Approve` on a Ready to approve row,
+// `Approve all` in the header, and `Withdraw` on an On runway row.
+//
 // Every string here comes from the host's planning files (agent-written, untrusted) and renders
 // as React text only.
 import { Banner } from '@astryxdesign/core/Banner';
@@ -13,7 +16,6 @@ import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
-import { Icon } from '@astryxdesign/core/Icon';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
 import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
@@ -28,6 +30,7 @@ import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { apiGet, queryKeys } from '../api';
+import { useApprovalActions } from '../approvals';
 import { type ChangeStatus, isChangeStatus, StatusBadge } from '../components/StatusBadge';
 import { isChangeId } from '../ids';
 
@@ -36,10 +39,8 @@ import { isChangeId } from '../ids';
 
 export type UnreadableFile = { file: string; reason: string };
 
-/** A change's approval as the server verified it from git at the base tip (never stored). */
-export type ApprovalFacts =
-  | { state: 'on-runway' | 'changed'; signedAt: string; commit: string }
-  | { state: 'invalid'; reason: string };
+/** A change's approval: the owner approved it, and it is on the runway. */
+export type ApprovalFacts = { state: 'on-runway'; approvedAt: number };
 
 export type Artifacts = { proposal: boolean; design: boolean; tasks: boolean; specs: string[] };
 
@@ -56,9 +57,6 @@ export type ChangeRow = {
   ownerStepCount: number;
   unreadable: UnreadableFile | null;
   approval: ApprovalFacts | null;
-  /** The owner's checkout has uncommitted edits to this approved change's files. */
-  uncommittedEdits: boolean;
-  uncommittedNotCheckable: string[];
 };
 
 export type ChangesSnapshot = {
@@ -80,18 +78,10 @@ function parseUnreadable(value: unknown): UnreadableFile | null {
   return isRecord(value) ? { file: str(value.file), reason: str(value.reason) } : null;
 }
 
-const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
-
 /** The approval facts of a row; anything that does not fit is treated as no approval. */
 export function parseApproval(value: unknown): ApprovalFacts | null {
-  if (!isRecord(value)) return null;
-  if (value.state === 'on-runway' || value.state === 'changed') {
-    if (typeof value.signedAt !== 'string' || Number.isNaN(Date.parse(value.signedAt))) return null;
-    if (typeof value.commit !== 'string' || !SHA_RE.test(value.commit)) return null;
-    return { state: value.state, signedAt: value.signedAt, commit: value.commit };
-  }
-  if (value.state === 'invalid') return { state: 'invalid', reason: str(value.reason) };
-  return null;
+  if (!isRecord(value) || value.state !== 'on-runway') return null;
+  return { state: 'on-runway', approvedAt: count(value.approvedAt) };
 }
 
 function parseArtifacts(value: unknown): Artifacts {
@@ -127,10 +117,6 @@ export function parseChangeRow(value: unknown): ChangeRow | null {
     ownerStepCount: count(value.ownerStepCount),
     unreadable: parseUnreadable(value.unreadable),
     approval: parseApproval(value.approval),
-    uncommittedEdits: value.uncommittedEdits === true,
-    uncommittedNotCheckable: Array.isArray(value.uncommittedNotCheckable)
-      ? value.uncommittedNotCheckable.filter((p): p is string => typeof p === 'string')
-      : [],
   };
 }
 
@@ -180,50 +166,23 @@ export function artifactsText(artifacts: Artifacts): string {
   return parts.length === 0 ? '—' : parts.join(' · ');
 }
 
-/** The not-ready copy (design decision 8), shared with the approval dialog's refusal. */
+/** The not-ready copy, shared with Change detail. */
 export function notReadyText(
   changeId: string,
   hostName: string,
   reason: 'no-proposal' | 'no-tasks' | null,
 ): string {
   return reason === 'no-tasks'
-    ? `${changeId} has no tasks.md yet. You sign the exact tasks the builder will run. Run /opsx:propose or add tasks in ${hostName}, commit, then come back.`
+    ? `${changeId} has no tasks.md yet. The builder works from its tasks. Run /opsx:propose or add tasks in ${hostName}, commit, then come back.`
     : `${changeId} has no proposal.md yet. Run /opsx:propose in ${hostName}, commit, then come back.`;
 }
 
-/**
- * The uncommitted-edits soft hint (runway: Uncommitted edits do not change the runway): the
- * owner's checkout has uncommitted edits to an approved change. Purely
- * informational; the approval and the runway only follow what is committed on the base branch.
- */
-export function UncommittedHint({
-  baseBranch,
-  notCheckable = [],
-}: {
-  baseBranch: string;
-  notCheckable?: readonly string[];
-}) {
-  const text =
-    notCheckable.length === 0
-      ? `Uncommitted edits to this approved change. The approval only follows what is committed on ${baseBranch}.`
-      : `Uncommitted edits can't be checked: a content filter applies to ${notCheckable.join(', ')}. The approval only follows what is committed on ${baseBranch}.`;
-  return (
-    <HStack gap={1} vAlign="start">
-      <Icon icon="info" size="xsm" color="secondary" />
-      <Text type="supporting" color="secondary">
-        {text}
-      </Text>
-    </HStack>
-  );
-}
-
-type Filter = 'all' | 'ready' | 'on-runway' | 'changed';
+type Filter = 'all' | 'ready' | 'on-runway';
 
 const FILTERS: readonly { value: Filter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'ready', label: 'Ready to approve' },
   { value: 'on-runway', label: 'On runway' },
-  { value: 'changed', label: 'Changed' },
 ];
 
 const isFilter = (value: string): value is Filter => FILTERS.some((f) => f.value === value);
@@ -294,6 +253,7 @@ export function ChangesPage({ hostId }: { hostId: string }) {
   const query = useQuery(changesQuery(hostId));
   const navigate = useNavigate();
   const [filter, setFilter] = useState<Filter>('all');
+  const actions = useApprovalActions(hostId);
 
   useEffect(() => {
     document.title = 'Changes · Counterpoint';
@@ -308,12 +268,10 @@ export function ChangesPage({ hostId }: { hostId: string }) {
   const knownIds = useMemo(() => new Set(active.map((row) => row.id)), [active]);
 
   const counts = useMemo(() => {
-    const result: Record<Filter, number> = { all: 0, ready: 0, 'on-runway': 0, changed: 0 };
+    const result: Record<Filter, number> = { all: 0, ready: 0, 'on-runway': 0 };
     for (const row of active) {
       result.all += 1;
-      if (row.status === 'ready' || row.status === 'on-runway' || row.status === 'changed') {
-        result[row.status] += 1;
-      }
+      if (row.status === 'ready' || row.status === 'on-runway') result[row.status] += 1;
     }
     return result;
   }, [active]);
@@ -342,18 +300,7 @@ export function ChangesPage({ hostId }: { hostId: string }) {
     {
       key: 'status',
       header: 'Status',
-      renderCell: (row) =>
-        row.uncommittedEdits ? (
-          <VStack gap={1} hAlign="start">
-            <StatusBadge status={row.status} />
-            <UncommittedHint
-              baseBranch={data?.baseBranch ?? ''}
-              notCheckable={row.uncommittedNotCheckable}
-            />
-          </VStack>
-        ) : (
-          <StatusBadge status={row.status} />
-        ),
+      renderCell: (row) => <StatusBadge status={row.status} />,
     },
     {
       key: 'tasks',
@@ -397,16 +344,46 @@ export function ChangesPage({ hostId }: { hostId: string }) {
     {
       key: 'approval',
       header: 'Approval',
-      // Verified from git at the base tip by the server; never a stored flag.
-      renderCell: (row) =>
-        row.status === 'on-runway' && row.approval?.state === 'on-runway' ? (
-          <Text>
-            {'On runway · signed '}
-            <Timestamp value={row.approval.signedAt} hasTooltip />
-          </Text>
-        ) : (
-          <Text color="secondary">—</Text>
-        ),
+      // A click on a button here acts on the change; it never opens the row.
+      renderCell: (row) => {
+        if (row.status === 'ready') {
+          return (
+            // biome-ignore lint/a11y/noStaticElementInteractions: only stops the row's click
+            // biome-ignore lint/a11y/useKeyWithClickEvents: the button inside takes the keyboard
+            <span onClick={(event) => event.preventDefault()}>
+              <Button
+                label="Approve"
+                variant="primary"
+                size="sm"
+                isLoading={actions.pending === row.id}
+                onClick={() => void actions.approve(row.id)}
+              />
+            </span>
+          );
+        }
+        if (row.status === 'on-runway' && row.approval !== null) {
+          return (
+            // biome-ignore lint/a11y/noStaticElementInteractions: only stops the row's click
+            // biome-ignore lint/a11y/useKeyWithClickEvents: the button inside takes the keyboard
+            <span onClick={(event) => event.preventDefault()}>
+              <HStack gap={2} vAlign="center" wrap="wrap">
+                <Text type="supporting" color="secondary">
+                  {'Approved '}
+                  <Timestamp value={new Date(row.approval.approvedAt).toISOString()} hasTooltip />
+                </Text>
+                <Button
+                  label="Withdraw"
+                  variant="ghost"
+                  size="sm"
+                  isLoading={actions.pending === row.id}
+                  onClick={() => void actions.withdraw(row.id)}
+                />
+              </HStack>
+            </span>
+          );
+        }
+        return <Text color="secondary">—</Text>;
+      },
     },
   ];
 
@@ -498,6 +475,14 @@ export function ChangesPage({ hostId }: { hostId: string }) {
             <Heading level={2} accessibilityLevel={1}>
               Changes
             </Heading>
+            {counts.ready > 0 ? (
+              <Button
+                label={`Approve all (${counts.ready})`}
+                variant="primary"
+                isLoading={actions.pending === 'all'}
+                onClick={() => void actions.approveAll()}
+              />
+            ) : null}
             <SegmentedControl
               label="Filter changes by status"
               value={filter}
@@ -520,6 +505,7 @@ export function ChangesPage({ hostId }: { hostId: string }) {
         <LayoutContent>
           <VStack gap={6}>
             {errorBanner}
+            {actions.error === null ? null : <Banner status="error" title={actions.error} />}
             {body}
           </VStack>
         </LayoutContent>

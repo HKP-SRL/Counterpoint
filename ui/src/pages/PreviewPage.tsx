@@ -1,7 +1,7 @@
 // Preview (`/h/{hostId}/preview/{changeId}`, pull-requests: Preview link). For a host without
 // preview deploys, a green change's PR and run report link here. Nothing runs until the owner
 // presses Start: the daemon then runs the host config's preview command in the change's
-// worktree, sandboxed like a gate, on a free loopback port. The page follows it over SSE (`run`
+// worktree, as the owner, on a free loopback port. The page follows it over SSE (`run`
 // events), links to it once its port is open, and offers Stop. Output is shown as plain text.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';

@@ -7,15 +7,16 @@
 //      repository's config names;
 //    - an ssh remote gets the owner's SSH agent socket and `ssh -o BatchMode=yes` (never a
 //      prompt), overriding any `core.sshCommand`.
-//    Any other remote (a local path, git://, http://) is refused. The host's integrity baseline is
-//    checked again first: the push reads the repository's remote and url config, which the
-//    baseline pins. Hooks stay off (the clean runner sets core.hooksPath=/dev/null).
+//    Any other remote (a local path, git://, http://) is refused. Hooks stay off (the clean runner
+//    sets core.hooksPath=/dev/null).
 // 2. The PR. `gh` runs outside every repository (in the run folder) with `--repo`, so it never
-//    reads the host's git config, and with a reduced environment. An open PR for the branch (a
-//    change built again) gets its title and body updated instead of a second PR.
+//    reads the host's git config, with the run's environment (the owner's) and never a prompt. An
+//    open PR for the branch (a change built again) gets its title and body updated instead of a
+//    second PR.
 // 3. The body is generated from the change (title, why, the task list with this build's ticks),
-//    the decisions the builder assumed, the protected-path flags and the gates. Builder-written
-//    text is untrusted: it is quoted, @mentions are defused, and the body is capped.
+//    the decisions the builder assumed, the test share and the existing tests the change edited
+//    or deleted, any flags, and the gates. Builder-written text is untrusted: it is quoted,
+//    @mentions are defused, and the body is capped.
 import {
   accessSync,
   closeSync,
@@ -29,7 +30,6 @@ import {
 } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { execa } from 'execa';
-import { checkIntegrity } from '../core/approvals/integrity.ts';
 import type { ChangeFacts, FrameworkAdapter } from '../core/framework/port.ts';
 import { runGit } from '../core/git/run.ts';
 import {
@@ -37,10 +37,12 @@ import {
   listGateResults,
   type RunChangeFlag,
   runChangeTicks,
+  type StoredTestShare,
 } from '../core/store/runs.ts';
+import { blocksMerge } from './branch-diff.ts';
 import type { DeliverContext } from './orchestrator.ts';
+import { withoutCounterpoint } from './owner-env.ts';
 import { findDeployPreview, hasPreviewDeploys } from './preview.ts';
-import { blocksMerge } from './protected-paths.ts';
 
 const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
 const GH_TIMEOUT_MS = 2 * 60 * 1000;
@@ -50,18 +52,6 @@ const MAX_FILE_BYTES = 256 * 1024;
 const REMOTE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const SLUG_PART_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const PR_URL_RE = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
-
-/** Variables `gh` may inherit (its config and keychain access need HOME and USER). */
-const GH_ENV_ALLOW_LIST = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'LANG',
-  'TMPDIR',
-  'GH_CONFIG_DIR',
-  'XDG_CONFIG_HOME',
-] as const;
 
 export class DeliveryError extends Error {
   constructor(message: string) {
@@ -167,7 +157,6 @@ export async function pushTarget(repo: string, baseBranch: string): Promise<Push
 }
 
 export interface PushInput {
-  home: string;
   host: { id: string; root: string; gitCommonDir: string; baseBranch: string };
   branch: string;
   target: PushTarget;
@@ -209,12 +198,6 @@ export function pushCredentials(input: {
 export async function pushBranch(input: PushInput): Promise<void> {
   if (!/^cp\/[a-z0-9][a-z0-9-]{0,63}$/.test(input.branch)) {
     throw new DeliveryError(`Refusing to push ${input.branch}: not a Counterpoint branch.`);
-  }
-  const integrity = await checkIntegrity(input.home, input.host);
-  if (integrity.state !== 'ok') {
-    throw new DeliveryError(
-      `${input.host.id}'s git config or hooks changed since your baseline, so nothing was pushed. Review them, then run "counterpoint trust ${input.host.id}".`,
-    );
   }
   const env = input.env ?? process.env;
   const credentials = pushCredentials({
@@ -328,6 +311,8 @@ export interface PrBodyInput {
   /** The builder's recorded assumptions (raw), or null. */
   assumptions: string | null;
   flags: readonly RunChangeFlag[];
+  /** How much of the change is tests, against the budget; null when it was not measured. */
+  testShare: StoredTestShare | null;
   gates: readonly {
     gate: string;
     attempt: number;
@@ -336,6 +321,40 @@ export interface PrBodyInput {
   }[];
   sessions: number;
   preview: PreviewLine;
+}
+
+/** A gate's outcome in a word or two. */
+export function gateWord(verdict: string | null): string {
+  switch (verdict) {
+    case 'pass':
+      return 'passed';
+    case 'fail':
+      return 'failed';
+    case 'skipped':
+      return 'skipped (no matching files changed)';
+    case 'not-run':
+      return 'not run';
+    default:
+      return '-';
+  }
+}
+
+/** The test share in plain words: the share, the budget, and any existing test edited. */
+export function testShareLines(share: StoredTestShare | null): string[] {
+  if (share === null) return ['The test share was not measured.'];
+  const over = share.percent > share.budget;
+  const lines = [
+    `Tests are ${share.percent}% of this change's added lines (${share.testLines} of ${share.addedLines}), against a budget of ${share.budget}%${over ? ': over budget. That is advice, not a failure.' : '.'}`,
+  ];
+  if (share.editedTests.length === 0) {
+    lines.push('', 'No existing test was edited or deleted.');
+  } else {
+    lines.push('', 'Existing tests this change edited or deleted:');
+    for (const test of share.editedTests) {
+      lines.push(`- \`${test.path.replaceAll('`', "'")}\` (${test.status})`);
+    }
+  }
+  return lines;
 }
 
 export function prTitle(change: ChangeFacts): string {
@@ -385,6 +404,8 @@ export function prBody(input: PrBodyInput): string {
   if (assumptions !== '') out.push('', quote(assumptions));
   out.push('');
 
+  out.push('## Tests', '', ...testShareLines(input.testShare), '');
+
   if (input.flags.length > 0) {
     out.push('## Flags', '', 'Paths this branch touches that need your eyes:', '');
     for (const flag of input.flags) out.push(flagLine(flag));
@@ -409,7 +430,7 @@ export function prBody(input: PrBodyInput): string {
     );
     for (const gate of last.values()) {
       const seconds = gate.durationMs === null ? '-' : `${Math.round(gate.durationMs / 1000)} s`;
-      out.push(`| ${gate.gate.replaceAll('|', '/')} | ${gate.verdict ?? '-'} | ${seconds} |`);
+      out.push(`| ${gate.gate.replaceAll('|', '/')} | ${gateWord(gate.verdict)} | ${seconds} |`);
     }
   }
   out.push('');
@@ -431,15 +452,10 @@ export type GhRun = (
   options: { cwd: string },
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
-/** The environment `gh` runs with: its config and keychain, nothing else, never a prompt. */
+/** The environment `gh` runs with: the run's (the owner's), never a prompt. */
 export function ghEnv(parent: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of GH_ENV_ALLOW_LIST) {
-    const value = parent[key];
-    if (value !== undefined) env[key] = value;
-  }
   return {
-    ...env,
+    ...withoutCounterpoint(parent),
     GH_PROMPT_DISABLED: '1',
     GH_NO_UPDATE_NOTIFIER: '1',
     GH_SPINNER_DISABLED: '1',
@@ -614,13 +630,12 @@ export function createDeliver(
   options: DeliverOptions,
 ): (context: DeliverContext) => Promise<Delivered> {
   return async (context) => {
-    const env = options.env ?? process.env;
+    const env = options.env ?? context.env;
     const target = await (options.pushTarget ?? pushTarget)(
       context.host.root,
       context.host.baseBranch,
     );
     await (options.push ?? pushBranch)({
-      home: options.home,
       host: context.host,
       branch: context.branch,
       target,
@@ -653,6 +668,7 @@ export function createDeliver(
       ticked: runChangeTicks(context.db, context.runChangeId),
       assumptions: readSmallFile(join(context.changeDir, 'assumptions.md')),
       flags: context.flags,
+      testShare: context.testShare,
       gates: listGateResults(context.db, context.runChangeId),
       sessions,
       preview: deploys

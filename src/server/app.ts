@@ -16,7 +16,6 @@ import { mountApprovalRoutes } from './routes/approvals.ts';
 import { mountChangeRoutes } from './routes/changes.ts';
 import { mountNeedsYouRoutes } from './routes/needs-you.ts';
 import { mountRunRoutes, type RunRoutesOptions } from './routes/run.ts';
-import { mountTrustRoutes } from './routes/trust.ts';
 import { mountEvents } from './sse.ts';
 
 export const PACKAGE_NAME = '@hkp/counterpoint';
@@ -35,14 +34,13 @@ export interface AppOptions {
   heartbeatMs?: number;
   /** Per-host runtimes (shared with the base-tip watcher); created here when omitted. */
   runtimes?: HostRuntimes;
-  /** The Counterpoint home; the Trust API reads `hosts/{id}/doctor.json` from it when set. */
+  /** The Counterpoint home (run folders and reports). */
   home?: string;
-  /**
-   * Approval views (shared with the watcher and the control app); created from `home` when
-   * omitted. Without a home there are no approval routes and no approval overlay.
-   */
+  /** Approval views (shared with the watcher and the orchestrator); created when omitted. */
   approvals?: ApprovalViews;
-  /** The build lane's owner actions (runs, doctor, risks, stop); mounted when given with a home. */
+  /** Called after the owner approves or withdraws (the daemon nudges the watcher). */
+  onApprovalChanged?: (hostId: string) => void;
+  /** The build lane's owner actions (runs, settings, stop); mounted when given with a home. */
   run?: Omit<RunRoutesOptions, 'home' | 'store' | 'runtimes' | 'approvals'>;
 }
 
@@ -126,25 +124,24 @@ export function createApp(options: AppOptions): Hono {
   );
 
   const runtimes = options.runtimes ?? createHostRuntimes({ store: options.store });
-  const approvals =
-    options.approvals ??
-    (options.home === undefined ? undefined : createApprovalViews({ home: options.home }));
-  mountChangeRoutes(app, { runtimes, ...(approvals === undefined ? {} : { approvals }) });
-  if (options.home !== undefined) {
-    mountTrustRoutes(app, { home: options.home, store: options.store });
-    if (approvals !== undefined) {
-      mountApprovalRoutes(app, { runtimes, home: options.home, approvals });
-      mountNeedsYouRoutes(app, { runtimes, home: options.home, approvals, store: options.store });
-      if (options.run !== undefined) {
-        mountRunRoutes(app, {
-          ...options.run,
-          home: options.home,
-          store: options.store,
-          runtimes,
-          approvals,
-        });
-      }
-    }
+  const approvals = options.approvals ?? createApprovalViews({ store: options.store });
+  mountChangeRoutes(app, { runtimes, approvals });
+  mountApprovalRoutes(app, {
+    runtimes,
+    approvals,
+    ...(options.onApprovalChanged === undefined
+      ? {}
+      : { onApprovalChanged: options.onApprovalChanged }),
+  });
+  mountNeedsYouRoutes(app, { runtimes, store: options.store });
+  if (options.home !== undefined && options.run !== undefined) {
+    mountRunRoutes(app, {
+      ...options.run,
+      home: options.home,
+      store: options.store,
+      runtimes,
+      approvals,
+    });
   }
 
   // Unknown API reads are JSON 404s, never the console page. GET only, so API routes added to the

@@ -15,20 +15,18 @@
 //   changes-40          Changes list: 50 rows and the long title (list overflow, long text)
 //   change-detail-long  change-01: long title, 300-character why, long owner steps, deep spec
 //                       path (long text on the detail page)
-//   mission-runway-40   Mission after every change is approved: a 50-row runway list
-//   needs-you-50        Needs You after every approval drifted: 50 items
-//   drift-view-1000     The drift view of a 1,000-line diff with a 400-character line
+//   mission-runway-40   Mission after `Approve all`: a 50-row runway list
 //
-// Scratch repos, homes and keys live under the repo's `.tmp/` (or CP_TEST_SCRATCH, which keeps the
+// Scratch repos and homes live under the repo's `.tmp/` (or CP_TEST_SCRATCH, which keeps the
 // daemon's socket path short in a deep checkout) and are removed at the end. Nothing here touches
-// ~/.ssh, ssh-agent, the Keychain, the real Counterpoint home or a real host repository.
+// the real Counterpoint home or a real host repository.
 import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { type Browser, chromium, type Page } from 'playwright-core';
 import { buildLargeHost } from '../tests/helpers/large-host.ts';
-import { removeScratchDirs } from '../tests/helpers/scratch.ts';
+import { makeScratchDir, removeScratchDirs } from '../tests/helpers/scratch.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'src', 'cli', 'main.ts');
@@ -43,7 +41,6 @@ const VIEWPORT_HEIGHT = 900;
 /** Chrome cannot capture taller than this in one image. */
 const MAX_CAPTURE_HEIGHT = 16_000;
 const CHANGES = 50;
-const BIG_DIFF_CHANGE = 'change-02';
 
 const LINK_RE =
   /^Sign-in link \(works once\): (http:\/\/127\.0\.0\.1:\d+\/login\?code=[A-Za-z0-9_-]{43})$/m;
@@ -73,15 +70,6 @@ async function cli(args: readonly string[], home: string, cwd: string) {
     stdout: String(result.stdout),
     stderr: String(result.stderr),
   };
-}
-
-async function waitFor(what: string, check: () => Promise<boolean>, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  }
-  throw new Error(`Timed out waiting for ${what}.`);
 }
 
 /**
@@ -129,7 +117,8 @@ async function main(): Promise<void> {
     deepPath: true,
     longOwnerSteps: true,
   });
-  const { home, root, hostId } = host;
+  const { root, hostId } = host;
+  const home = makeScratchDir('home');
   let browser: Browser | undefined;
   let started = false;
   const written: string[] = [];
@@ -189,37 +178,18 @@ async function main(): Promise<void> {
       await main()
         .getByRole('heading', { name: /^Long Title/ })
         .waitFor({ timeout: 30_000 });
-      await main().getByLabel('Covered files', { exact: true }).getByRole('table').waitFor();
     });
 
-    // Every change approved through the library: a 50-row runway.
-    await host.approveAll();
+    // Every change approved with one click: a 50-row runway.
+    await page.goto(`${origin}/h/${hostId}/changes`);
+    await main()
+      .getByRole('button', { name: /^Approve all/ })
+      .click();
     await shoot('mission-runway-40', `/h/${hostId}`, async () => {
       await main()
         .getByLabel('Runway', { exact: true })
         .getByRole('heading', { name: String(CHANGES), exact: true })
         .waitFor({ timeout: 60_000 });
-    });
-
-    // Every approval drifted in one commit: 50 Needs You items.
-    await host.driftAll({ bigDiffChange: BIG_DIFF_CHANGE });
-    const items = () => main().getByRole('list', { name: 'Needs You items' }).getByRole('listitem');
-    await page.goto(`${origin}/h/${hostId}/needs-you`);
-    await waitFor(
-      `${CHANGES} Needs You items`,
-      async () => (await items().count()) === CHANGES,
-      60_000,
-    );
-    await shoot('needs-you-50', `/h/${hostId}/needs-you`, async () => {
-      await waitFor('the Needs You list', async () => (await items().count()) === CHANGES);
-    });
-
-    // The 1,000-line diff, open in its CodeBlock.
-    await shoot('drift-view-1000', `/h/${hostId}/needs-you/${BIG_DIFF_CHANGE}`, async () => {
-      await main()
-        .getByText(`Changed decision 1 for part ${BIG_DIFF_CHANGE}.`, { exact: false })
-        .first()
-        .waitFor({ timeout: 30_000 });
     });
 
     if (problems.length > 0) throw new Error(`Page errors: ${problems.join('; ')}`);

@@ -9,13 +9,7 @@ import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge';
 import type { IconName } from '@astryxdesign/core/Icon';
 import { Icon } from '@astryxdesign/core/Icon';
 
-export type ChangeStatus =
-  | 'unreadable'
-  | 'built'
-  | 'on-runway'
-  | 'changed'
-  | 'ready'
-  | 'not-planned';
+export type ChangeStatus = 'unreadable' | 'built' | 'on-runway' | 'ready' | 'not-planned';
 
 interface StatusLook {
   label: string;
@@ -27,7 +21,6 @@ export const CHANGE_STATUS: Readonly<Record<ChangeStatus, StatusLook>> = {
   'not-planned': { label: 'Not ready', variant: 'neutral', icon: 'clock' },
   ready: { label: 'Ready to approve', variant: 'info', icon: 'info' },
   'on-runway': { label: 'On runway', variant: 'success', icon: 'success' },
-  changed: { label: 'Changed since signed', variant: 'warning', icon: 'warning' },
   built: { label: 'Built', variant: 'neutral', icon: 'check' },
   unreadable: { label: "Couldn't read", variant: 'error', icon: 'error' },
 };

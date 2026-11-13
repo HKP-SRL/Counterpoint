@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,12 +14,14 @@ import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import { ClaudeCliRunner } from '../../src/agent/runner.ts';
 import { generatedHandoff, startBuilderSession } from '../../src/build/builder-session.ts';
 import {
+  ASSUMPTIONS_FILE,
   BLOCKED_FILE,
   builderPrompt,
   HANDOFF_FILE,
   quote,
   wrapUpMessage,
 } from '../../src/build/prompt.ts';
+import { parseQuestions } from '../../src/build/questions.ts';
 import { commitSession } from '../../src/build/session-commit.ts';
 import type { ChangeFacts } from '../../src/core/framework/port.ts';
 import { runGit } from '../../src/core/git/run.ts';
@@ -63,6 +66,7 @@ describe('builder prompt', () => {
       gateFailure: { gate: 'unit', attempt: 1, reason: 'exit code 1', tail: 'FAIL menu.test.ts' },
       doneTasks: ['1.1 Add the table'],
       gates: [],
+      testBudget: 30,
     });
     expect(prompt).toContain('"add-menu"');
     expect(prompt).toContain('openspec/changes/add-menu/tasks.md');
@@ -75,8 +79,8 @@ describe('builder prompt', () => {
     expect(wrapUpMessage('budget')).toContain(HANDOFF_FILE);
   });
 
-  it('keeps the builder going to the end, skipping only what this sandbox cannot do', () => {
-    const prompt = builderPrompt({
+  const firstSession = (gates: Parameters<typeof builderPrompt>[0]['gates'], testBudget = 30) =>
+    builderPrompt({
       changeId: 'add-menu',
       branch: 'cp/add-menu',
       instructions: createOpenSpecAdapter().buildInstructions(change),
@@ -84,22 +88,103 @@ describe('builder prompt', () => {
       handoff: null,
       gateFailure: null,
       doneTasks: [],
-      gates: [
-        { name: 'types', command: ['node_modules/.bin/tsc', '--noEmit'], services: [] },
-        { name: 'unit', command: ['node_modules/.bin/vitest', 'run'], services: ['supabase'] },
-      ],
+      gates,
+      testBudget,
     });
-    expect(prompt).toContain('Keep working until every task that is not an "Owner:" step is done');
-    expect(prompt).toContain('Do not stop early to leave work for a later session');
-    expect(prompt).toContain(`write ${BLOCKED_FILE} at the worktree root`);
-    expect(prompt).toContain('Stop only when every task left is blocked or waits on a blocked one');
-    // The builder knows what the gates check, so a check they make never blocks a task.
+
+  it('lets the builder act as the owner and keeps it going to the end', () => {
+    const prompt = firstSession([]);
     expect(prompt).toContain(
-      'these gates in this worktree, starting the services they need, and gives you any failure: types (`node_modules/.bin/tsc --noEmit`); unit (`node_modules/.bin/vitest run`, with supabase).',
+      'Install the packages, use the network and start the local services (a database, a dev server) a task needs',
     );
+    expect(prompt).toContain('resetting the local database needs no question');
+    expect(prompt).not.toMatch(/sandbox|do not try to start services/i);
+    expect(prompt).toContain('Keep working until no task is left that you can do');
+    expect(prompt).toContain('Do not stop early to leave work for a later session');
+    expect(prompt).toContain('Stop only when every task left waits on the owner');
+    expect(prompt).toContain('A task that starts with "Owner:" is the owner\'s: skip it');
+  });
+
+  it('has the builder decide and log, and ask first only for the four kinds of action', () => {
+    const prompt = firstSession([]);
+    expect(prompt).toContain(
+      `choose the reasonable option, keep going, and record it in ${ASSUMPTIONS_FILE}`,
+    );
+    expect(prompt).toContain(
+      'what you chose, why, and the alternatives. Never wait for an answer.',
+    );
+    expect(prompt).toContain(
+      'Ask first only before an action that cannot be undone outside this worktree: spending money; deleting or changing data that is not local; changing a production system or a live credential; publishing anything publicly. Everything else you decide and log.',
+    );
+    expect(prompt).toContain(`write the question in ${BLOCKED_FILE} at the worktree root`);
+    expect(prompt).toContain('with 2 to 4 options and the one you recommend');
+  });
+
+  it('asks in the format Needs You reads', () => {
+    const prompt = firstSession([]);
+    // The format block, filled in the way the prompt describes, parses as one question.
+    const format = prompt.slice(prompt.indexOf('  ## Question'), prompt.indexOf('\n- A task that'));
+    const filled = format
+      .replace('<the task number and text>', '3.2 Run the migration on the hosted database')
+      .replace('<what needs deciding, in one or two sentences>', 'Run it now?')
+      .replace('1. <option>', '1. Run it now')
+      .replace('2. <option>', '2. Leave it for after the merge')
+      .replace('<the number of the option you recommend>', '2')
+      .replace('<the numbers of the tasks that wait on the answer>', '3.3');
+    expect(parseQuestions(filled)).toEqual([
+      {
+        task: '3.2 Run the migration on the hosted database',
+        text: 'Run it now?',
+        options: ['Run it now', 'Leave it for after the merge'],
+        recommended: 1,
+        waiting: ['3.3'],
+      },
+    ]);
+  });
+
+  it('carries the test policy, the budget and the gate tiers', () => {
+    const prompt = firstSession(
+      [
+        { name: 'types', command: ['pnpm', 'tsc'], services: [], when: 'every' },
+        {
+          name: 'related',
+          command: ['pnpm', 'vitest', 'related', '--run', '{changed}'],
+          services: [],
+          when: 'every',
+        },
+        {
+          name: 'suite',
+          command: ['pnpm', 'vitest', 'run'],
+          services: ['supabase'],
+          when: 'final',
+        },
+      ],
+      25,
+    );
+    expect(prompt).toContain(
+      'write a test only where the plan asks for one or where a mistake would cost money, data or access. Write none for wording, layout or styling.',
+    );
+    expect(prompt).toContain(
+      'run only the tests related to the files you change, and leave the full suite to the gates',
+    );
+    expect(prompt).toContain('tests should be at most 25% of the lines this change adds');
+    expect(prompt).toContain('going over never fails the build');
+    expect(prompt).toContain(
+      'On every attempt: types (`pnpm tsc`); related (`pnpm vitest related --run {changed}`). Once at the end, after those pass: suite (`pnpm vitest run`, with supabase).',
+    );
+    expect(prompt).toContain('`{changed}` stands for the files the change added or modified.');
     expect(prompt).toContain(
       'is not blocked: do the rest of it, tick it, and leave that check to them',
     );
+  });
+
+  it('names no tier the host does not use', () => {
+    const prompt = firstSession([
+      { name: 'unit', command: ['pnpm', 'vitest', 'run'], services: [], when: 'every' },
+    ]);
+    expect(prompt).toContain('On every attempt: unit (`pnpm vitest run`).');
+    expect(prompt).not.toContain('Once at the end');
+    expect(prompt).not.toContain('{changed}');
   });
 
   it('clips long quotes to their last lines and cannot be closed early', () => {
@@ -294,13 +379,40 @@ describe('builder session budget (fake claude)', () => {
   const runner = new ClaudeCliRunner({ binary: FAKE });
   const base = (dir: string) => ({
     runner,
-    settings: { permissions: { deny: [] }, sandbox: {} } as never,
-    allowedTools: ['Bash'],
     model: 'fake',
     cwd: dir,
     rawLogPath: join(dir, 'raw.jsonl'),
     processTag: 'tag-0123456789',
     timeoutMs: 20_000,
+  });
+
+  it("runs as the owner: in the worktree, with the run's environment, in auto mode", async () => {
+    const dir = makeScratchDir('cp-bs');
+    const seen: Array<Record<string, unknown>> = [];
+    const session = await startBuilderSession({
+      ...base(dir),
+      env: { PATH: process.env.PATH ?? '', GH_TOKEN: 'gho_owner', COUNTERPOINT_HOME: '/cp' },
+      prompt: 'work',
+      windowTokens: 200_000,
+      budgetPercent: 40,
+      onEvent: (e) => {
+        if ((e as { subtype?: string }).subtype === 'fake_env') seen.push(e as never);
+      },
+    });
+    await session.done;
+    expect(seen[0]).toMatchObject({
+      cwd: realpathSync(dir),
+      ghToken: 'gho_owner',
+      scrub: '0',
+      counterpointHome: null,
+      tag: 'tag-0123456789',
+    });
+    const argv = seen[0]?.argv as string[];
+    expect(argv).toEqual(
+      expect.arrayContaining(['--permission-mode', 'auto', '--permission-prompts', 'none']),
+    );
+    expect(argv).not.toContain('--settings');
+    expect(argv).not.toContain('--allowedTools');
   });
 
   it('ends with the turn when under budget', async () => {

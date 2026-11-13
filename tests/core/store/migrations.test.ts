@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { openStore, type Store, upsertHost } from '../../../src/core/store/db.ts';
+import { openStore, STORE_VERSION, type Store, upsertHost } from '../../../src/core/store/db.ts';
 import { makeScratchDir, removeScratchDirs } from '../../helpers/scratch.ts';
 
 afterAll(() => {
@@ -29,7 +29,7 @@ function insertRun(db: Store, id: string, state = 'running'): void {
 describe('store migration 2 (build lane)', () => {
   it('reaches the latest schema version with the build-lane and settings tables', () => {
     const db = freshStore();
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(STORE_VERSION);
     const tables = db
       .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
       .all()
@@ -42,6 +42,8 @@ describe('store migration 2 (build lane)', () => {
       'model_windows',
       'governor',
       'host_settings',
+      'approvals',
+      'approval_carryover',
     ]) {
       expect(tables).toContain(name);
     }

@@ -8,7 +8,7 @@
 // A user message containing `SLOW` makes the turn wait 30 s (like a long tool call) unless it is
 // interrupted; a message sent during it ends the turn (delivered mid-turn). `CHILD` starts a background `sleep 60` in the same process group and reports its
 // pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
-// `CP_AGENT_RUN` tag it sees.
+// `CP_AGENT_RUN` tag it sees, its working folder, its arguments and a few variables.
 import { spawn } from 'node:child_process';
 
 let turn = 0;
@@ -33,7 +33,16 @@ function endTurn(subtype) {
 function startTurn(text) {
   turn += 1;
   out({ type: 'system', subtype: 'init', model: 'fake-model', permissionMode: 'auto' });
-  out({ type: 'system', subtype: 'fake_env', tag: process.env.CP_AGENT_RUN ?? null });
+  out({
+    type: 'system',
+    subtype: 'fake_env',
+    tag: process.env.CP_AGENT_RUN ?? null,
+    cwd: process.cwd(),
+    argv: process.argv.slice(2),
+    ghToken: process.env.GH_TOKEN ?? null,
+    scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null,
+    counterpointHome: process.env.COUNTERPOINT_HOME ?? null,
+  });
   const id = `msg_${turn}`;
   const usage = {
     input_tokens: 10,

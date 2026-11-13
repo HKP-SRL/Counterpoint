@@ -2,13 +2,13 @@
 // serialized write path).
 //
 // Every write lands as its own commit on the host's local base branch, built with plumbing only
-// (as approvals are: no checkout and no index of Counterpoint's own), and the branch moves by
+// (no checkout and no index of Counterpoint's own), and the branch moves by
 // compare-and-swap. Where the owner has the base branch checked out, the written files are placed
 // in that checkout too, and a write whose path is occupied there (uncommitted edits, something in
 // the way, a content filter) is refused before any ref moves. Nothing is pushed.
 //
-// One at a time, across processes: writes queue in the daemon, and each one (like each approval
-// landing from `counterpoint approve`) holds the home's planning-write lock while it lands. The
+// One at a time, across processes: writes queue in the daemon, and each one holds the home's
+// planning-write lock while it lands. The
 // lock is SQLite's exclusive lock on one file, polled, so the daemon never blocks while it waits
 // and a crash can never leave it held. When the base moved between building and landing (the
 // owner committed meanwhile) the write is rebuilt on the new tip, up to three times.
@@ -18,7 +18,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { BRANCH_RE, checkCheckouts, replacePath } from '../approvals/commit.ts';
 import {
   type CommitIdent,
   checkoutIndexFile,
@@ -29,6 +28,7 @@ import {
   updateRefCas,
 } from '../git/plumbing.ts';
 import { ownerIdentity } from '../git/run.ts';
+import { BRANCH_RE, checkCheckouts, replacePath } from '../git/tree-write.ts';
 
 const SQLITE_BUSY = 5;
 const LOCK_POLL_MS = 250;

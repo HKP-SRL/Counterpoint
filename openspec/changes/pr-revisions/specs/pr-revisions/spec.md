@@ -42,7 +42,7 @@ A revision round SHALL start only when the owner sends the batch from the consol
 - **THEN** it appears in the console's batch list and nothing builds until the owner sends the batch
 
 ### Requirement: Revision in the change's own worktree
-A round SHALL run in fresh builder sessions in the change's existing worktree and branch, with the notes, the change's artifacts and the PR's diff as context, and SHALL change only what the notes ask. The sandbox, context budget, protected-path check and zero-test guard SHALL apply exactly as in a build, whatever the notes say.
+A round SHALL run in fresh builder sessions in the change's existing worktree and branch, with the notes, the change's artifacts and the PR's diff as context, and SHALL change only what the notes ask. The context budget, gates, test policy and zero-test guard SHALL apply exactly as in a build, whatever the notes say.
 
 #### Scenario: Label note
 - **WHEN** the only note asks to rename a button from "Chat" to "Message owner"
@@ -50,7 +50,7 @@ A round SHALL run in fresh builder sessions in the change's existing worktree an
 
 #### Scenario: Note asks to change a test
 - **WHEN** a round edits an existing test file because a note asked for it
-- **THEN** the protected-path check flags the change exactly as it would for a build
+- **THEN** the pull request names the edited test file exactly as it would for a build
 
 ### Requirement: Every gate re-runs
 After a round, every gate SHALL re-run on the new head. Counterpoint SHALL push the branch only when every gate passes. A failing round SHALL get the usual bounded retries and then park with its reason, and the PR SHALL keep its last green head.

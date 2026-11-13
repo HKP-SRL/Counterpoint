@@ -1,22 +1,31 @@
-// A gate round and what follows it (gates: Bounded retries then parking; Shared test lock).
+// A gate round and what follows it (gates: Bounded retries then parking; Shared test lock; Fast
+// gates every attempt, final gates once; Gates can take only the changed files).
 //
-// After the builder's sessions for an attempt, the change's gates run in the order the host config
-// lists them (read at the approved base), each recorded in the store before it starts. The round
-// stops at the first failure: later gates would judge code already known to be wrong. A gate
-// marked `testLock` takes the machine-wide test lock first and holds it through its service reset
-// and its command; the services it names are prepared before it (services.ts).
+// After the builder's sessions for an attempt, the change's gates run as the host config (read at
+// the build's base commit) lists them: first every gate marked to run on every attempt, in order,
+// then, only when all of those passed, the final gates, in order. Each is recorded in the store
+// before it starts. The round stops at the first failure: later gates would judge code already
+// known to be wrong, and are recorded as not run. A gate marked `testLock` takes the machine-wide
+// test lock first and holds it through its service reset and its command; the services it names
+// are prepared before it (services.ts).
+//
+// A gate command may hold the placeholder `{changed}`: Counterpoint replaces it with the files the
+// change added or modified since its base commit (`git diff --name-only --diff-filter=AM`), one
+// argument each, narrowed by the gate's own `paths` patterns. A gate whose list is empty (or that
+// lists `paths` none of the changed files match) has nothing to check: it is recorded as skipped,
+// neither passed nor failed. Counterpoint still knows no test tool.
 //
 // What follows a round:
-// - every gate passed: the change is green;
+// - every gate passed (or was skipped): the change is green;
 // - a gate failed: one more failed attempt. Below the host's `attempts` the failing gate's last
 //   lines go back to the next builder session; at `attempts` the change parks with that gate's
 //   output, and the run moves on;
 // - the run was stopped: nothing is counted;
 // - the round could not judge the code (the test lock stayed held, the gate could not start): the
 //   change parks at once with the reason, since another builder session would not help.
-import { join } from 'node:path';
-import type { GateConfig, HostConfig } from '../core/host/host-config.ts';
-import type { ProtectedPaths } from '../core/security/sandbox-settings.ts';
+import { join, matchesGlob } from 'node:path';
+import { runGit } from '../core/git/run.ts';
+import { CHANGED_PLACEHOLDER, type GateConfig, type HostConfig } from '../core/host/host-config.ts';
 import type { Store } from '../core/store/db.ts';
 import {
   finishGateResult,
@@ -42,22 +51,24 @@ export interface GateRoundInput {
   change: string;
   /** 1-based attempt number. */
   attempt: number;
-  /** The host config read at the approved base commit. */
+  /** The host config read at the build's base commit. */
   config: HostConfig;
   worktree: string;
+  /** The commit the build started from: `{changed}` is what the change added or modified since. */
+  baseCommit: string;
   /** `runs/<run>/<change>/`; logs go to `gates/<attempt>/<gate>.log` under it. */
   changeDir: string;
-  protectedPaths: Omit<ProtectedPaths, 'workdir'>;
-  consolePort: number;
   services: ServiceSession;
   testLock?: { file?: string; waitMs?: number };
   signal?: AbortSignal;
+  /** The run's environment (the owner's). */
   parentEnv?: NodeJS.ProcessEnv;
   /** Called as each gate starts and ends (for live progress). */
   onGate?: (event: { gate: string; phase: 'start' | 'end'; end?: GateEnd }) => void;
   /** For tests. */
   runGate?: typeof runGate;
   acquireTestLock?: typeof acquireTestLock;
+  changedFiles?: typeof changedFiles;
 }
 
 export interface GateRoundEntry {
@@ -87,7 +98,11 @@ const REASON_TEXT: Readonly<Record<GateFailReason, string>> = {
   'test-lock': 'the test lock stayed held',
 };
 
-export function describeGateReason(end: Pick<GateEnd, 'reason' | 'exitCode' | 'signal'>): string {
+export function describeGateReason(
+  end: Pick<GateEnd, 'verdict' | 'reason' | 'exitCode' | 'signal'>,
+): string {
+  if (end.verdict === 'skipped') return 'skipped (no matching files changed)';
+  if (end.verdict === 'not-run') return 'not run (an earlier gate failed)';
   if (end.reason === null) return 'passed';
   if (end.reason === 'exit-code' && end.exitCode !== null) return `exit code ${end.exitCode}`;
   if (end.reason === 'signal' && end.signal !== null) return `killed by ${end.signal}`;
@@ -110,6 +125,7 @@ async function runOne(
   input: GateRoundInput,
   gate: GateConfig,
   attemptDir: string,
+  command: readonly string[],
 ): Promise<GateRoundEntry> {
   const tag = newGateTag();
   const logPath = join(attemptDir, `${gate.name}.log`);
@@ -146,11 +162,9 @@ async function runOne(
     } else {
       end = await (input.runGate ?? runGate)({
         gate,
+        command,
         worktree: input.worktree,
-        scratchDir: join(attemptDir, `.${gate.name}-scratch`),
         logPath,
-        protectedPaths: input.protectedPaths,
-        consolePort: input.consolePort,
         env: { ...prep.env, ...(lock?.env ?? {}) },
         parentEnv: input.parentEnv,
         signal: input.signal,
@@ -173,17 +187,99 @@ async function runOne(
   return { gate: gate.name, resultId, end: stored };
 }
 
-/** Runs the change's gates in order and stops at the first failure. */
+/**
+ * The files the change added or modified since `base`, as the worktree's HEAD has them. Deleted
+ * files are left out: there is nothing left to check in them.
+ */
+export async function changedFiles(worktree: string, base: string): Promise<string[]> {
+  if (!/^[0-9a-f]{40}$/.test(base)) throw new Error('The base must be a commit id.');
+  const { stdout } = await runGit(
+    worktree,
+    ['diff', '--name-only', '-z', '--diff-filter=AM', '--no-renames', base, 'HEAD', '--'],
+    { timeoutMs: 60_000 },
+  );
+  return stdout.split('\0').filter((path) => path !== '');
+}
+
+/**
+ * The command a gate runs this attempt: its own, with `{changed}` replaced by the changed files it
+ * cares about, one argument each; null when it has nothing to check (skipped).
+ */
+export function gateCommand(gate: GateConfig, changed: readonly string[]): string[] | null {
+  const usesChanged = gate.command.includes(CHANGED_PLACEHOLDER);
+  if (!usesChanged && gate.paths === undefined) return [...gate.command];
+  const paths = gate.paths;
+  const files =
+    paths === undefined
+      ? [...changed]
+      : changed.filter((file) =>
+          paths.some((pattern) => file === pattern || matchesGlob(file, pattern)),
+        );
+  if (files.length === 0) return null;
+  return gate.command.flatMap((arg) => (arg === CHANGED_PLACEHOLDER ? files : [arg]));
+}
+
+/** Records a gate that did not run its command (skipped, or not run after a failure). */
+function recordWithout(
+  input: GateRoundInput,
+  gate: GateConfig,
+  attemptDir: string,
+  verdict: 'skipped' | 'not-run',
+): GateRoundEntry {
+  const logPath = join(attemptDir, `${gate.name}.log`);
+  const resultId = insertGateResult(input.db, {
+    runChangeId: input.runChangeId,
+    attempt: input.attempt,
+    gate: gate.name,
+    processTag: newGateTag(),
+    logPath,
+  });
+  const end: GateEnd = {
+    verdict,
+    reason: null,
+    exitCode: null,
+    signal: null,
+    tail: '',
+    survivors: [],
+    durationMs: 0,
+  };
+  finishGateResult(input.db, resultId, end);
+  input.onGate?.({ gate: gate.name, phase: 'end', end });
+  return { gate: gate.name, resultId, end };
+}
+
+/**
+ * Runs the change's every-attempt gates in order, then its final gates once they all passed, and
+ * stops at the first failure (the gates after it are recorded as not run).
+ */
 export async function runGateRound(input: GateRoundInput): Promise<GateRound> {
   const attemptDir = join(input.changeDir, 'gates', String(input.attempt));
   const entries: GateRoundEntry[] = [];
-  for (const gate of input.config.gates) {
+  const ordered = [
+    ...input.config.gates.filter((gate) => gate.when === 'every'),
+    ...input.config.gates.filter((gate) => gate.when === 'final'),
+  ];
+  const needsChanged = ordered.some(
+    (gate) => gate.paths !== undefined || gate.command.includes(CHANGED_PLACEHOLDER),
+  );
+  const changed = needsChanged
+    ? await (input.changedFiles ?? changedFiles)(input.worktree, input.baseCommit)
+    : [];
+  for (const [index, gate] of ordered.entries()) {
     if (input.signal?.aborted) return { kind: 'stopped', entries };
-    const entry = await runOne(input, gate, attemptDir);
+    const command = gateCommand(gate, changed);
+    if (command === null) {
+      entries.push(recordWithout(input, gate, attemptDir, 'skipped'));
+      continue;
+    }
+    const entry = await runOne(input, gate, attemptDir, command);
     entries.push(entry);
     const { end } = entry;
     if (end.verdict === 'pass') continue;
     if (end.reason === 'stopped') return { kind: 'stopped', entries };
+    for (const later of ordered.slice(index + 1)) {
+      entries.push(recordWithout(input, later, attemptDir, 'not-run'));
+    }
     if (end.reason !== null && NOT_A_JUDGEMENT.has(end.reason)) {
       return {
         kind: 'blocked',
