@@ -18,8 +18,9 @@ Moved to `run-as-owner` (2026-11-12).
 
 ## 4. Owner steps
 
-- [ ] 4.1 Unchecked `Owner:` steps of planned and runway changes appear as cards with Done, Later and, where possible, Do it for me; Done ticks the step through the planning-write path. Verify: adapter and card tests on a fixture host; the ticked step on the base branch.
-- [ ] 4.2 Do it for me (D-8): the owner-step session runs as the owner in a fresh worktree, and a Land it card shows the diff and lands it with compare-and-swap. Verify: fixture test installing a pinned package from a local registry; the base branch unchanged until Land it.
+- [ ] 4.1 Planning writes land as small PRs (D-11, D-12): commit on the remote base, push to `cp-plan/<id>`, open and merge through the existing PR delivery, then fetch; stored pending writes picked up on the minute tick; Landing, Waiting for checks, Retry and Cancel on the card; no `--admin`; the owner's checkout no longer touched; hosts with no remote commit locally. Verify: tests with a local bare remote and a fake `gh`, one per path: clean merge, checks pending then passing, checks failed, review required, base moved with a conflicting edit (both edits kept), PR closed, push failed, restart while waiting. Each ends merged or with the write kept and Retry offered. Plus: the owner's checkout and local base branch unchanged.
+- [ ] 4.2 Unchecked `Owner:` steps of planned and runway changes appear as cards with Done, Later and, where possible, Do it for me; Done ticks the step through 4.1. Verify: adapter and card tests on a fixture host; on Cena, Done on an owner step shows a merged PR and the step Done in the console within a minute.
+- [ ] 4.3 Do it for me (D-8): the owner-step session runs as the owner in a fresh worktree; a Land it card shows the diff; Land it lands the result and the tick in one small PR through 4.1. Verify: fixture test installing a pinned package from a local registry; the base branch unchanged until Land it; the merged PR holds exactly the shown diff plus the tick; a diff that no longer applies lands nothing and offers Do it again.
 
 ## 5. Notification and self-maintenance
 
@@ -28,5 +29,4 @@ Moved to `run-as-owner` (2026-11-12).
 
 ## 6. Owner checks
 
-- [ ] 6.1 Owner: decide the dependency source for builds after an owner step installs packages (design.md Open Questions) before task 4.2 is built. Verify: the decision is recorded in docs/decisions.md.
-- [ ] 6.2 Owner: run Cena for a few days answering only through Needs You, and note anything that was not easy. Verify: the notes become cards for the next round of changes.
+- [ ] 6.1 Owner: run Cena for a few days answering only through Needs You, and note anything that was not easy. Verify: the notes become cards for the next round of changes.
