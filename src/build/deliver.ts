@@ -8,14 +8,19 @@
 //    - an ssh remote gets the owner's SSH agent socket and `ssh -o BatchMode=yes` (never a
 //      prompt), overriding any `core.sshCommand`.
 //    Any other remote (a local path, git://, http://) is refused. Hooks stay off (the clean runner
-//    sets core.hooksPath=/dev/null).
+//    sets core.hooksPath=/dev/null). The push is a fast-forward, unless the build was told which
+//    remote head it replaces (a branch Counterpoint made again, or a closed PR's stale branch):
+//    then `--force-with-lease` replaces exactly that head and nothing anyone pushed since. The
+//    commit pushed is stored on the run change (its `head_commit`).
 // 2. The PR. `gh` runs outside every repository (in the run folder) with `--repo`, so it never
 //    reads the host's git config, with the run's environment (the owner's) and never a prompt. An
 //    open PR for the branch (a change built again) gets its title and body updated instead of a
 //    second PR.
-// 3. The body is generated from the change (title, why, the task list with this build's ticks),
-//    the decisions the builder assumed, the test share and the existing tests the change edited
-//    or deleted, any flags, and the gates. Builder-written text is untrusted: it is quoted,
+// 3. The body is generated from the change and kept short (the owner reads it at a glance): the
+//    preview link, the proposal's why cut to a few lines, the gates and the test share in a line
+//    each, and the first three assumed decisions. The full list of assumed decisions, the existing
+//    tests the change edited or deleted, the gate table and the task list (with this build's
+//    ticks) follow in a collapsed section. Builder-written text is untrusted: it is quoted,
 //    @mentions are defused, and the body is capped.
 import {
   closeSync,
@@ -48,6 +53,7 @@ import {
   type RunChangeFlag,
   runChangeTicks,
   type StoredTestShare,
+  updateRunChange,
 } from '../core/store/runs.ts';
 import { blocksMerge } from './branch-diff.ts';
 import type { DeliverContext } from './orchestrator.ts';
@@ -115,6 +121,11 @@ export interface PushInput {
   host: { id: string; root: string; gitCommonDir: string; baseBranch: string };
   branch: string;
   target: PushTarget;
+  /**
+   * The remote head this push may replace (`--force-with-lease`); null or absent: fast-forward
+   * only.
+   */
+  lease?: string | null;
   /** Seams for tests. */
   gh?: string;
   ssh?: string;
@@ -124,17 +135,59 @@ export interface PushInput {
 /** The extra `-c` flags and variables that let this one push use the owner's credentials. */
 export const pushCredentials = remoteCredentials;
 
-/** Pushes `refspec` to the target remote with the owner's credentials, for this call only. */
-async function pushRefspec(
-  input: Omit<PushInput, 'branch' | 'host'> & { root: string; refspec: string; what: string },
-): Promise<void> {
+/** The owner's credentials for one call to the target remote. */
+function credentialsFor(input: Pick<PushInput, 'target' | 'gh' | 'ssh' | 'env'>) {
   const env = input.env ?? process.env;
-  const credentials = pushCredentials({
+  return pushCredentials({
     kind: input.target.kind,
     gh: input.target.kind === 'https' ? (input.gh ?? findOnPath('gh', env.PATH)) : '',
     ssh: input.target.kind === 'ssh' ? (input.ssh ?? findOnPath('ssh', env.PATH)) : '',
     env,
   });
+}
+
+const BUILD_BRANCH_RE = /^cp\/[a-z0-9][a-z0-9-]{0,63}$/;
+const COMMIT_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * The commit the build branch points at on the target remote, or null when the remote has no
+ * such branch. Asked with the owner's credentials, for this call only.
+ */
+export async function remoteBranchHead(
+  input: Omit<PushInput, 'host' | 'lease'> & { root: string },
+): Promise<string | null> {
+  if (!BUILD_BRANCH_RE.test(input.branch)) {
+    throw new DeliveryError(`Refusing to look up ${input.branch}: not a Counterpoint branch.`);
+  }
+  const credentials = credentialsFor(input);
+  const ref = `refs/heads/${input.branch}`;
+  let stdout: string;
+  try {
+    ({ stdout } = await runGit(
+      input.root,
+      [...credentials.config, 'ls-remote', input.target.remote, ref],
+      { timeoutMs: 60_000, env: credentials.env },
+    ));
+  } catch (error) {
+    throw new DeliveryError(`Looking up ${input.branch} failed: ${(error as Error).message}`);
+  }
+  for (const line of stdout.split('\n')) {
+    const [sha, name] = line.trim().split('\t');
+    if (name === ref && sha !== undefined && COMMIT_RE.test(sha)) return sha;
+  }
+  return null;
+}
+
+/** Pushes `refspec` to the target remote with the owner's credentials, for this call only. */
+async function pushRefspec(
+  input: Omit<PushInput, 'branch' | 'host'> & {
+    root: string;
+    refspec: string;
+    what: string;
+    options?: readonly string[];
+  },
+): Promise<void> {
+  const credentials = credentialsFor(input);
   try {
     await runGit(
       input.root,
@@ -146,6 +199,7 @@ async function pushRefspec(
         'submodule.recurse=false',
         'push',
         '--porcelain',
+        ...(input.options ?? []),
         input.target.remote,
         input.refspec,
       ],
@@ -156,17 +210,23 @@ async function pushRefspec(
   }
 }
 
-/** Pushes `branch` to the target remote with the owner's credentials, for this call only. */
+/**
+ * Pushes `branch` to the target remote with the owner's credentials, for this call only: a
+ * fast-forward, or with `lease` the replacement of exactly that remote head.
+ */
 export async function pushBranch(input: PushInput): Promise<void> {
-  if (!/^cp\/[a-z0-9][a-z0-9-]{0,63}$/.test(input.branch)) {
+  if (!BUILD_BRANCH_RE.test(input.branch)) {
     throw new DeliveryError(`Refusing to push ${input.branch}: not a Counterpoint branch.`);
   }
+  const lease = input.lease ?? null;
+  if (lease !== null && !COMMIT_RE.test(lease)) throw new DeliveryError('Not a commit id.');
   const ref = `refs/heads/${input.branch}`;
   await pushRefspec({
     ...input,
     root: input.host.root,
     refspec: `${ref}:${ref}`,
     what: input.branch,
+    options: lease === null ? [] : [`--force-with-lease=${ref}:${lease}`],
   });
 }
 
@@ -352,6 +412,107 @@ export function prTitle(change: ChangeFacts): string {
   return (title === '' ? change.id : title).slice(0, 200);
 }
 
+/** Lines of the summary, at most: the proposal's why is cut to about this many. */
+const SUMMARY_CHARS = 420;
+/** Assumed decisions shown before the collapsed section. */
+const TOP_ASSUMED = 3;
+const ITEM_CHARS = 240;
+
+function flat(text: string): string {
+  return defuse(text).replace(/\s+/g, ' ').trim();
+}
+
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** The proposal's why as a short summary: whole sentences up to about five lines. */
+export function shortWhy(why: string): string {
+  const text = defuse(why)
+    .split('\n')
+    .filter((line) => !/^\s*(#|<|\|)/.test(line))
+    .join('\n')
+    .split(/\n\s*\n/)
+    .map((paragraph) =>
+      paragraph
+        .replace(/^\s*[-*]\s+/gm, '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((paragraph) => paragraph !== '')
+    .join(' ');
+  if (text.length <= SUMMARY_CHARS) return text;
+  const head = text.slice(0, SUMMARY_CHARS);
+  const end = Math.max(head.lastIndexOf('. '), head.lastIndexOf('? '), head.lastIndexOf('! '));
+  return end > SUMMARY_CHARS / 3 ? head.slice(0, end + 1) : clip(text, SUMMARY_CHARS);
+}
+
+/** The builder's recorded assumptions, one item per top-level bullet (with its follow-on lines). */
+export function assumptionItems(raw: string | null): string[] {
+  if (raw === null) return [];
+  const items: string[] = [];
+  let open = false;
+  for (const line of defuse(raw).split('\n')) {
+    if (line.trim() === '' || /^\s*#/.test(line)) {
+      open = false;
+      continue;
+    }
+    const bullet = /^[-*+]\s+(.*)$/.exec(line);
+    if (bullet !== null) {
+      items.push(bullet[1] ?? '');
+      open = true;
+    } else if (open && items.length > 0) {
+      items[items.length - 1] = `${items[items.length - 1]} ${line.trim()}`;
+    } else {
+      items.push(line.trim());
+      open = true;
+    }
+  }
+  return items.map((item) => item.replace(/\s+/g, ' ').trim()).filter((item) => item !== '');
+}
+
+/** Each gate's last result (its highest attempt), in first-run order. */
+function lastGates(gates: PrBodyInput['gates']): PrBodyInput['gates'][number][] {
+  const last = new Map<string, PrBodyInput['gates'][number]>();
+  for (const gate of gates) {
+    const seen = last.get(gate.gate);
+    if (seen === undefined || gate.attempt >= seen.attempt) last.set(gate.gate, gate);
+  }
+  return [...last.values()];
+}
+
+function seconds(durationMs: number | null): string {
+  return durationMs === null ? '-' : `${Math.round(durationMs / 1000)} s`;
+}
+
+/** The gates in one line. */
+export function gatesLine(gates: PrBodyInput['gates']): string {
+  const last = lastGates(gates);
+  if (last.length === 0) return '**Gates:** none are configured.';
+  const attempts = Math.max(...gates.map((g) => g.attempt));
+  const each = last.map((gate) =>
+    gate.verdict === 'pass'
+      ? `${gate.gate.replaceAll('|', '/')} (${seconds(gate.durationMs)})`
+      : `${gate.gate.replaceAll('|', '/')} ${gateWord(gate.verdict)}`,
+  );
+  return `**Gates:** every gate passed${attempts > 1 ? ` on attempt ${attempts}` : ''}: ${each.join(', ')}.`;
+}
+
+/** The test share in one line. */
+export function testsLine(share: StoredTestShare | null): string {
+  if (share === null) return '**Tests:** the test share was not measured.';
+  const over = share.percent > share.budget ? ', over budget (advice, not a failure)' : '';
+  const n = share.editedTests.length;
+  const edited =
+    n === 0
+      ? 'no existing test edited or deleted'
+      : `${n} existing ${n === 1 ? 'test' : 'tests'} edited or deleted (named below)`;
+  return `**Tests:** ${share.percent}% of the added lines (${share.testLines} of ${share.addedLines}), budget ${share.budget}%${over}; ${edited}.`;
+}
+
 export function prBody(input: PrBodyInput): string {
   const { change } = input;
   const out: string[] = [];
@@ -363,85 +524,86 @@ export function prBody(input: PrBodyInput): string {
     );
   }
   out.push(previewText(input.preview), '');
-  out.push(change.why === null ? `Builds \`${change.id}\`.` : defuse(change.why), '');
+  const why = change.why === null ? '' : shortWhy(change.why);
+  out.push(why === '' ? `Builds \`${change.id}\`.` : why, '');
+  out.push(gatesLine(input.gates), testsLine(input.testShare));
+  if (input.ticked.length > 0 && input.ticksPlace === 'pr') out.push('**Ticks:** in this PR.');
+  if (input.ticked.length > 0 && input.ticksPlace === 'after-merge') {
+    out.push(
+      `**Ticks:** land on \`${(input.baseBranch ?? 'the base').replaceAll('`', "'")}\` after this PR merges (the task list there changed next to them).`,
+    );
+  }
+  out.push('');
 
-  out.push('## Tasks', '');
+  // The decisions to check: questions nobody answered first, then the builder's own.
+  const unanswered = (input.unanswered ?? []).map(
+    (a) => `${flat(a.question)} Assumed: **${flat(a.answer)}**`,
+  );
+  const assumed = assumptionItems(input.assumptions);
+  const decisions = [...unanswered, ...assumed];
+  if (decisions.length === 0) {
+    out.push('**Assumed decisions:** none. The builder recorded none.', '');
+  } else {
+    out.push(
+      `**Assumed decisions** (${decisions.length}, check each):`,
+      ...decisions.slice(0, TOP_ASSUMED).map((item) => `- ${clip(item, ITEM_CHARS)}`),
+    );
+    if (decisions.length > TOP_ASSUMED) {
+      const more = decisions.length - TOP_ASSUMED;
+      out.push(`- …and ${more} more in the details below.`);
+    }
+    out.push('');
+  }
+
+  if (input.flags.length > 0) {
+    out.push('**Flags:** paths this branch touches that need your eyes:', '');
+    for (const flag of input.flags) out.push(flagLine(flag));
+    out.push('');
+  }
+
+  out.push(
+    '<details><summary>Details: every assumed decision, the tests, the gates and the tasks</summary>',
+    '',
+  );
+  out.push('### Assumed decisions', '');
+  if (decisions.length === 0) out.push('The builder recorded none.');
+  if (unanswered.length > 0) {
+    out.push('Questions you did not answer in Needs You, built on the recommended option:', '');
+    for (const item of unanswered) out.push(`- ${item}`);
+  }
+  if (input.assumptions !== null && defuse(input.assumptions) !== '') {
+    if (unanswered.length > 0) out.push('');
+    out.push(
+      'The builder chose these where the plan left a decision open:',
+      '',
+      quote(defuse(input.assumptions)),
+    );
+  }
+  out.push('', '### Tests', '', ...testShareLines(input.testShare), '');
+
+  out.push('### Gates', '');
+  const last = lastGates(input.gates);
+  if (last.length === 0) {
+    out.push('No gates are configured.');
+  } else {
+    out.push('| Gate | Result | Time |', '| --- | --- | --- |');
+    for (const gate of last) {
+      out.push(
+        `| ${gate.gate.replaceAll('|', '/')} | ${gateWord(gate.verdict)} | ${seconds(gate.durationMs)} |`,
+      );
+    }
+  }
+  out.push('', '### Tasks', '');
   out.push(
     input.ticked.length === 0
       ? 'This build ticked no tasks.'
       : `This build ticked ${input.ticked.length} ${input.ticked.length === 1 ? 'task' : 'tasks'}:`,
   );
   for (const task of input.ticked) out.push(`- [x] ${defuse(task).replace(/\n/g, ' ')}`);
-  if (input.ticked.length > 0 && input.ticksPlace === 'pr') out.push('', '**Ticks:** in this PR.');
-  if (input.ticked.length > 0 && input.ticksPlace === 'after-merge') {
-    out.push(
-      '',
-      `**Ticks:** land on \`${(input.baseBranch ?? 'the base').replaceAll('`', "'")}\` after this PR merges (the task list there changed next to them).`,
-    );
-  }
   if (input.taskList !== null && input.taskList.trim() !== '') {
-    out.push(
-      '',
-      '<details><summary>The whole task list</summary>',
-      '',
-      defuse(input.taskList),
-      '',
-      '</details>',
-    );
+    out.push('', 'The whole task list:', '', defuse(input.taskList));
   }
-  out.push('');
-
-  out.push('## Assumed decisions', '');
-  const assumptions = input.assumptions === null ? '' : defuse(input.assumptions);
-  const unanswered = input.unanswered ?? [];
-  if (assumptions === '' && unanswered.length === 0) out.push('The builder recorded none.');
-  if (assumptions !== '') {
-    out.push(
-      'The builder chose these where the plan left a decision open. Check each one.',
-      '',
-      quote(assumptions),
-    );
-  }
-  if (unanswered.length > 0) {
-    if (assumptions !== '') out.push('');
-    out.push('Questions you did not answer in Needs You, built on the recommended option:', '');
-    for (const a of unanswered) {
-      const flat = (text: string) => defuse(text).replace(/\s+/g, ' ').trim();
-      out.push(`- ${flat(a.question)} Assumed: **${flat(a.answer)}**`);
-    }
-  }
-  out.push('');
-
-  out.push('## Tests', '', ...testShareLines(input.testShare), '');
-
-  if (input.flags.length > 0) {
-    out.push('## Flags', '', 'Paths this branch touches that need your eyes:', '');
-    for (const flag of input.flags) out.push(flagLine(flag));
-    out.push('');
-  }
-
-  out.push('## Gates', '');
-  const last = new Map<string, PrBodyInput['gates'][number]>();
-  for (const gate of input.gates) {
-    const seen = last.get(gate.gate);
-    if (seen === undefined || gate.attempt >= seen.attempt) last.set(gate.gate, gate);
-  }
-  if (last.size === 0) {
-    out.push('No gates are configured.');
-  } else {
-    const attempts = Math.max(...input.gates.map((g) => g.attempt));
-    out.push(
-      `Every gate passed${attempts > 1 ? ` on attempt ${attempts}` : ''}.`,
-      '',
-      '| Gate | Result | Time |',
-      '| --- | --- | --- |',
-    );
-    for (const gate of last.values()) {
-      const seconds = gate.durationMs === null ? '-' : `${Math.round(gate.durationMs / 1000)} s`;
-      out.push(`| ${gate.gate.replaceAll('|', '/')} | ${gateWord(gate.verdict)} | ${seconds} |`);
-    }
-  }
-  out.push('');
+  out.push('', '</details>', '');
   out.push(
     '---',
     `Built by Counterpoint: run \`${input.runId}\`, ${input.sessions} builder ${input.sessions === 1 ? 'session' : 'sessions'}, from \`${input.baseCommit.slice(0, 12)}\` on \`${input.branch}\`.`,
@@ -449,7 +611,7 @@ export function prBody(input: PrBodyInput): string {
   const body = out.join('\n');
   return body.length <= MAX_BODY_CHARS
     ? body
-    : `${body.slice(0, MAX_BODY_CHARS)}\n\n…(cut: the body was longer than GitHub allows)`;
+    : `${body.slice(0, MAX_BODY_CHARS)}\n\n…(cut: the body was longer than GitHub allows)\n\n</details>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -646,17 +808,20 @@ export function createDeliver(
       context.host.root,
       context.host.baseBranch,
     );
+    const tip = (
+      await runGit(context.host.root, ['rev-parse', `refs/heads/${context.branch}`])
+    ).stdout.trim();
     await (options.push ?? pushBranch)({
       host: context.host,
       branch: context.branch,
       target,
       env,
+      lease: context.lease ?? null,
     });
+    // What Counterpoint last pushed: a later build compares the remote branch with it.
+    updateRunChange(context.db, context.runChangeId, { headCommit: tip });
 
     const gh = options.gh ?? defaultGhRun(findOnPath('gh', env.PATH), ghEnv(env));
-    const tip = (
-      await runGit(context.host.root, ['rev-parse', `refs/heads/${context.branch}`])
-    ).stdout.trim();
     const deploys = await (options.hasPreviewDeploys ?? hasPreviewDeploys)(
       gh,
       context.changeDir,
