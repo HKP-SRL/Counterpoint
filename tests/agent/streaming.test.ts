@@ -54,6 +54,33 @@ describe('context meter on real streams (claude 2.1.322)', () => {
     expect(init && resultWindows(init).size).toBe(0);
   });
 
+  // Seen live (run 20261113-1030, session 14): a fork peaked at 459k while the main thread peaked
+  // at 410k, and the wrap-up fired on the fork's value.
+  it("counts only the main thread's messages, never a subagent's", () => {
+    const main = (id: string, tokens: number): StreamEvent => ({
+      type: 'assistant',
+      message: { id, usage: { input_tokens: tokens } },
+      parent_tool_use_id: null,
+    });
+    const sub = (id: string, tokens: number): StreamEvent => ({
+      type: 'assistant',
+      message: { id, usage: { input_tokens: tokens } },
+      parent_tool_use_id: 'toolu_fork',
+    });
+    const meter = new ContextMeter();
+    const fills = [
+      main('m1', 300_000),
+      sub('s1', 459_316),
+      main('m2', 409_618),
+      sub('s2', 120_000),
+      main('m2', 409_618),
+    ].map((event) => meter.observe(event));
+    expect(fills).toEqual([300_000, null, 409_618, null, null]);
+    expect(meter.latest).toBe(409_618);
+    expect(meter.peak).toBe(409_618);
+    expect(assistantFill(sub('s3', 1))).toBeNull();
+  });
+
   it('ignores malformed usage', () => {
     expect(assistantFill({ type: 'assistant', message: { id: 'x' } })).toBeNull();
     expect(
@@ -116,6 +143,18 @@ describe('buildClaudeArgv', () => {
 
   it('still needs a prompt without streaming input', () => {
     expect(() => buildClaudeArgv(base)).toThrow(/prompt/);
+  });
+});
+
+describe('sign-in check (fake claude)', () => {
+  const runnerWith = (login: string) =>
+    new ClaudeCliRunner({ binary: FAKE, env: { ...process.env, FAKE_CLAUDE_LOGIN: login } });
+
+  it("reads claude's own login state, and says it cannot tell when the answer is not JSON", async () => {
+    expect(await runnerWith('in').signedIn()).toBe(true);
+    expect(await runnerWith('out').signedIn()).toBe(false);
+    expect(await runnerWith('garbled').signedIn()).toBeNull();
+    expect(await new ClaudeCliRunner({ binary: '/nonexistent/claude' }).signedIn()).toBeNull();
   });
 });
 

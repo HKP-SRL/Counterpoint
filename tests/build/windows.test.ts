@@ -170,6 +170,46 @@ describe('calibration session (fake claude)', () => {
     ).rejects.toThrow('The calibration session for opus failed: Not logged in · Please run /login');
     expect(getAgentSession(db, 1)?.endReason).toBe('no-window');
   });
+
+  // Calibration runs after every claude update; an API hiccup then must not end the run.
+  it.each([
+    ['overloaded', { kind: 'transient' }],
+    ['rate_limit', { kind: 'usage-limit' }],
+    ['authentication_failed', { kind: 'stop', cause: 'auth' }],
+  ])(
+    'says how the session ended when it fails (%s), so the run can wait or retry',
+    async (error, outcome) => {
+      const db = store();
+      const dir = makeScratchDir('cp-cal');
+      const binary = join(dir, 'failing-claude.sh');
+      const lines = [
+        JSON.stringify({ type: 'assistant', error, message: { id: 'm' } }),
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: error === 'rate_limit' ? 'Claude usage limit reached · resets 3am' : 'API Error',
+        }),
+      ];
+      writeFileSync(
+        binary,
+        `#!/bin/sh\ncat >/dev/null\n${lines.map((line) => `printf '%s\\n' '${line}'`).join('\n')}\n`,
+        { mode: 0o755 },
+      );
+      const failed = await calibrateWindow({
+        runner: new ClaudeCliRunner({ binary }),
+        db,
+        hostId: 'cena',
+        model: 'opus',
+        claudeVersion: '9.9.9',
+        cwd: dir,
+        rawLogPath: join(dir, 'raw.jsonl'),
+        processTag: 'cal-0123456789',
+      }).catch((e: unknown) => e);
+      expect(failed).toBeInstanceOf(CalibrationError);
+      expect((failed as CalibrationError).outcome).toMatchObject(outcome);
+    },
+  );
 });
 
 describe('sessionFailure', () => {

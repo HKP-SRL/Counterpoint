@@ -13,7 +13,7 @@
 import { buildClaudeArgv, type EffortLevel } from '../agent/claude-argv.ts';
 import type { AgentRunner, AgentSessionEnd, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter } from '../agent/usage.ts';
-import { classifySession, type SessionOutcome } from './governor.ts';
+import { classifiedEvent, classifySession, type SessionOutcome } from './governor.ts';
 import { wrapUpMessage } from './prompt.ts';
 import { budgetTokens } from './windows.ts';
 
@@ -117,13 +117,7 @@ export async function startBuilderSession(input: BuilderSessionInput): Promise<B
     rawLogPath: input.rawLogPath,
     processTag: input.processTag,
     onEvent: (event) => {
-      if (
-        event.type === 'rate_limit_event' ||
-        event.type === 'result' ||
-        (event.type === 'assistant' && (event as { error?: unknown }).error !== undefined)
-      ) {
-        kept.push(event);
-      }
+      if (classifiedEvent(event)) kept.push(event);
       const fill = meter.observe(event);
       if (fill !== null) {
         if (fill >= hardLimit) force();

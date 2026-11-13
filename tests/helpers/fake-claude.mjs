@@ -8,9 +8,23 @@
 // A user message containing `SLOW` makes the turn wait 30 s (like a long tool call) unless it is
 // interrupted; a message sent during it ends the turn (delivered mid-turn). `CHILD` starts a background `sleep 60` in the same process group and reports its
 // pid. `ESCAPE` starts a node process in a group of its own that inherits the tag and holds this
-// process's stdout (a dev server a builder started), and reports its pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
+// process's stdout (a dev server a builder started), and reports its pid. `HANG` ignores SIGTERM
+// for the rest of the process. `SUBAGENT` interleaves a subagent's messages (`parent_tool_use_id`
+// set, 3000 tokens of its own context) with the main thread's. Every turn reports the
 // `CP_AGENT_RUN` tag it sees, its working folder, its arguments and a few variables.
 import { spawn } from 'node:child_process';
+
+// `claude auth status --json`, like claude 2.1.325: `loggedIn` with account fields beside it.
+// FAKE_CLAUDE_LOGIN=out reports no login, =garbled prints something that is not JSON.
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  const login = process.env.FAKE_CLAUDE_LOGIN ?? 'in';
+  process.stdout.write(
+    login === 'garbled'
+      ? 'Logged in as someone\n'
+      : `${JSON.stringify({ loggedIn: login === 'in', email: 'owner@example.com' })}\n`,
+  );
+  process.exit(login === 'out' ? 1 : 0);
+}
 
 let turn = 0;
 let busy = null; // { abort(): void } while a turn waits
@@ -50,10 +64,23 @@ function startTurn(text) {
     cache_read_input_tokens: 1000 * turn,
     cache_creation_input_tokens: 5,
   };
-  out({ type: 'assistant', message: { id, usage, content: [{ type: 'thinking' }] } });
+  out({
+    type: 'assistant',
+    message: { id, usage, content: [{ type: 'thinking' }] },
+    parent_tool_use_id: null,
+  });
+  if (text.includes('SUBAGENT')) {
+    const sub = { input_tokens: 0, cache_read_input_tokens: 2990, cache_creation_input_tokens: 10 };
+    out({
+      type: 'assistant',
+      message: { id: `${id}_sub`, usage: sub, content: [{ type: 'text', text: 'fork' }] },
+      parent_tool_use_id: 'toolu_fork',
+    });
+  }
   out({
     type: 'assistant',
     message: { id, usage, content: [{ type: 'text', text: text.slice(0, 40) }] },
+    parent_tool_use_id: null,
   });
   if (text.includes('HANG')) process.on('SIGTERM', () => {});
   if (text.includes('ESCAPE')) {

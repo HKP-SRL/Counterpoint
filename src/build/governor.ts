@@ -16,7 +16,8 @@
 //   billing_error, rate_limit, overloaded, invalid_request, model_not_found, server_error,
 //   max_output_tokens, cloud_credential_error, unknown.
 // - `system/api_retry`: claude's own retries (attempt, max_retries, retry_delay_ms, error_status,
-//   error); claude retries transient failures itself up to 10 times before giving up.
+//   error); claude retries transient failures itself up to 10 times before giving up. Server-error
+//   retries before a sign-in failure mark it as a possible outage.
 // - the `result`: subtype success | error_max_turns | error_during_execution |
 //   error_max_budget_usd | error_max_structured_output_retries, `is_error`, the result text.
 // `rejected`, `api_retry` and the error values have not been seen live yet (design: Risks).
@@ -29,6 +30,7 @@ import type {
   KnownStreamEvent,
   StreamEvent,
 } from '../agent/runner.ts';
+import { fromSubagent } from '../agent/usage.ts';
 import type { Store } from '../core/store/db.ts';
 
 /** Two minutes past the reported reset, so the first request after the pause is not refused. */
@@ -37,6 +39,8 @@ export const RESET_MARGIN_MS = 2 * 60 * 1000;
 export const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
 /** Default utilization ceiling: no new session starts while a warned window is at or above it. */
 export const DEFAULT_CEILING = 0.95;
+/** A hold at least this long, from when a spawn starts waiting on it, is told to the owner. */
+export const LONG_HOLD_MS = 3 * 60 * 60 * 1000;
 
 export type SpawnKind = 'calibration' | 'builder' | 'owner-step' | 'draft';
 
@@ -53,6 +57,14 @@ export interface GovernorState {
   pauseReason: string | null;
   /** The last state seen per limit window (`five_hour`, `seven_day`, ...). */
   windows: Record<string, WindowState>;
+}
+
+/** A hold a spawn waits on: until when (epoch ms), why, and the limit window it waits for. */
+export interface LongHold {
+  until: number;
+  reason: string;
+  /** The window (`seven_day`, `five_hour`, ...) whose reset ends it, when one does. */
+  window: string | null;
 }
 
 export class GovernorRefusal extends Error {
@@ -159,8 +171,12 @@ export type SessionOutcome =
   | { kind: 'usage-limit'; resetsAt: number | null; detail: string }
   /** Worth retrying the session after a backoff (server errors, overload, throttles). */
   | { kind: 'transient'; detail: string }
-  /** Stop the run and tell the owner (Needs You). */
-  | { kind: 'stop'; cause: 'auth' | 'credit' | 'spend-limit'; detail: string }
+  /**
+   * Stop the run and tell the owner (Needs You). A sign-in failure that may be an outage
+   * (`outage`: an HTML error page for a body, or after server-error retries) is retried first,
+   * and so is any sign-in failure while claude still holds a login (auth-failures.ts).
+   */
+  | { kind: 'stop'; cause: 'auth' | 'credit' | 'spend-limit'; detail: string; outage?: boolean }
   /** The session itself failed (turn or budget cap, bad request, ...): counts as an attempt. */
   | { kind: 'failed'; detail: string };
 
@@ -176,6 +192,32 @@ const SPEND_LIMIT_RE =
   /spend limit|individual usage limit|team's shared budget|exceeds your group's budget/i;
 /** The plan's own windows, which reset by themselves (errors.md "You've hit your session limit"). */
 const PLAN_LIMIT_RE = /hit your (session|weekly|opus|sonnet|fable) limit|usage limit reached/i;
+
+/** claude's own words when it holds no login (the result text of an errored session). */
+const NOT_LOGGED_IN_RE = /not logged in|please run \/login/i;
+/**
+ * An HTML error page in place of an API answer: a proxy or CDN refused the request, not the API.
+ * Seen live (run 20261113-0940, session 13): "Failed to authenticate. API Error: 403 Attention
+ * Required! | Cloudflare" after three 503 retries; the owner was signed in.
+ */
+const HTML_ERROR_RE = /<\s*(!doctype|html)\b|cloudflare|attention required/i;
+
+/** The events classifySession reads; sessions keep only these for it. */
+export function classifiedEvent(event: StreamEvent): boolean {
+  return (
+    event.type === 'rate_limit_event' ||
+    event.type === 'result' ||
+    (event.type === 'system' && (event as KnownStreamEvent).subtype === 'api_retry') ||
+    (event.type === 'assistant' && (event as KnownStreamEvent).error !== undefined)
+  );
+}
+
+/** A `system/api_retry` for a server error (5xx), or a connection error with no status. */
+function serverRetry(event: StreamEvent): boolean {
+  if (event.type !== 'system' || (event as KnownStreamEvent).subtype !== 'api_retry') return false;
+  const status = (event as KnownStreamEvent).error_status;
+  return status === null || status === undefined || (typeof status === 'number' && status >= 500);
+}
 
 function resultText(result: KnownStreamEvent | null): string {
   const text = result?.result;
@@ -193,7 +235,9 @@ export function classifySession(
   let rejected: { resetsAt: number | null; errorCode: string | null } | null = null;
   let assistantError: string | null = null;
   let result: KnownStreamEvent | null = null;
+  let serverRetries = 0;
   for (const event of events) {
+    if (serverRetry(event)) serverRetries += 1;
     const limits = rateLimitWindows(event);
     if (limits !== null && limits.status === 'rejected') {
       const resets = Object.values(limits.windows)
@@ -207,19 +251,32 @@ export function classifySession(
         errorCode: limits.errorCode,
       };
     }
-    if (event.type === 'assistant') {
+    // A subagent's error is the subagent's: the main thread goes on, and its result says how.
+    if (event.type === 'assistant' && !fromSubagent(event)) {
       const error = (event as KnownStreamEvent).error;
       if (typeof error === 'string') assistantError = error;
     }
     if (event.type === 'result') result = event as KnownStreamEvent;
   }
+  const subtype = typeof result?.subtype === 'string' ? result.subtype : '';
+  // A session that succeeded is ok whatever its summary says: the result text is the model's own
+  // free-form summary, and a builder working on code about limits writes "spend limit" or "usage
+  // limit reached" in it. Limits seen in its stream still pause every lane (Governor.observe).
+  if (result !== null && subtype === 'success' && result.is_error !== true) return { kind: 'ok' };
+  // From here the result, if any, is an error, and its text is claude's error message.
   const text = resultText(result);
 
   if (rejected?.errorCode === 'credits_required') {
     return { kind: 'stop', cause: 'credit', detail: text || 'Usage credits are required.' };
   }
-  if (assistantError !== null && AUTH_ERRORS.has(assistantError)) {
-    return { kind: 'stop', cause: 'auth', detail: text || assistantError };
+  if ((assistantError !== null && AUTH_ERRORS.has(assistantError)) || NOT_LOGGED_IN_RE.test(text)) {
+    const outage = HTML_ERROR_RE.test(text) || serverRetries > 0;
+    return {
+      kind: 'stop',
+      cause: 'auth',
+      detail: text || assistantError || 'authentication failed',
+      ...(outage ? { outage } : {}),
+    };
   }
   if (SPEND_LIMIT_RE.test(text)) {
     return { kind: 'stop', cause: 'spend-limit', detail: text };
@@ -248,8 +305,6 @@ export function classifySession(
       ? { kind: 'ok' }
       : { kind: 'transient', detail: 'The session ended without a result.' };
   }
-  const subtype = typeof result.subtype === 'string' ? result.subtype : '';
-  if (subtype === 'success' && result.is_error !== true) return { kind: 'ok' };
   if (subtype === 'error_during_execution' && options.interrupted === true) return { kind: 'ok' };
   if (
     assistantError === 'unknown' ||
@@ -257,7 +312,12 @@ export function classifySession(
   ) {
     return { kind: 'transient', detail: text || 'API error' };
   }
-  return { kind: 'failed', detail: text || subtype || 'error' };
+  // claude's error code beside its message, so a park reason names what failed (model_not_found).
+  const code = assistantError ?? (subtype === '' ? null : subtype);
+  if (text !== '' && code !== null && !text.includes(code)) {
+    return { kind: 'failed', detail: `${text} (${code})` };
+  }
+  return { kind: 'failed', detail: text || code || 'error' };
 }
 
 /** Backoff before retrying a session after a transient error: 1, 2, 4, ... minutes, at most 30. */
@@ -295,6 +355,11 @@ export interface GovernorOptions {
   ceiling?: number;
   /** Called whenever the state changes (the daemon turns it into an event). */
   onChange?: (state: GovernorState) => void;
+  /**
+   * Told when a spawn starts waiting on a hold of LONG_HOLD_MS or more (again when that hold
+   * changes), and with null once no spawn waits any more (the hold ended, or the run stopped).
+   */
+  onLongHold?: (hold: LongHold | null) => void;
 }
 
 export class Governor {
@@ -303,6 +368,10 @@ export class Governor {
   readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly #ceiling: number;
   readonly #onChange: ((state: GovernorState) => void) | undefined;
+  readonly #onLongHold: ((hold: LongHold | null) => void) | undefined;
+  /** Spawns waiting in admit now, and the long hold told to the listener (null: none). */
+  #waiting = 0;
+  #longHold: LongHold | null = null;
 
   constructor(options: GovernorOptions) {
     this.#db = options.db;
@@ -310,6 +379,7 @@ export class Governor {
     this.#sleep = options.sleep ?? abortableSleep;
     this.#ceiling = options.ceiling ?? DEFAULT_CEILING;
     this.#onChange = options.onChange;
+    this.#onLongHold = options.onLongHold;
   }
 
   state(): GovernorState {
@@ -342,13 +412,47 @@ export class Governor {
     return hold;
   }
 
-  /** Waits until a spawn may start: no usage-limit pause or pacing hold in force. */
+  /**
+   * Waits until a spawn may start: no usage-limit pause or pacing hold in force. A long wait is
+   * told to the owner (build-runs: A long usage hold is told), so a weekly window days from its
+   * reset is not a silent "Holding".
+   */
   async admit(request: { hostId: string; kind: SpawnKind; signal?: AbortSignal }): Promise<void> {
-    for (;;) {
-      if (request.signal?.aborted) throw new GovernorRefusal('aborted', 'Stopped while waiting.');
-      const hold = this.holdUntil();
-      if (hold === null) return;
-      await this.#sleep(Math.max(1000, hold.until - this.#now()), request.signal);
+    this.#waiting += 1;
+    try {
+      for (;;) {
+        if (request.signal?.aborted) throw new GovernorRefusal('aborted', 'Stopped while waiting.');
+        const hold = this.holdUntil();
+        if (hold === null) return;
+        this.#tellLongHold(hold);
+        await this.#sleep(Math.max(1000, hold.until - this.#now()), request.signal);
+      }
+    } finally {
+      this.#waiting -= 1;
+      if (this.#waiting === 0 && this.#longHold !== null) {
+        this.#longHold = null;
+        this.#tell(null);
+      }
+    }
+  }
+
+  #tellLongHold(hold: { until: number; reason: string }): void {
+    if (this.#longHold?.until === hold.until) return;
+    if (hold.until - this.#now() < LONG_HOLD_MS) return;
+    // The window whose reset (plus the margin) ends the hold, if one does.
+    const window =
+      Object.entries(this.state().windows).find(
+        ([, w]) => w.resetsAt !== null && w.resetsAt + RESET_MARGIN_MS === hold.until,
+      )?.[0] ?? null;
+    this.#longHold = { until: hold.until, reason: hold.reason, window };
+    this.#tell(this.#longHold);
+  }
+
+  #tell(hold: LongHold | null): void {
+    try {
+      this.#onLongHold?.(hold);
+    } catch {
+      // telling the owner never stops a spawn from waiting or starting
     }
   }
 
@@ -430,14 +534,8 @@ export function governedRunner(
       const session = await start({
         ...request,
         onEvent: (event) => {
-          // Only what classifySession reads: limit events, results, assistant errors.
-          if (
-            event.type === 'rate_limit_event' ||
-            event.type === 'result' ||
-            (event.type === 'assistant' && (event as KnownStreamEvent).error !== undefined)
-          ) {
-            events.push(event);
-          }
+          // Only what classifySession reads: limit events, results, retries, assistant errors.
+          if (classifiedEvent(event)) events.push(event);
           governor.observe(event);
           request.onEvent?.(event);
         },
@@ -447,5 +545,6 @@ export function governedRunner(
     };
   }
   if (inner.version !== undefined) runner.version = inner.version.bind(inner);
+  if (inner.signedIn !== undefined) runner.signedIn = inner.signedIn.bind(inner);
   return runner;
 }
