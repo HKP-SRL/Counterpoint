@@ -1,7 +1,18 @@
 // Needs You cards (question-cards: Card contents, Answer in one step): which key picks which
 // option, and what the note field says it does.
+
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { cardKeys, noteHint, optionKey, type QuestionCard } from '../src/pages/NeedsYouPage';
+import {
+  askedText,
+  CardBlock,
+  cardKeys,
+  noteHint,
+  optionKey,
+  originParts,
+  type QuestionCard,
+} from '../src/pages/NeedsYouPage';
 
 const option = (label: string, merges = false) => ({
   label,
@@ -13,11 +24,13 @@ const option = (label: string, merges = false) => ({
 function card(overrides: Partial<QuestionCard> = {}): QuestionCard {
   return {
     id: 'c-0000000000000001',
+    hostId: 'cena',
     kind: 'ask',
     source: 'session',
     runId: null,
     change: null,
-    session: 'a Claude Code session',
+    session: 'your Claude Code session',
+    folder: null,
     question: 'Which colour?',
     why: 'The header needs one.',
     options: [option('Blue'), option('Green'), option('Red')],
@@ -32,6 +45,7 @@ function card(overrides: Partial<QuestionCard> = {}): QuestionCard {
     diff: null,
     prUrl: null,
     createdAt: 1,
+    askedAt: null,
     ...overrides,
   };
 }
@@ -66,5 +80,100 @@ describe('note field hint', () => {
 
   it('does not offer Enter when the recommended option merges into the base', () => {
     expect(noteHint(landIt(), true)).toBe('⌘1–⌘2 sends it with that option.');
+  });
+});
+
+describe('where a card came from', () => {
+  const now = new Date(2026, 10, 13, 15, 0).getTime();
+  const at = new Date(2026, 10, 13, 14, 2).getTime();
+  const time = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  it('says when a question was asked: the time today, the day before that', () => {
+    expect(askedText(at, now)).toBe(`asked ${time}`);
+    const earlier = new Date(2026, 10, 11, 14, 2).getTime();
+    expect(askedText(earlier, now)).toMatch(/^asked .+ .+$/);
+    expect(askedText(earlier, now)).not.toBe(`asked ${time}`);
+    expect(askedText(0, now)).toBe('');
+  });
+
+  it("an interactive session's card names the session, its project, its folder and when", () => {
+    const ask = card({ createdAt: at, folder: '/Users/me/src/cena/ui' });
+    expect(originParts(ask, 'cena', now)).toEqual([
+      'Your Claude Code session',
+      'cena',
+      'folder ui',
+      `asked ${time}`,
+    ]);
+    // Without a folder from the server, the rest still shows.
+    expect(originParts(card({ createdAt: at }), 'cena', now)).toEqual([
+      'Your Claude Code session',
+      'cena',
+      `asked ${time}`,
+    ]);
+    // A session outside every project asks in every inbox.
+    expect(originParts(card({ hostId: null, createdAt: at }), null, now)).toEqual([
+      'Your Claude Code session',
+      'outside your projects',
+      `asked ${time}`,
+    ]);
+  });
+
+  it('prefers the time the server says it was asked', () => {
+    const asked = new Date(2026, 10, 13, 9, 30).getTime();
+    const nine = new Date(asked).toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    expect(originParts(card({ createdAt: at, askedAt: asked }), 'cena', now)).toContain(
+      `asked ${nine}`,
+    );
+  });
+
+  it("a builder's card names the session and the run after the change link", () => {
+    const builder = card({
+      change: 'menu-header',
+      session: 'builder session 2',
+      runId: 'run-1',
+      createdAt: at,
+      reversible: false,
+    });
+    expect(originParts(builder, 'cena', now)).toEqual([
+      'builder session 2',
+      'run run-1',
+      `asked ${time}`,
+      'hard to undo',
+    ]);
+  });
+
+  it('other cards say the run or the Mac, and nothing more when a change says it', () => {
+    expect(originParts(card({ source: 'run', session: null }), 'cena', now)).toEqual(['The run']);
+    expect(originParts(card({ source: 'machine', session: null }), null, now)).toEqual([
+      'This Mac',
+    ]);
+    expect(
+      originParts(card({ source: 'change', session: null, change: 'menu-header' }), 'cena', now),
+    ).toEqual([]);
+  });
+
+  it('renders the where-line as text on the card', () => {
+    const html = renderToStaticMarkup(
+      createElement(CardBlock, {
+        hostId: 'cena',
+        project: 'cena',
+        card: card({ createdAt: at, folder: 'web' }),
+        detail: undefined,
+        isFocused: false,
+        isBusy: false,
+        isNoteOpen: false,
+        note: '',
+        onFocus: () => undefined,
+        onNote: () => undefined,
+        onOpenNote: () => undefined,
+        onAnswer: () => undefined,
+        onNoteEnter: () => undefined,
+        onLater: () => undefined,
+      }),
+    );
+    expect(html).toContain(`Your Claude Code session · cena · folder web · asked ${time}`);
   });
 });

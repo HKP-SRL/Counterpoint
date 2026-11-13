@@ -103,12 +103,16 @@ export type CardWrite = {
 /** A question card (question-cards: Card contents). */
 export type QuestionCard = {
   id: string;
+  /** The project the card is in; null for a card in every project's inbox. */
+  hostId: string | null;
   kind: string;
   source: 'run' | 'change' | 'session' | 'machine';
   runId: string | null;
   change: string | null;
   /** The session that asked ("builder session 2"), for a session's card. */
   session: string | null;
+  /** The folder an interactive session runs in, when the server knows it. */
+  folder: string | null;
   question: string;
   why: string;
   options: CardOption[];
@@ -125,6 +129,8 @@ export type QuestionCard = {
   /** The merged build PR a step after the build links to. */
   prUrl: string | null;
   createdAt: number;
+  /** When the question was asked, if the server says; else createdAt. */
+  askedAt: number | null;
 };
 
 export type DoneForYou = { id: number; text: string; at: number };
@@ -192,11 +198,13 @@ function parseCard(value: unknown): QuestionCard | null {
     typeof value.answer === 'number' && value.answer < options.length ? value.answer : null;
   return {
     id: value.id,
+    hostId: typeof value.hostId === 'string' ? value.hostId : null,
     kind: str(value.kind),
     source: CARD_SOURCES.find((s) => s === value.source) ?? 'machine',
     runId: typeof value.runId === 'string' ? value.runId : null,
     change: typeof value.change === 'string' && isChangeId(value.change) ? value.change : null,
     session: typeof value.session === 'string' ? value.session : null,
+    folder: typeof value.folder === 'string' && value.folder !== '' ? value.folder : null,
     question: value.question,
     why: str(value.why),
     options,
@@ -211,6 +219,7 @@ function parseCard(value: unknown): QuestionCard | null {
     diff: typeof value.diff === 'string' && value.diff !== '' ? value.diff : null,
     prUrl: typeof value.prUrl === 'string' && PR_URL_RE.test(value.prUrl) ? value.prUrl : null,
     createdAt: count(value.createdAt),
+    askedAt: count(value.askedAt) || null,
   };
 }
 
@@ -349,11 +358,45 @@ const KIND_BADGE: Record<string, { label: string; variant: 'warning' | 'error' |
   ask: { label: 'Question', variant: 'info' },
 };
 
-function whereFrom(card: QuestionCard): string {
-  if (card.change !== null) return card.change;
-  if (card.source === 'run') return 'The run';
-  if (card.source === 'session') return 'A Claude Code session';
-  return 'This Mac';
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** When a question was asked: the time today, else the day and the time. */
+export function askedText(at: number, now: number): string {
+  if (at <= 0) return '';
+  const date = new Date(at);
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === new Date(now).toDateString()) return `asked ${time}`;
+  return `asked ${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/** The last segment of a folder path: the folder's name. */
+const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/**
+ * Where a card came from, after its change link (if any): for a session's card the session, the
+ * project and folder it runs in (without a change) and when it asked; else the run or the Mac.
+ * `project` is the name of the card's project, if known.
+ */
+export function originParts(card: QuestionCard, project: string | null, now: number): string[] {
+  const parts: string[] = [];
+  if (card.source === 'session') {
+    const session = card.session ?? 'a Claude Code session';
+    if (card.change === null) {
+      parts.push(capitalized(session));
+      if (card.hostId === null) parts.push('outside your projects');
+      else if (project !== null) parts.push(project);
+      if (card.folder !== null) parts.push(`folder ${folderName(card.folder)}`);
+    } else {
+      parts.push(session);
+      if (card.runId !== null) parts.push(`run ${card.runId}`);
+    }
+    const asked = askedText(card.askedAt ?? card.createdAt, now);
+    if (asked !== '') parts.push(asked);
+  } else if (card.change === null) {
+    parts.push(card.source === 'run' ? 'The run' : 'This Mac');
+  }
+  if (!card.reversible) parts.push('hard to undo');
+  return parts;
 }
 
 /** What the keyboard needs to know about a card. */
@@ -391,6 +434,8 @@ export function noteHint(card: QuestionCard, mac: boolean): string {
  */
 export function CardBlock(props: {
   hostId: string;
+  /** The name of the card's project, if known. */
+  project: string | null;
   card: QuestionCard;
   detail: RunItem | undefined;
   isFocused: boolean;
@@ -407,6 +452,7 @@ export function CardBlock(props: {
 }) {
   const { card } = props;
   const badge = KIND_BADGE[card.kind];
+  const origin = originParts(card, props.project, Date.now());
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut to focus the card; the keyboard has J/K
     // biome-ignore lint/a11y/useKeyWithClickEvents: the page's keys act on the focused card
@@ -422,17 +468,12 @@ export function CardBlock(props: {
             <HStack gap={2} vAlign="center">
               {badge === undefined ? null : <Badge variant={badge.variant} label={badge.label} />}
               {card.state === 'deferred' ? <Badge label="Later" /> : null}
-              <Text type="supporting" color="secondary">
-                {card.change === null ? (
-                  whereFrom(card)
-                ) : (
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {card.change === null ? null : (
                   <Link href={`/h/${props.hostId}/changes/${card.change}`}>{card.change}</Link>
                 )}
-                {card.change !== null && card.session !== null ? ` · ${card.session}` : ''}
-                {card.change !== null && card.session !== null && card.runId !== null
-                  ? ` · run ${card.runId}`
-                  : ''}
-                {card.reversible ? '' : ' · hard to undo'}
+                {card.change !== null && origin.length > 0 ? ' · ' : ''}
+                {origin.join(' · ')}
               </Text>
             </HStack>
             <Text weight="semibold">{card.question}</Text>
@@ -797,6 +838,7 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   const [note, setNote] = useState('');
   const notifications = useNotificationPermission();
   const elsewhere = useWaitingElsewhere(hostId);
+  const projects = useQuery(hostsQuery).data;
 
   useEffect(() => {
     document.title = 'Needs You · Counterpoint';
@@ -949,6 +991,7 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
               <CardBlock
                 key={card.id}
                 hostId={hostId}
+                project={projects?.find((project) => project.id === card.hostId)?.name ?? null}
                 card={card}
                 detail={snapshot.runItems.find(
                   (item) =>

@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { builderSessionOf } from '../../build/ask-session.ts';
 import { HOST_ID_RE } from '../../core/ids.ts';
 import { runNeedsYou } from '../../core/runway/run-items.ts';
+import { INTERACTIVE_KEY_SESSION } from '../../core/store/ask.ts';
 import {
   type CardActionType,
   CardRefusal,
@@ -68,6 +69,10 @@ const Answer = z.strictObject({
 /** The session that asked, in words ("builder session 2"), or null for a card no session raised. */
 function sessionName(store: Store, card: CardRow): string | null {
   if (card.source !== 'session') return null;
+  // An interactive session's id is `interactive-<hex>` (openInteractiveSession).
+  if (card.sessionId?.startsWith(`${INTERACTIVE_KEY_SESSION}-`) === true) {
+    return 'your Claude Code session';
+  }
   const id = builderSessionOf(card.sessionId);
   if (id === null) return 'a Claude Code session';
   const session = getAgentSession(store, id);
@@ -112,6 +117,8 @@ function prView(store: Store, card: CardRow): string | null {
 export function cardView(card: CardRow, store?: Store) {
   return {
     id: card.id,
+    /** The project the card is in; null for a card in every project's inbox (the machine's). */
+    hostId: card.hostId,
     kind: card.kind,
     source: card.source,
     runId: card.runId,

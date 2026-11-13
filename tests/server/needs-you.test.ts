@@ -171,6 +171,43 @@ describe('question cards through the API', () => {
     expect(after.answered.map((c) => c.id)).toContain(card.id);
   });
 
+  it("says which project and session asked, and when: the owner's own session by name", async () => {
+    const { CardDesk } = await import('../../src/server/cards.ts');
+    const desk = new CardDesk({ store: db, bus: new EventBus() });
+    const options = [
+      { label: 'Yes', consequence: 'Yes.' },
+      { label: 'No', consequence: 'No.' },
+    ];
+    const base = {
+      kind: 'ask',
+      source: 'session' as const,
+      why: 'It matters.',
+      options,
+      recommended: 0,
+      reversible: true,
+      blocking: false,
+    };
+    const mine = desk.raise({
+      ...base,
+      hostId,
+      sessionId: 'interactive-0123456789abcdef',
+      question: 'Keep the old route?',
+    });
+    const anywhere = desk.raise({
+      ...base,
+      hostId: null,
+      sessionId: 'interactive-fedcba9876543210',
+      question: 'Which shell?',
+    });
+    const listed = (await (await needsYou()).json()) as {
+      cards: Array<{ id: string; hostId: string | null; session: string; createdAt: number }>;
+    };
+    const view = (id: string) => listed.cards.find((c) => c.id === id);
+    expect(view(mine.id)).toMatchObject({ hostId, session: 'your Claude Code session' });
+    expect(view(mine.id)?.createdAt).toBe(mine.createdAt);
+    expect(view(anywhere.id)).toMatchObject({ hostId: null, session: 'your Claude Code session' });
+  });
+
   it('marks the options that merge into the base, so Enter never picks them', async () => {
     const { CardDesk } = await import('../../src/server/cards.ts');
     const desk = new CardDesk({ store: db, bus: new EventBus() });
