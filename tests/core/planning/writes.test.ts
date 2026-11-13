@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import { runGit } from '../../../src/core/git/run.ts';
 import {
+  checkWrite,
   landLocally,
   type PlanningWrite,
   planningWriteLockFile,
@@ -99,6 +100,21 @@ describe('landLocally', () => {
       expect(result).toMatchObject({ ok: false, reason: 'not-planning' });
     }
     expect(await tip(repo.root)).toBe(repo.commit);
+  });
+
+  it('lets an owner-landed result touch .counterpoint/, never .git/ or .claude/', () => {
+    const text = (path: string): PlanningWrite => ({
+      message: 'owner step',
+      edits: [{ kind: 'text', path, before: null, after: 'x' }],
+    });
+    const any = () => true;
+    expect(checkWrite(text('.counterpoint/design-rules.md'), any, { code: true })).toBeNull();
+    expect(checkWrite(text('.counterpoint/design-rules.md'), any)).toMatchObject({
+      reason: 'not-planning',
+    });
+    for (const path of ['.claude/settings.json', '.git/config', '.Claude/x']) {
+      expect(checkWrite(text(path), any, { code: true })).toMatchObject({ reason: 'not-planning' });
+    }
   });
 
   it("refuses a path the owner is editing, keeping the owner's edit", async () => {

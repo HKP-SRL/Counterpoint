@@ -114,10 +114,10 @@ Since `build-from-remote-base`, every build starts from the remote base, which i
 **Added beyond the plan** (while implementing 4.2):
 - A catalog action `tick-owner-step` for Done on an owner step (D-2 had no action that ticks).
 - Owner-step cards are named by a hash of the step's text, so a step whose text changes is a new card; a step that comes back after it was ticked or left the plan reopens its old card.
-- Until the open question on marking steps is settled, every owner step offers Do it for me; Done is the recommended option, so `Enter` never starts a session.
+- Until the open question on marking steps is settled, every owner step offers Do it for me, except one whose named paths are all under `.git/` or `.claude/`. Later is the recommended option (fix, 2026-11-13: Done merges to the base, and one `Enter` falsely ticked steps that wait for a build), so `Enter` neither ticks nor starts a session. A step listed after an open build task is no card until the change is built.
 
 **Added beyond the plan** (while implementing 4.3):
-- A planning write can carry a `code` flag, set only when Land it lands an owner-step result, so that write may touch files outside the planning (D-8 needs it). The `.git`, `.counterpoint` and `.claude` paths stay refused.
+- A planning write can carry a `code` flag, set only when Land it lands an owner-step result, so that write may touch files outside the planning (D-8 needs it), `.counterpoint/` included (the owner sees the diff first; design-drafts 7.1 and 7.2 need it). The `.git` and `.claude` paths stay refused.
 - A catalog action `discard-owner-step` for Discard on a Land it card (D-2 had none), so the result is dropped and the step card comes back.
 
 **Added beyond the plan** (while implementing 5.1):

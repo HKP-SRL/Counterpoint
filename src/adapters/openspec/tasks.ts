@@ -3,7 +3,8 @@
 // A task line is matched exactly the way OpenSpec counts its own checkboxes (any list marker,
 // leading indent allowed, one marker character inside the brackets; only `x`/`X` is done), so the
 // console's progress agrees with `openspec list`. An owner step is an unchecked task whose text,
-// after an optional task number, starts with `Owner:`.
+// after an optional task number, starts with `Owner:`. An owner step listed after an open build
+// task waits for the build (it is about the built change: "after the build, use it for a day").
 //
 // The normalizer (openspec-host-adapter design decision 6). The builder ticks boxes as it works, so
 // the raw file would knock every approved change off the runway. tasks.md is therefore normalized
@@ -32,6 +33,8 @@ export interface TaskProgress {
   total: number;
   done: number;
   ownerSteps: string[];
+  /** The owner steps listed after an open build task: they wait until the change is built. */
+  ownerStepsAfterBuild: string[];
 }
 
 function clip(text: string): string {
@@ -41,10 +44,17 @@ function clip(text: string): string {
     : `${collapsed.slice(0, STEP_MAX - 1).trimEnd()}…`;
 }
 
+/** A task's text as an owner step is named: without its task number, clipped. */
+function stepText(description: string): string {
+  return clip(description.trim().replace(TASK_NUMBER_RE, ''));
+}
+
 export function countTasks(text: string): TaskProgress {
   let total = 0;
   let done = 0;
   const ownerSteps: string[] = [];
+  const ownerStepsAfterBuild: string[] = [];
+  let buildOpen = false;
   for (const line of text.split('\n')) {
     const match = TASK_LINE_RE.exec(line);
     if (!match) continue;
@@ -54,12 +64,15 @@ export function countTasks(text: string): TaskProgress {
       done += 1;
       continue;
     }
-    const description = (match[2] ?? '').trim().replace(TASK_NUMBER_RE, '');
-    if (OWNER_RE.test(description) && ownerSteps.length < MAX_OWNER_STEPS) {
-      ownerSteps.push(clip(description));
+    const description = stepText(match[2] ?? '');
+    if (!OWNER_RE.test(description)) {
+      buildOpen = true;
+    } else if (ownerSteps.length < MAX_OWNER_STEPS) {
+      ownerSteps.push(description);
+      if (buildOpen) ownerStepsAfterBuild.push(description);
     }
   }
-  return { total, done, ownerSteps };
+  return { total, done, ownerSteps, ownerStepsAfterBuild };
 }
 
 export function normalizeTasks(text: string): string {
@@ -132,7 +145,8 @@ const OPEN_BOX_RE = /^(\s*(?:[-*+]|\d{1,9}[.)])\s*)\[[^\]]*\]/;
  * The task list with the open task `task` ticked: matched by its text with or without its number
  * (as `ownerSteps` lists it), the first open one when it is listed twice. Unchanged when that task
  * is already done; null when the list has no such task. Only the checkbox changes, so an edit made
- * to the list meanwhile is kept.
+ * to the list meanwhile is kept. Both sides are clipped the same way, after the number is taken
+ * off, so a step longer than the clip still matches the text `ownerSteps` gave for it.
  */
 export function tickTask(text: string, task: string): string | null {
   const wanted = clip(task);
@@ -141,8 +155,8 @@ export function tickTask(text: string, task: string): string | null {
   for (const [index, line] of lines.entries()) {
     const match = TASK_LINE_RE.exec(line);
     if (!match) continue;
-    const description = clip(match[2] ?? '');
-    if (description !== wanted && description.replace(TASK_NUMBER_RE, '') !== wanted) continue;
+    const raw = match[2] ?? '';
+    if (clip(raw) !== wanted && stepText(raw) !== wanted) continue;
     if ((match[1] ?? '').toLowerCase() === 'x') {
       done = true;
       continue;

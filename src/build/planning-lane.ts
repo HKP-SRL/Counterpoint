@@ -181,10 +181,10 @@ const MERGEABLE = new Set(['CLEAN', 'HAS_HOOKS', 'UNSTABLE']);
 
 /**
  * The rules a write is made with. An owner-step result the owner landed (D-8) may touch any file
- * of the repository; the path checks (no `.git`, `.counterpoint` or `.claude`) still apply.
+ * of the repository, `.counterpoint/` included; `.git` and `.claude` stay refused.
  */
 function rulesFor(rules: PlanningRules, code: boolean): PlanningRules {
-  return code ? { ...rules, isPlanningPath: () => true } : rules;
+  return code ? { ...rules, isPlanningPath: () => true, code: true } : rules;
 }
 
 export class PlanningLane {
@@ -212,7 +212,7 @@ export class PlanningLane {
       throw new PlanningWriteRefused('This project has no planning Counterpoint can write.');
     }
     const code = options.code === true;
-    const refused = checkWrite(write, rulesFor(rules, code).isPlanningPath);
+    const refused = checkWrite(write, rulesFor(rules, code).isPlanningPath, { code });
     if (refused !== null) throw new PlanningWriteRefused(refused.detail);
     const row = insertPlanningWrite(
       this.#o.db,

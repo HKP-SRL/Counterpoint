@@ -18,6 +18,7 @@ import {
   reopenCard,
   resolveCard,
   resolveMissingCards,
+  setCardOptions,
   setCardOutcome,
   setCardWhy,
 } from '../core/store/cards.ts';
@@ -136,6 +137,16 @@ export class CardDesk {
    * and records why as the outcome.
    */
   async answer(id: string, input: { option: number; note?: string | null }): Promise<CardRow> {
+    // Later as an option (recommended where the other options merge to the base): the card stays.
+    const asked = getCard(this.#o.store, id);
+    if (
+      asked?.options[input.option]?.action?.type === 'later' &&
+      (asked.state === 'open' || asked.state === 'deferred')
+    ) {
+      const deferred = this.defer(id);
+      if (deferred.outcome === null) this.outcome(deferred, 'Later: it stays here.');
+      return getCard(this.#o.store, id) as CardRow;
+    }
     const card = answerCard(this.#o.store, id, input, this.#now());
     this.#publish(card.hostId, { cardId: card.id, state: 'answered' });
     for (const listener of this.#listeners) {
@@ -181,6 +192,16 @@ export class CardDesk {
   setWhy(card: Pick<CardRow, 'id' | 'hostId'>, why: string): void {
     setCardWhy(this.#o.store, card.id, why, this.#now());
     this.#publish(card.hostId, { cardId: card.id, why: true });
+  }
+
+  /** Gives a waiting recomputed card the options it is raised with now. */
+  setOptions(
+    card: Pick<CardRow, 'id' | 'hostId'>,
+    input: Pick<NewCard, 'options' | 'recommended'>,
+  ): void {
+    if (setCardOptions(this.#o.store, card.id, input, this.#now())) {
+      this.#publish(card.hostId, { cardId: card.id, options: true });
+    }
   }
 
   /** Puts a card back in the inbox, unanswered, with an optional line on why. */
