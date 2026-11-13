@@ -20,32 +20,52 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { ClaudeCliRunner } from '../agent/runner.ts';
+import { createActionRunner } from '../build/actions.ts';
+import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../build/ask-session.ts';
 import { createDeliver } from '../build/deliver.ts';
-import { Governor } from '../build/governor.ts';
+import { Governor, governedRunner } from '../build/governor.ts';
 import { LocalPreviews } from '../build/local-preview.ts';
 import { Orchestrator } from '../build/orchestrator.ts';
 import { readOwnerEnv } from '../build/owner-env.ts';
+import { OwnerSteps } from '../build/owner-steps.ts';
+import { PlanningLane } from '../build/planning-lane.ts';
 import { checkPullRequests } from '../build/pr-state.ts';
 import { recoverRuns } from '../build/recovery.ts';
+import { syncRunCards } from '../build/run-cards.ts';
 import { factsFromRuntime, writeRunReport } from '../build/run-report.ts';
 import { detectFramework } from '../compose.ts';
 import { writeFileAtomic0600 } from '../core/fs/atomic.ts';
 import { BaseFetcher } from '../core/git/base-fetch.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { carryOverApprovals } from '../core/runway/carry-over.ts';
-import { runNeedsYou } from '../core/runway/run-items.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
 import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
+import { revokeBuilderCapabilities } from '../core/store/ask.ts';
+import { getCard, listWaitingCards } from '../core/store/cards.ts';
 import { openStore, type Store } from '../core/store/db.ts';
 import { EventBus, publishEvent } from '../core/store/events.ts';
+import { runningOwnerStepResults } from '../core/store/owner-step-results.ts';
+import type { PlanningWriteRow } from '../core/store/planning-writes.ts';
 import { getRun } from '../core/store/runs.ts';
-import { createApp, resolveUiDir } from './app.ts';
+import { createApp, packageRoot, resolveUiDir } from './app.ts';
 import { createApprovalViews } from './approval-views.ts';
+import { CardDesk } from './cards.ts';
 import { createControlApp, hashToken } from './control.ts';
 import { createHostRuntimes } from './hosts.ts';
+import { Notifier } from './notifier.ts';
+import {
+  installedVersion,
+  installStamp,
+  resolveRestartCards,
+  SelfRestart,
+  successorSpawner,
+  takeHandover,
+} from './restart.ts';
 import { startWatcher, type Watcher } from './watcher.ts';
 
 const SQLITE_BUSY = 5;
+/** How long a successor waits for the previous daemon to let go of the lock. */
+const HANDOVER_LOCK_WAIT_MS = 60_000;
 
 export interface DaemonOptions {
   home: string;
@@ -57,6 +77,11 @@ export interface DaemonOptions {
    * unrelated process).
    */
   instance?: string;
+  /**
+   * The nonce of a planned self-restart (owner-inbox D-10): the previous daemon is stopping, so
+   * wait for its lock, and keep the console sessions if the nonce matches its handover record.
+   */
+  handover?: string;
 }
 
 export interface DaemonInfo {
@@ -76,6 +101,16 @@ let lockConnection: DatabaseSync | undefined;
 
 function log(event: string, fields: Record<string, unknown> = {}): void {
   process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), event, ...fields })}\n`);
+}
+
+/** Waits for the lock while the previous daemon of a planned restart stops. */
+async function acquireLockWithin(paths: HomePaths, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (acquireLock(paths)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
 }
 
 /** Holds `BEGIN EXCLUSIVE` on the lock database. Returns false if another daemon holds it. */
@@ -167,7 +202,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   chmodSync(paths.runDir, 0o700);
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
 
-  if (!acquireLock(paths)) {
+  const locked =
+    options.handover === undefined
+      ? acquireLock(paths)
+      : await acquireLockWithin(paths, HANDOVER_LOCK_WAIT_MS);
+  if (!locked) {
     log('already-running');
     console.log('Counterpoint is already running.');
     process.exit(0);
@@ -191,8 +230,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
-  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes.
-  clearAllSessions(store);
+  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes. Only
+  // a planned self-restart, handed over by the previous daemon, keeps the sessions (D-10).
+  const planned = takeHandover(paths, options.handover);
+  if (!planned) clearAllSessions(store);
   deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no
@@ -244,6 +285,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   const bus = new EventBus();
   // One set of host runtimes: the console reads snapshots from it, the watcher keeps it current.
   const runtimes = createHostRuntimes({ store });
+  // Planning writes land as small PRs (owner-inbox D-11); the minute tick moves them along.
+  let lane: PlanningLane | undefined;
   // The base fetcher (host-planning: When the base is fetched): every host's base branch from its
   // remote, once a minute and at each run and build start. A change in what the console shows
   // about it (a failed fetch, unpushed local commits) is announced like a new base tip.
@@ -259,6 +302,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       if (merged.length > 0) {
         publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
       }
+      await lane?.tick(host.id, env);
     },
   });
   // Approvals given before one-click approval carry over once (approvals: Earlier approvals
@@ -294,9 +338,87 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       return null;
     }
   };
-  const publish = (family: 'run') => (hostId: string, payload: Record<string, unknown>) =>
-    void publishEvent(store, bus, { hostId, family, payload });
+  // Question cards (owner-inbox): the run's cards are recomputed on every run event. A new card
+  // that blocks work shows a macOS notification (D-9), at most one a minute.
+  const notifier = new Notifier({
+    stillWaiting: (cardId) => {
+      const state = getCard(store, cardId)?.state;
+      return state === 'open' || state === 'deferred';
+    },
+  });
+  const desk = new CardDesk({ store, bus, log, notify: (card) => notifier.notify(card) });
+  /** What the card that started a planning write says while it lands (D-12). */
+  const writeOutcome = (row: PlanningWriteRow): string | null => {
+    switch (row.state) {
+      case 'pending':
+      case 'landing':
+        return 'Landing as a small PR.';
+      case 'waiting':
+        return 'Waiting for checks.';
+      case 'blocked':
+        return row.reason ?? 'Blocked.';
+      case 'merged':
+        return row.reason ?? 'Done.';
+      case 'cancelled':
+        return null;
+    }
+  };
+  lane = new PlanningLane({
+    db: store,
+    home: options.home,
+    host: (hostId) => runtimes.get(hostId)?.host ?? null,
+    rules: (hostId) => {
+      const adapter = runtimes.get(hostId)?.adapter;
+      return adapter == null
+        ? null
+        : { isPlanningPath: adapter.isPlanningPath, tickTask: adapter.tickTask };
+    },
+    ownerEnv: async () => (await readOwnerEnv()).env,
+    fetchBase: (host, env) => fetcher.fetch(host, env),
+    onChange: (row) => {
+      const card = row.cardId === null ? undefined : getCard(store, row.cardId);
+      const text = writeOutcome(row);
+      if (card !== undefined && text !== null) desk.outcome(card, text);
+      publishEvent(store, bus, {
+        hostId: row.hostId,
+        family: 'needs-you',
+        payload: { write: row.id, state: row.state },
+      });
+      if (row.state === 'merged') {
+        publishEvent(store, bus, {
+          hostId: row.hostId,
+          family: 'planning',
+          payload: { write: row.id },
+        });
+      }
+    },
+    log,
+  });
   const governor = new Governor({ db: store });
+  // Owner steps are cards (owner-inbox 4.2): recomputed with the run's cards on every read. Do it
+  // for me runs a session as the owner, through the same governor as builders (4.3).
+  const steps = new OwnerSteps({
+    desk,
+    runtimes,
+    approvals,
+    lane,
+    home: options.home,
+    ownerEnv: async () => (await readOwnerEnv()).env,
+    fetchBase: (host, env) => fetcher.fetch(host, env),
+    runner: (hostId, env) =>
+      governedRunner(governor, runnerFactory(env), { hostId, kind: 'owner-step' }),
+    log,
+  });
+  const syncCards = async (hostId: string) => {
+    syncRunCards(desk, hostId);
+    await steps.sync(hostId).catch((error: Error) => {
+      log('owner-steps-sync-failed', { hostId, message: error.message });
+    });
+  };
+  const publish = (family: 'run') => (hostId: string, payload: Record<string, unknown>) => {
+    publishEvent(store, bus, { hostId, family, payload });
+    syncRunCards(desk, hostId);
+  };
   const previews = new LocalPreviews({
     home: options.home,
     db: store,
@@ -304,6 +426,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     consolePort: bound,
     publish: publish('run'),
   });
+  // Sessions reach the owner through `counterpoint mcp ask` of this same install.
+  const askServer =
+    process.argv[1] === undefined
+      ? undefined
+      : { command: process.execPath, args: [process.argv[1], 'mcp', 'ask'] };
   const orchestrator = new Orchestrator({
     home: options.home,
     db: store,
@@ -333,7 +460,12 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       adapterFor: (hostId) => runtimes.get(hostId)?.adapter ?? null,
     }),
     log,
+    ...(askServer === undefined ? {} : { askServer }),
   });
+  // No builder session outlives the daemon; an answer to a builder's question reaches the
+  // change's next session.
+  revokeBuilderCapabilities(store);
+  desk.onAnswered((card) => onBuilderAnswer(store, desk, card));
   // Crash recovery before any new work: end what a killed daemon left running, commit
   // interrupted work; the run itself resumes once the daemon is up.
   const recovered = await recoverRuns({
@@ -344,6 +476,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }).catch((error: Error) => {
     log('recovery-failed', { message: error.message });
     return null;
+  });
+  // A Do it for me session the last daemon was running is gone: its step card comes back.
+  await steps.recover().catch((error: Error) => {
+    log('owner-steps-recovery-failed', { message: error.message });
   });
 
   let stopping = false;
@@ -361,8 +497,73 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     await stop(reason);
   };
 
+  // Self-restart into a new install (D-10), from the files this daemon was started from.
+  const root = (() => {
+    try {
+      return packageRoot();
+    } catch {
+      return null;
+    }
+  })();
+  const entry = process.argv[1];
+  const restarter =
+    root === null || entry === undefined
+      ? undefined
+      : new SelfRestart({
+          desk,
+          paths,
+          stamp: () => installStamp(root, entry),
+          version: () => installedVersion(root),
+          busy: () => orchestrator.running() !== null || runningOwnerStepResults(store).length > 0,
+          spawnSuccessor: successorSpawner({
+            paths,
+            entry,
+            port: bound,
+            env: async () => (await readOwnerEnv()).env,
+          }),
+          stop: (reason) => stop(reason),
+          log,
+        });
+
+  desk.setActionRunner(
+    createActionRunner({
+      db: store,
+      desk,
+      orchestrator,
+      ownerEnv: () => readOwnerEnv(),
+      ownerSteps: (action, card, note) => steps.act(action, card, note),
+      ...(restarter === undefined ? {} : { restart: (when) => restarter.request(when) }),
+      ...(askServer === undefined
+        ? {}
+        : {
+            addAskTool: async (card) =>
+              setUpInteractiveAsk({
+                db: store,
+                desk,
+                card,
+                home: options.home,
+                server: askServer,
+                env: (await readOwnerEnv()).env,
+              }),
+          }),
+    }),
+  );
+  if (askServer !== undefined) raiseAskSetupCard(desk, options.home);
+  // This daemon runs the newest install: a restart card an earlier daemon raised is moot.
+  resolveRestartCards(store, desk, 'Counterpoint restarted.');
+  if (planned) {
+    desk.doneForYou(
+      null,
+      root === null
+        ? 'Restarted into the new install.'
+        : `Restarted into the new install (Counterpoint ${installedVersion(root)}).`,
+    );
+  }
+
   app = createApp({
     store,
+    cards: desk,
+    syncCards,
     port: bound,
     uiDir: resolveUiDir(),
     bus,
@@ -371,6 +572,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     approvals,
     onApprovalChanged: (hostId) => void watcher?.nudge(hostId),
     baseFetch: (hostId) => fetcher.state(hostId),
+    writes: lane,
     run: {
       orchestrator,
       claudeVersion,
@@ -388,6 +590,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log('stopping', { reason });
     watcher?.stop();
     fetcher.stop();
+    notifier.stop();
+    restarter?.stop();
     await previews.stopAll();
     await Promise.all([closeServer(control), closeServer(http)]);
     rmSync(paths.socket, { force: true });
@@ -405,6 +609,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     port: bound,
     onStop: () => void stopAfterRun('control'),
     orchestrator,
+    desk,
+    handover: (nonce) => restarter?.accept(nonce) ?? false,
     detectFramework,
     nudge: (hostId) => void watcher?.nudge(hostId),
     runwayCount: async (hostId) => {
@@ -413,7 +619,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     needsYouCount: async (hostId) => {
       const runtime = runtimes.get(hostId);
-      return runtime === null ? null : runNeedsYou(store, hostId).length;
+      if (runtime === null) return null;
+      await syncCards(hostId);
+      return listWaitingCards(store, hostId).length;
     },
   });
   control = createAdaptorServer({ fetch: controlApp.fetch }) as Server;
@@ -433,6 +641,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   watcher = startWatcher({ runtimes, db: store, bus, log, approvals });
   // The base fetch loop: a PR merged on GitHub reaches open consoles within about a minute.
   fetcher.start(() => runtimes.list().map((runtime) => runtime.host));
+  restarter?.start();
 
   if (recovered?.runId != null) orchestrator.resume(recovered.runId);
 

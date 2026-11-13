@@ -40,6 +40,7 @@ import {
   trackedRemote,
 } from '../core/git/remote.ts';
 import { runGit } from '../core/git/run.ts';
+import { assumedAnswers, listRunChangeAskCards } from '../core/store/cards.ts';
 import {
   builderSessionCount,
   listGateResults,
@@ -57,7 +58,8 @@ const GH_TIMEOUT_MS = 2 * 60 * 1000;
 /** GitHub refuses PR bodies above 65,536 characters. */
 const MAX_BODY_CHARS = 60_000;
 const MAX_FILE_BYTES = 256 * 1024;
-const PR_URL_RE = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
+export const PR_URL_RE =
+  /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
 
 export class DeliveryError extends Error {
   constructor(message: string) {
@@ -121,11 +123,10 @@ export interface PushInput {
 /** The extra `-c` flags and variables that let this one push use the owner's credentials. */
 export const pushCredentials = remoteCredentials;
 
-/** Pushes `branch` to the target remote with the owner's credentials, for this call only. */
-export async function pushBranch(input: PushInput): Promise<void> {
-  if (!/^cp\/[a-z0-9][a-z0-9-]{0,63}$/.test(input.branch)) {
-    throw new DeliveryError(`Refusing to push ${input.branch}: not a Counterpoint branch.`);
-  }
+/** Pushes `refspec` to the target remote with the owner's credentials, for this call only. */
+async function pushRefspec(
+  input: Omit<PushInput, 'branch' | 'host'> & { root: string; refspec: string; what: string },
+): Promise<void> {
   const env = input.env ?? process.env;
   const credentials = pushCredentials({
     kind: input.target.kind,
@@ -133,10 +134,9 @@ export async function pushBranch(input: PushInput): Promise<void> {
     ssh: input.target.kind === 'ssh' ? (input.ssh ?? findOnPath('ssh', env.PATH)) : '',
     env,
   });
-  const ref = `refs/heads/${input.branch}`;
   try {
     await runGit(
-      input.host.root,
+      input.root,
       [
         ...credentials.config,
         '-c',
@@ -146,13 +146,49 @@ export async function pushBranch(input: PushInput): Promise<void> {
         'push',
         '--porcelain',
         input.target.remote,
-        `${ref}:${ref}`,
+        input.refspec,
       ],
       { timeoutMs: PUSH_TIMEOUT_MS, env: credentials.env },
     );
   } catch (error) {
-    throw new DeliveryError(`Pushing ${input.branch} failed: ${(error as Error).message}`);
+    throw new DeliveryError(`Pushing ${input.what} failed: ${(error as Error).message}`);
   }
+}
+
+/** Pushes `branch` to the target remote with the owner's credentials, for this call only. */
+export async function pushBranch(input: PushInput): Promise<void> {
+  if (!/^cp\/[a-z0-9][a-z0-9-]{0,63}$/.test(input.branch)) {
+    throw new DeliveryError(`Refusing to push ${input.branch}: not a Counterpoint branch.`);
+  }
+  const ref = `refs/heads/${input.branch}`;
+  await pushRefspec({
+    ...input,
+    root: input.host.root,
+    refspec: `${ref}:${ref}`,
+    what: input.branch,
+  });
+}
+
+export interface PushPlanInput extends Omit<PushInput, 'host'> {
+  root: string;
+  /** The planning write's commit, which no local branch holds. */
+  commit: string;
+}
+
+/**
+ * Pushes a planning write's commit to its own branch `cp-plan/<id>` (owner-inbox D-11), replacing
+ * what an earlier try pushed there. No local branch is made or moved.
+ */
+export async function pushPlanCommit(input: PushPlanInput): Promise<void> {
+  if (!/^cp-plan\/w-[0-9a-f]{12}$/.test(input.branch)) {
+    throw new DeliveryError(`Refusing to push ${input.branch}: not a planning-write branch.`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(input.commit)) throw new DeliveryError('Not a commit id.');
+  await pushRefspec({
+    ...input,
+    refspec: `+${input.commit}:refs/heads/${input.branch}`,
+    what: input.branch,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -237,6 +273,8 @@ export interface PrBodyInput {
   ticked: readonly string[];
   /** The builder's recorded assumptions (raw), or null. */
   assumptions: string | null;
+  /** Questions the builder asked in Needs You that nobody answered: built on the recommendation. */
+  unanswered?: readonly { question: string; answer: string }[];
   flags: readonly RunChangeFlag[];
   /** How much of the change is tests, against the budget; null when it was not measured. */
   testShare: StoredTestShare | null;
@@ -323,12 +361,23 @@ export function prBody(input: PrBodyInput): string {
 
   out.push('## Assumed decisions', '');
   const assumptions = input.assumptions === null ? '' : defuse(input.assumptions);
-  out.push(
-    assumptions === ''
-      ? 'The builder recorded none.'
-      : 'The builder chose these where the plan left a decision open. Check each one.',
-  );
-  if (assumptions !== '') out.push('', quote(assumptions));
+  const unanswered = input.unanswered ?? [];
+  if (assumptions === '' && unanswered.length === 0) out.push('The builder recorded none.');
+  if (assumptions !== '') {
+    out.push(
+      'The builder chose these where the plan left a decision open. Check each one.',
+      '',
+      quote(assumptions),
+    );
+  }
+  if (unanswered.length > 0) {
+    if (assumptions !== '') out.push('');
+    out.push('Questions you did not answer in Needs You, built on the recommended option:', '');
+    for (const a of unanswered) {
+      const flat = (text: string) => defuse(text).replace(/\s+/g, ' ').trim();
+      out.push(`- ${flat(a.question)} Assumed: **${flat(a.answer)}**`);
+    }
+  }
   out.push('');
 
   out.push('## Tests', '', ...testShareLines(input.testShare), '');
@@ -408,7 +457,10 @@ export function defaultGhRun(gh: string, env: Record<string, string>): GhRun {
   };
 }
 
-function ghFailure(what: string, result: { exitCode: number; stderr: string }): DeliveryError {
+export function ghFailure(
+  what: string,
+  result: { exitCode: number; stderr: string },
+): DeliveryError {
   const last = result.stderr
     .split('\n')
     .map((line) => line.trim())
@@ -544,7 +596,7 @@ export function localPreviewUrl(consolePort: number, hostId: string, change: str
 }
 
 /** Writes the body file without following a planted link (remove, then exclusive create). */
-function writeBody(path: string, body: string): void {
+export function writeBody(path: string, body: string): void {
   try {
     unlinkSync(path);
   } catch {
@@ -594,6 +646,9 @@ export function createDeliver(
       taskList: tasksPath === null ? null : readSmallFile(join(context.worktree, tasksPath)),
       ticked: runChangeTicks(context.db, context.runChangeId),
       assumptions: readSmallFile(join(context.changeDir, 'assumptions.md')),
+      unanswered: assumedAnswers(
+        listRunChangeAskCards(context.db, context.runId, context.change.id),
+      ),
       flags: context.flags,
       testShare: context.testShare,
       gates: listGateResults(context.db, context.runChangeId),

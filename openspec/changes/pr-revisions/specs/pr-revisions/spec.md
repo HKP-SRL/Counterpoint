@@ -16,6 +16,17 @@ The owner SHALL be able to write revision notes in Counterpoint on a change whos
 - **WHEN** the owner sends a note on a parked change explaining what its failing gate needs
 - **THEN** a revision round starts in that change's worktree with the note
 
+### Requirement: Late answers become revision notes
+When the owner answers a builder's question in Needs You with another option than the one the change's PR was built on, the answer SHALL join the change's batch as a note while the PR is open, and SHALL become a backlog item once the change merged. Like any note, it SHALL start nothing until the owner sends the batch. The card SHALL say where the answer went.
+
+#### Scenario: Different answer while the PR is open
+- **WHEN** the PR was built on "Casual greeting" and the owner later answers "Formal greeting"
+- **THEN** the answer joins the change's batch as a note, the card says so, and nothing builds until the owner sends the batch
+
+#### Scenario: Different answer after merge
+- **WHEN** the owner answers a builder's question with another option after the change merged
+- **THEN** the answer becomes a backlog item and the card says so
+
 ### Requirement: Pins on the change's preview
 Counterpoint SHALL serve a local preview of each open change's worktree on a loopback origin isolated from the console, with an in-house pin overlay injected in a Shadow DOM. A pin SHALL record the element's anchor (its `data-cp-id`, else a generated selector), a text snippet, the viewport and the page.
 

@@ -310,3 +310,7 @@ Planning lives in `openspec/`: current behaviour in `openspec/specs/`, work in `
 - `/opsx:archive` when a change is done (merges its spec deltas into `openspec/specs/`)
 
 Feature work starts from a change; small fixes and doc edits can go in directly. Run `openspec validate --all --strict` after editing anything under `openspec/`. Dependencies between changes go in `.openspec.yaml` as `x-depends-on: [<change>, ...]`; tasks only the owner can do start with `Owner:`.
+
+## Asking the owner
+
+When the `ask_owner` tool is available (Counterpoint's ask tool), ask the owner through it, never in your reply or the terminal. The question then waits in Counterpoint's Needs You. Ask only what changes the outcome: 2–4 options, each with its consequence, and one recommended. If the choice is reversible, keep working on your recommendation and note it as assumed; set `wait` only when you can't go on without the answer, and read late answers with `check_answer`.

@@ -12,10 +12,11 @@ import { consumeLoginCode, createSession, SESSION_COOKIE } from '../core/securit
 import { listHosts, type Store } from '../core/store/db.ts';
 import type { EventBus } from '../core/store/events.ts';
 import { type ApprovalViews, createApprovalViews } from './approval-views.ts';
+import { CardDesk } from './cards.ts';
 import { createHostRuntimes, type HostRuntimes } from './hosts.ts';
 import { mountApprovalRoutes } from './routes/approvals.ts';
 import { mountChangeRoutes } from './routes/changes.ts';
-import { mountNeedsYouRoutes } from './routes/needs-you.ts';
+import { mountNeedsYouRoutes, type NeedsYouRoutesOptions } from './routes/needs-you.ts';
 import { mountRunRoutes, type RunRoutesOptions } from './routes/run.ts';
 import { mountEvents } from './sse.ts';
 
@@ -45,6 +46,12 @@ export interface AppOptions {
   baseFetch?: (hostId: string) => BaseFetchState | null;
   /** The build lane's owner actions (runs, settings, stop); mounted when given with a home. */
   run?: Omit<RunRoutesOptions, 'home' | 'store' | 'runtimes' | 'approvals'>;
+  /** The card desk (shared with the orchestrator and the ask tool); created when omitted. */
+  cards?: CardDesk;
+  /** Recomputes a host's run cards before Needs You is read. */
+  syncCards?: (hostId: string) => void | Promise<void>;
+  /** Retry and Cancel on a blocked planning write. */
+  writes?: NeedsYouRoutesOptions['writes'];
 }
 
 /** The Counterpoint package root: the nearest ancestor whose package.json is @hkp/counterpoint. */
@@ -140,7 +147,13 @@ export function createApp(options: AppOptions): Hono {
       ? {}
       : { onApprovalChanged: options.onApprovalChanged }),
   });
-  mountNeedsYouRoutes(app, { runtimes, store: options.store });
+  mountNeedsYouRoutes(app, {
+    runtimes,
+    store: options.store,
+    cards: options.cards ?? new CardDesk({ store: options.store, bus: options.bus }),
+    ...(options.syncCards === undefined ? {} : { syncCards: options.syncCards }),
+    ...(options.writes === undefined ? {} : { writes: options.writes }),
+  });
   if (options.home !== undefined && options.run !== undefined) {
     mountRunRoutes(app, {
       ...options.run,

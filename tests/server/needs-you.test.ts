@@ -106,3 +106,66 @@ describe('GET /api/hosts/:hostId/needs-you', () => {
     ]);
   });
 });
+
+describe('question cards through the API', () => {
+  const ORIGIN = `http://${HOST}`;
+  const post = (path: string, body: unknown) =>
+    app().request(`http://${HOST}${path}`, {
+      method: 'POST',
+      headers: { host: HOST, cookie, origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('lists a raised card, answers it with a note, and refuses a second answer', async () => {
+    const bus = new EventBus();
+    const seen: string[] = [];
+    bus.subscribe((event) => seen.push(event.family));
+    const { CardDesk } = await import('../../src/server/cards.ts');
+    const desk = new CardDesk({ store: db, bus });
+    const card = desk.raise({
+      hostId,
+      kind: 'ask',
+      source: 'session',
+      sessionId: 's-1',
+      question: 'Which colour?',
+      why: 'The menu header needs one.',
+      options: [
+        { label: 'Blue', consequence: 'Matches the logo.' },
+        { label: 'Green', consequence: 'Matches the old site.' },
+      ],
+      recommended: 0,
+      reversible: true,
+      blocking: false,
+    });
+    expect(seen).toEqual(['needs-you']);
+    const listed = (await (await needsYou()).json()) as { cards: Array<{ id: string }> };
+    expect(listed.cards.map((c) => c.id)).toContain(card.id);
+
+    expect((await post(`/api/hosts/${hostId}/cards/${card.id}/answer`, { option: 7 })).status).toBe(
+      422,
+    );
+    const answer = await post(`/api/hosts/${hostId}/cards/${card.id}/answer`, {
+      option: 1,
+      note: 'the old site',
+    });
+    expect(answer.status).toBe(200);
+    expect(((await answer.json()) as { card: unknown }).card).toMatchObject({
+      state: 'answered',
+      answer: 1,
+      note: 'the old site',
+      outcome: 'Sent to the session that asked.',
+    });
+    expect((await post(`/api/hosts/${hostId}/cards/${card.id}/answer`, { option: 0 })).status).toBe(
+      409,
+    );
+    expect((await post(`/api/hosts/${hostId}/cards/${card.id}/later`, {})).status).toBe(409);
+    // Another host's path does not reach the card.
+    expect((await post(`/api/hosts/other-host/cards/${card.id}/later`, {})).status).toBe(404);
+    const after = (await (await needsYou()).json()) as {
+      cards: Array<{ id: string }>;
+      answered: Array<{ id: string }>;
+    };
+    expect(after.cards.map((c) => c.id)).not.toContain(card.id);
+    expect(after.answered.map((c) => c.id)).toContain(card.id);
+  });
+});

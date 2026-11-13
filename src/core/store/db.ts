@@ -227,6 +227,123 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE run_changes ADD COLUMN pr_state TEXT CHECK (pr_state IN ('open', 'merged', 'closed'));
   `,
+  // 10: question cards (owner-inbox D-1), the "Done for you" log (D-7) and notes waiting for a
+  // change's next builder session (a retry hint, an answer that came after its session ended).
+  // `key` names what raised a recomputed card so raising it again finds the same row; machine cards
+  // have no host. Options are JSON: label, consequence and an optional catalog action.
+  `
+  CREATE TABLE cards (
+    id TEXT PRIMARY KEY,
+    host_id TEXT REFERENCES hosts(id),
+    key TEXT UNIQUE,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('run', 'change', 'session', 'machine')),
+    run_id TEXT,
+    change TEXT,
+    session_id TEXT,
+    question TEXT NOT NULL,
+    why TEXT NOT NULL,
+    options TEXT NOT NULL,
+    recommended INTEGER NOT NULL,
+    reversible INTEGER NOT NULL CHECK (reversible IN (0, 1)),
+    blocking INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+    state TEXT NOT NULL CHECK (state IN ('open', 'deferred', 'answered', 'resolved')),
+    answer INTEGER,
+    note TEXT,
+    answered_at INTEGER,
+    outcome TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK ((state = 'answered') = (answer IS NOT NULL AND answered_at IS NOT NULL))
+  ) STRICT;
+  CREATE INDEX cards_by_state ON cards(state, host_id);
+  CREATE INDEX cards_by_session ON cards(session_id) WHERE session_id IS NOT NULL;
+
+  CREATE TABLE done_for_you (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT REFERENCES hosts(id),
+    text TEXT NOT NULL,
+    undo TEXT,
+    created_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE change_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    change TEXT NOT NULL,
+    text TEXT NOT NULL,
+    card_id TEXT REFERENCES cards(id),
+    created_at INTEGER NOT NULL,
+    used_at INTEGER
+  ) STRICT;
+  CREATE INDEX change_notes_waiting ON change_notes(host_id, change) WHERE used_at IS NULL;
+  `,
+  // 11: ask capabilities (owner-inbox D-5): one per session that may ask the owner, stored only as
+  // the SHA-256 of the capability. It names the session its cards belong to and, for a builder,
+  // the host, run and change.
+  `
+  CREATE TABLE ask_capabilities (
+    hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('builder', 'interactive')),
+    host_id TEXT REFERENCES hosts(id),
+    run_id TEXT,
+    change TEXT,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  ) STRICT;
+  `,
+  // 12: planning writes (owner-inbox D-11, D-12): each write the owner's click started, kept until
+  // it merged or the owner cancelled it, so a restart picks it up. `edits` is JSON (a tick to make
+  // again on a newer base, or a file's text before and after); `pr_url` and `commit` are the PR and
+  // the commit last pushed to `cp-plan/<id>`; `blocked` says why a blocked write needs the owner.
+  `
+  CREATE TABLE planning_writes (
+    id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    card_id TEXT REFERENCES cards(id),
+    message TEXT NOT NULL,
+    edits TEXT NOT NULL,
+    state TEXT NOT NULL
+      CHECK (state IN ('pending', 'landing', 'waiting', 'blocked', 'merged', 'cancelled')),
+    blocked TEXT CHECK (blocked IN ('checks', 'review', 'closed', 'conflict', 'push', 'gh')),
+    reason TEXT,
+    pr_url TEXT,
+    commit_sha TEXT,
+    built_on TEXT,
+    redos INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK ((state = 'blocked') = (blocked IS NOT NULL))
+  ) STRICT;
+  CREATE INDEX planning_writes_live ON planning_writes(host_id, state);
+  CREATE INDEX planning_writes_by_card ON planning_writes(card_id) WHERE card_id IS NOT NULL;
+  `,
+  // 13: owner-step results (owner-inbox D-8): what a Do it for me session left in its worktree,
+  // kept as edits (a file's text before and after) until the owner lands or discards it. A
+  // planning write that lands one may touch files outside the planning (`code`).
+  `
+  ALTER TABLE planning_writes ADD COLUMN code INTEGER NOT NULL DEFAULT 0 CHECK (code IN (0, 1));
+  CREATE TABLE owner_step_results (
+    id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    change TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    step TEXT NOT NULL,
+    step_card_id TEXT REFERENCES cards(id),
+    land_card_id TEXT REFERENCES cards(id),
+    base TEXT,
+    state TEXT NOT NULL
+      CHECK (state IN ('running', 'ready', 'submitted', 'discarded', 'failed')),
+    edits TEXT NOT NULL DEFAULT '[]',
+    diff TEXT,
+    summary TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX owner_step_results_by_card ON owner_step_results(land_card_id)
+    WHERE land_card_id IS NOT NULL;
+  `,
 ];
 
 /** Path of the state database under a home. */

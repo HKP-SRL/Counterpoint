@@ -415,6 +415,27 @@ describe('builder session budget (fake claude)', () => {
     expect(argv).not.toContain('--allowedTools');
   });
 
+  it('loads only the ask tool, without the classifier for it (owner-inbox D-5)', async () => {
+    const dir = makeScratchDir('cp-bs');
+    const seen: Array<Record<string, unknown>> = [];
+    const mcpConfig = join(dir, 'ask-mcp-1.json');
+    const session = await startBuilderSession({
+      ...base(dir),
+      prompt: 'work',
+      windowTokens: 200_000,
+      budgetPercent: 40,
+      ask: { mcpConfig, tools: ['mcp__counterpoint__ask_owner'] },
+      onEvent: (e) => {
+        if ((e as { subtype?: string }).subtype === 'fake_env') seen.push(e as never);
+      },
+    });
+    await session.done;
+    const argv = seen[0]?.argv as string[];
+    const at = argv.indexOf('--mcp-config');
+    expect(argv.slice(at, at + 3)).toEqual(['--mcp-config', mcpConfig, '--strict-mcp-config']);
+    expect(argv.slice(-2)).toEqual(['--allowedTools', 'mcp__counterpoint__ask_owner']);
+  });
+
   it('ends with the turn when under budget', async () => {
     const dir = makeScratchDir('cp-bs');
     let pid = 0;

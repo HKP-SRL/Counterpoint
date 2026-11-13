@@ -12,19 +12,25 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
-import { Icon } from '@astryxdesign/core/Icon';
+import { HStack } from '@astryxdesign/core/HStack';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core/Layout';
 import { Link } from '@astryxdesign/core/Link';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
+import { TextInput } from '@astryxdesign/core/TextInput';
+import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
-import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
-import { apiGet, queryKeys } from '../api';
+import { keepPreviousData, queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useState } from 'react';
+import { apiGet, apiPostAnswer, queryKeys } from '../api';
 import { isChangeId } from '../ids';
+import { focusAfterAnswer, inboxKey } from '../inbox-keys';
+import { useNotificationPermission } from '../notify';
 
 export type RunAttempt = {
   attempt: number;
@@ -60,15 +66,63 @@ export type RunItem = {
   action: string;
 };
 
+/** One option on a card: its label, its consequence, and whether Counterpoint acts on it. */
+export type CardOption = { label: string; consequence: string; acts: boolean };
+
+/** The planning write an answer started, while it lands as a small PR (D-12). */
+export type CardWrite = {
+  id: string;
+  state: 'pending' | 'landing' | 'waiting' | 'blocked' | 'merged';
+  prUrl: string | null;
+  reason: string | null;
+};
+
+/** A question card (question-cards: Card contents). */
+export type QuestionCard = {
+  id: string;
+  kind: string;
+  source: 'run' | 'change' | 'session' | 'machine';
+  runId: string | null;
+  change: string | null;
+  /** The session that asked ("builder session 2"), for a session's card. */
+  session: string | null;
+  question: string;
+  why: string;
+  options: CardOption[];
+  recommended: number;
+  reversible: boolean;
+  blocking: boolean;
+  state: 'open' | 'deferred' | 'answered' | 'resolved';
+  answer: number | null;
+  note: string | null;
+  outcome: string | null;
+  write: CardWrite | null;
+  /** The diff a Land it card shows (an owner step Counterpoint did, D-8). */
+  diff: string | null;
+  createdAt: number;
+};
+
+export type DoneForYou = { id: number; text: string; at: number };
+
 export type NeedsYouSnapshot = {
   hostId: string;
   baseBranch: string;
+  /** Waiting on the owner: blocking first, then newest; deferred ones last. */
+  cards: QuestionCard[];
+  /** Answered cards whose planning write has not merged yet. */
+  landing: QuestionCard[];
+  answered: QuestionCard[];
+  doneForYou: DoneForYou[];
+  /** The details behind the run's cards (gate output, attempts). */
   runItems: RunItem[];
 };
 
-/** Everything that needs the owner. */
+/** Everything that needs the owner now (Later takes a card out of the count), and blocked writes. */
 export function needsYouCount(snapshot: NeedsYouSnapshot): number {
-  return snapshot.runItems.length;
+  return (
+    snapshot.cards.filter((card) => card.state === 'open').length +
+    snapshot.landing.filter((card) => card.write?.state === 'blocked').length
+  );
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -78,6 +132,63 @@ const count = (value: unknown): number =>
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+const CARD_STATES = ['open', 'deferred', 'answered', 'resolved'] as const;
+const WRITE_STATES = ['pending', 'landing', 'waiting', 'blocked', 'merged'] as const;
+const PR_URL_RE = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
+
+function parseWrite(value: unknown): CardWrite | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null;
+  const state = WRITE_STATES.find((s) => s === value.state);
+  if (state === undefined) return null;
+  return {
+    id: value.id,
+    state,
+    prUrl: typeof value.prUrl === 'string' && PR_URL_RE.test(value.prUrl) ? value.prUrl : null,
+    reason: typeof value.reason === 'string' ? value.reason : null,
+  };
+}
+const CARD_SOURCES = ['run', 'change', 'session', 'machine'] as const;
+
+function parseCard(value: unknown): QuestionCard | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.question !== 'string') {
+    return null;
+  }
+  const options = Array.isArray(value.options)
+    ? value.options.filter(isRecord).map((o) => ({
+        label: str(o.label),
+        consequence: str(o.consequence),
+        acts: o.acts === true,
+      }))
+    : [];
+  if (options.length < 2) return null;
+  const state = CARD_STATES.find((s) => s === value.state) ?? 'open';
+  const answer =
+    typeof value.answer === 'number' && value.answer < options.length ? value.answer : null;
+  return {
+    id: value.id,
+    kind: str(value.kind),
+    source: CARD_SOURCES.find((s) => s === value.source) ?? 'machine',
+    runId: typeof value.runId === 'string' ? value.runId : null,
+    change: typeof value.change === 'string' && isChangeId(value.change) ? value.change : null,
+    session: typeof value.session === 'string' ? value.session : null,
+    question: value.question,
+    why: str(value.why),
+    options,
+    recommended: Math.min(count(value.recommended), options.length - 1),
+    reversible: value.reversible === true,
+    blocking: value.blocking === true,
+    state,
+    answer,
+    note: typeof value.note === 'string' ? value.note : null,
+    outcome: typeof value.outcome === 'string' ? value.outcome : null,
+    write: parseWrite(value.write),
+    diff: typeof value.diff === 'string' && value.diff !== '' ? value.diff : null,
+    createdAt: count(value.createdAt),
+  };
+}
+
+const parseCards = (value: unknown): QuestionCard[] =>
+  Array.isArray(value) ? value.map(parseCard).filter((c): c is QuestionCard => c !== null) : [];
 
 const KIND_LABEL = { parked: 'Parked', 'run-stopped': 'Run stopped', notice: 'Note' } as const;
 
@@ -147,6 +258,14 @@ async function fetchNeedsYou(hostId: string, signal?: AbortSignal): Promise<Need
   return {
     hostId,
     baseBranch: str(raw.baseBranch),
+    cards: parseCards(raw.cards),
+    landing: parseCards(raw.landing),
+    answered: parseCards(raw.answered),
+    doneForYou: Array.isArray(raw.doneForYou)
+      ? raw.doneForYou
+          .filter(isRecord)
+          .map((d) => ({ id: count(d.id), text: str(d.text), at: count(d.at) }))
+      : [],
     runItems: Array.isArray(raw.runItems)
       ? raw.runItems.map(parseRunItem).filter((item): item is RunItem => item !== null)
       : [],
@@ -161,113 +280,294 @@ export const needsYouQuery = (hostId: string) =>
     placeholderData: keepPreviousData,
   });
 
-function QuestionBlock({ question }: { question: BuilderQuestion }) {
+/** The failing gate's last lines (plain text, never HTML) and every attempt, behind a disclosure. */
+function GateDetails({ item }: { item: RunItem }) {
+  const failing = [...item.attempts].reverse().find((a) => a.verdict === 'fail');
+  if (item.attempts.length === 0) return null;
   return (
-    <VStack gap={2}>
-      <Text weight="semibold">{question.text}</Text>
-      {question.options.length > 0 ? (
-        <List aria-label="Options">
-          {question.options.map((option, index) => (
+    <Collapsible trigger={<Text type="supporting">Gate output</Text>}>
+      <VStack gap={2}>
+        {failing?.tail != null && failing.tail !== '' ? (
+          <CodeBlock code={failing.tail} isWrapped={false} />
+        ) : null}
+        <List aria-label="Attempts">
+          {item.attempts.map((a) => (
             <ListItem
-              key={option}
-              label={<Text>{option}</Text>}
-              endContent={
-                index === question.recommended ? (
-                  <Badge variant="info" label="Recommended" />
-                ) : undefined
+              key={`${a.attempt}-${a.gate}`}
+              label={
+                <Text type="supporting" hasTabularNumbers>
+                  {`Attempt ${a.attempt} · gate ${a.gate} · ${attemptText(a)}`}
+                </Text>
+              }
+              description={
+                a.logPath === '' ? undefined : (
+                  <Text type="code" color="secondary" wordBreak="break-all">
+                    {a.logPath}
+                  </Text>
+                )
               }
             />
           ))}
         </List>
-      ) : null}
-      {question.waiting.length > 0 ? (
-        <Text type="supporting" color="secondary">
-          {`Waiting on it: ${question.waiting.join(', ')}`}
-        </Text>
-      ) : null}
+      </VStack>
+    </Collapsible>
+  );
+}
+
+const KIND_BADGE: Record<string, { label: string; variant: 'warning' | 'error' | 'info' }> = {
+  parked: { label: 'Parked', variant: 'warning' },
+  'builder-question': { label: 'Question', variant: 'warning' },
+  'run-stopped': { label: 'Run stopped', variant: 'error' },
+  notice: { label: 'Note', variant: 'info' },
+  ask: { label: 'Question', variant: 'info' },
+};
+
+function whereFrom(card: QuestionCard): string {
+  if (card.change !== null) return card.change;
+  if (card.source === 'run') return 'The run';
+  if (card.source === 'session') return 'A Claude Code session';
+  return 'This Mac';
+}
+
+/**
+ * One card: where it came from, the question, why it matters, and its options as buttons with
+ * their key (the recommended one preselected for Enter), Later, and an optional note.
+ */
+export function CardBlock(props: {
+  hostId: string;
+  card: QuestionCard;
+  detail: RunItem | undefined;
+  isFocused: boolean;
+  isBusy: boolean;
+  isNoteOpen: boolean;
+  note: string;
+  onFocus: () => void;
+  onNote: (value: string) => void;
+  onOpenNote: () => void;
+  onAnswer: (option: number) => void;
+  onLater: () => void;
+}) {
+  const { card } = props;
+  const badge = KIND_BADGE[card.kind];
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut to focus the card; the keyboard has J/K
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the page's keys act on the focused card
+    <div onClick={props.onFocus} aria-current={props.isFocused ? 'true' : undefined}>
+      <Card
+        padding={4}
+        elevation="none"
+        variant={props.isFocused ? 'muted' : 'default'}
+        aria-label={card.question}
+      >
+        <VStack gap={3}>
+          <VStack gap={1} hAlign="start">
+            <HStack gap={2} vAlign="center">
+              {badge === undefined ? null : <Badge variant={badge.variant} label={badge.label} />}
+              {card.state === 'deferred' ? <Badge label="Later" /> : null}
+              <Text type="supporting" color="secondary">
+                {card.change === null ? (
+                  whereFrom(card)
+                ) : (
+                  <Link href={`/h/${props.hostId}/changes/${card.change}`}>{card.change}</Link>
+                )}
+                {card.change !== null && card.session !== null ? ` · ${card.session}` : ''}
+                {card.change !== null && card.session !== null && card.runId !== null
+                  ? ` · run ${card.runId}`
+                  : ''}
+                {card.reversible ? '' : ' · hard to undo'}
+              </Text>
+            </HStack>
+            <Text weight="semibold">{card.question}</Text>
+            <Text type="supporting" color="secondary">
+              {card.why}
+            </Text>
+            {card.outcome === null ? null : <Text type="supporting">{card.outcome}</Text>}
+          </VStack>
+          {card.diff === null ? null : (
+            <CodeBlock code={card.diff} isDiff isWrapped={false} maxHeight={360} size="sm" />
+          )}
+          <VStack gap={2}>
+            {card.options.map((option, index) => (
+              <HStack key={option.label} gap={2} vAlign="center">
+                <Button
+                  label={option.label}
+                  size="sm"
+                  variant={index === card.recommended ? 'secondary' : 'ghost'}
+                  isDisabled={props.isBusy}
+                  endContent={
+                    props.isFocused ? (
+                      <Kbd keys={index === card.recommended ? 'Enter' : String(index + 1)} />
+                    ) : undefined
+                  }
+                  onClick={() => props.onAnswer(index)}
+                />
+                <Text type="supporting" color="secondary">
+                  {option.consequence}
+                </Text>
+              </HStack>
+            ))}
+          </VStack>
+          <HStack gap={2} vAlign="center">
+            {card.state === 'deferred' ? null : (
+              <Button
+                label="Later"
+                size="sm"
+                variant="ghost"
+                isDisabled={props.isBusy}
+                endContent={props.isFocused ? <Kbd keys="L" /> : undefined}
+                onClick={props.onLater}
+              />
+            )}
+            {props.isNoteOpen ? null : (
+              <Button
+                label="Add a note"
+                size="sm"
+                variant="ghost"
+                endContent={props.isFocused ? <Kbd keys="N" /> : undefined}
+                onClick={props.onOpenNote}
+              />
+            )}
+          </HStack>
+          {props.isNoteOpen ? (
+            <TextInput
+              label="Note with your answer"
+              description="Enter sends it with the recommended option."
+              value={props.note}
+              hasAutoFocus
+              onChange={(value) => props.onNote(value)}
+              onEnter={() => props.onAnswer(card.recommended)}
+            />
+          ) : null}
+          {props.detail === undefined ? null : <GateDetails item={props.detail} />}
+        </VStack>
+      </Card>
+    </div>
+  );
+}
+
+const WRITE_WORDS: Record<CardWrite['state'], string> = {
+  pending: 'Landing',
+  landing: 'Landing',
+  waiting: 'Waiting for checks',
+  blocked: 'Blocked',
+  merged: 'Done',
+};
+
+/**
+ * Answers whose planning write is landing as a small PR (D-12): Landing or Waiting for checks with
+ * the PR link, or blocked with why, Retry and Cancel. Nothing here asks again.
+ */
+function LandingList(props: {
+  cards: QuestionCard[];
+  busy: string | null;
+  onWrite: (card: QuestionCard, verb: 'retry' | 'cancel') => void;
+}) {
+  if (props.cards.length === 0) return null;
+  return (
+    <VStack gap={2}>
+      <Heading level={3}>Landing</Heading>
+      <List aria-label="Landing">
+        {props.cards.map((card) => {
+          const write = card.write;
+          if (write === null) return null;
+          const blocked = write.state === 'blocked';
+          return (
+            <ListItem
+              key={card.id}
+              label={<Text>{card.question}</Text>}
+              description={
+                <HStack gap={2} vAlign="center" wrap="wrap">
+                  {blocked ? (
+                    <Badge variant="warning" label="Blocked" />
+                  ) : (
+                    <Text type="supporting" color="secondary">
+                      {WRITE_WORDS[write.state]}
+                    </Text>
+                  )}
+                  {blocked && write.reason !== null ? (
+                    <Text type="supporting">{write.reason}</Text>
+                  ) : null}
+                  {write.prUrl === null ? null : (
+                    <Link href={write.prUrl} target="_blank" rel="noreferrer">
+                      PR
+                    </Link>
+                  )}
+                </HStack>
+              }
+              endContent={
+                blocked ? (
+                  <HStack gap={2}>
+                    <Button
+                      label="Retry"
+                      size="sm"
+                      variant="secondary"
+                      isLoading={props.busy === write.id}
+                      isDisabled={props.busy !== null}
+                      onClick={() => props.onWrite(card, 'retry')}
+                    />
+                    <Button
+                      label="Cancel"
+                      size="sm"
+                      variant="ghost"
+                      isDisabled={props.busy !== null}
+                      onClick={() => props.onWrite(card, 'cancel')}
+                    />
+                  </HStack>
+                ) : undefined
+              }
+            />
+          );
+        })}
+      </List>
     </VStack>
   );
 }
 
-function badgeOf(kind: RunItem['kind']): {
-  variant: 'warning' | 'error' | 'info';
-  icon: 'warning' | 'error' | 'info';
-} {
-  if (kind === 'parked') return { variant: 'warning', icon: 'warning' };
-  if (kind === 'notice') return { variant: 'info', icon: 'info' };
-  return { variant: 'error', icon: 'error' };
+/** What was answered lately, and what happened next. */
+function AnsweredList({ cards }: { cards: QuestionCard[] }) {
+  if (cards.length === 0) return null;
+  return (
+    <VStack gap={2}>
+      <Heading level={3}>Answered</Heading>
+      <List aria-label="Answered">
+        {cards.map((card) => (
+          <ListItem
+            key={card.id}
+            label={<Text>{card.question}</Text>}
+            description={
+              <Text type="supporting" color="secondary">
+                {[card.answer === null ? 'Closed' : card.options[card.answer]?.label, card.outcome]
+                  .filter((part) => part != null && part !== '')
+                  .join(' · ')}
+              </Text>
+            }
+          />
+        ))}
+      </List>
+    </VStack>
+  );
 }
 
-/**
- * One item: a question with its options, or the reason with the failing gate's last lines (plain
- * text, never HTML) and every attempt, then what to do.
- */
-export function RunItemBlock({ hostId, item }: { hostId: string; item: RunItem }) {
-  const failing = [...item.attempts].reverse().find((a) => a.verdict === 'fail');
-  const badge = badgeOf(item.kind);
+/** Decisions Counterpoint took without asking (D-7). */
+function DoneForYouList({ entries }: { entries: DoneForYou[] }) {
+  if (entries.length === 0) return null;
   return (
-    <Card
-      padding={4}
-      elevation="none"
-      aria-label={`${item.kindLabel}: ${item.changeId ?? 'the run'}`}
-    >
-      <VStack gap={3}>
-        <VStack gap={1} hAlign="start">
-          <Badge
-            variant={badge.variant}
-            label={item.kindLabel}
-            icon={<Icon icon={badge.icon} size="xsm" />}
+    <VStack gap={2}>
+      <Heading level={3}>Done for you</Heading>
+      <List aria-label="Done for you">
+        {entries.map((entry) => (
+          <ListItem
+            key={entry.id}
+            label={<Text>{entry.text}</Text>}
+            description={
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {new Date(entry.at).toLocaleString()}
+              </Text>
+            }
           />
-          <Text weight="semibold">
-            {item.changeId === null ? (
-              item.kind === 'notice' ? (
-                'The run'
-              ) : (
-                'The run stopped'
-              )
-            ) : (
-              <Link href={`/h/${hostId}/changes/${item.changeId}`}>{item.changeId}</Link>
-            )}
-          </Text>
-          {item.questions.length === 0 ? <Text>{item.reason}</Text> : null}
-        </VStack>
-        {item.questions.map((question) => (
-          <QuestionBlock key={`${question.task ?? ''}-${question.text}`} question={question} />
         ))}
-        {failing?.tail != null && failing.tail !== '' ? (
-          <VStack gap={1}>
-            <Text type="supporting" color="secondary">
-              {`Last lines of gate ${failing.gate} (attempt ${failing.attempt}):`}
-            </Text>
-            <CodeBlock code={failing.tail} isWrapped={false} />
-          </VStack>
-        ) : null}
-        {item.attempts.length > 0 ? (
-          <List aria-label="Attempts">
-            {item.attempts.map((a) => (
-              <ListItem
-                key={`${a.attempt}-${a.gate}`}
-                label={
-                  <Text type="supporting" hasTabularNumbers>
-                    {`Attempt ${a.attempt} · gate ${a.gate} · ${attemptText(a)}`}
-                  </Text>
-                }
-                description={
-                  a.logPath === '' ? undefined : (
-                    <Text type="code" color="secondary" wordBreak="break-all">
-                      {a.logPath}
-                    </Text>
-                  )
-                }
-              />
-            ))}
-          </List>
-        ) : null}
-        <Text type="supporting" color="secondary">
-          {item.action}
-        </Text>
-      </VStack>
-    </Card>
+      </List>
+    </VStack>
   );
 }
 
@@ -301,14 +601,121 @@ export function NeedsYouEmpty({ headingLevel = 2 }: { headingLevel?: 2 | 3 }) {
   );
 }
 
+/** True when the key press belongs to a field or an open dialog, not to the inbox. */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('[role="dialog"], [role="alertdialog"]') !== null) return true;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
 export function NeedsYouPage({ hostId }: { hostId: string }) {
   const query = useQuery(needsYouQuery(hostId));
+  const queryClient = useQueryClient();
+  const toast = useToast();
   // keepPreviousData can briefly hold another host's items while switching; never show them.
   const snapshot = query.data?.hostId === hostId ? query.data : undefined;
+  const cards = snapshot?.cards ?? [];
+  const [focused, setFocused] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [noteFor, setNoteFor] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const notifications = useNotificationPermission();
 
   useEffect(() => {
     document.title = 'Needs You · Counterpoint';
   }, []);
+
+  const act = useCallback(
+    async (cardId: string, path: 'answer' | 'later', body: unknown) => {
+      setBusy(cardId);
+      try {
+        const result = await apiPostAnswer(
+          `/api/hosts/${encodeURIComponent(hostId)}/cards/${encodeURIComponent(cardId)}/${path}`,
+          body,
+        );
+        const card = isRecord(result.body.card) ? parseCard(result.body.card) : null;
+        if (!result.ok) {
+          toast({ body: str(result.body.error) || "Couldn't record that. Try again." });
+        } else if (path === 'later') {
+          toast({ body: 'Later. It stays here.' });
+        } else {
+          const picked = card?.answer === null ? null : card?.options[card?.answer ?? -1]?.label;
+          toast({ body: card?.outcome ?? `Answered: ${picked ?? 'done'}.` });
+        }
+        setNoteFor(null);
+        setNote('');
+        const remaining = cards.filter((c) => c.id !== cardId).length;
+        setFocused((index) => focusAfterAnswer(index, path === 'later' ? cards.length : remaining));
+      } finally {
+        setBusy(null);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+      }
+    },
+    [cards, hostId, queryClient, toast],
+  );
+
+  const [writeBusy, setWriteBusy] = useState<string | null>(null);
+  const onWrite = useCallback(
+    async (card: QuestionCard, verb: 'retry' | 'cancel') => {
+      const write = card.write;
+      if (write === null || writeBusy !== null) return;
+      setWriteBusy(write.id);
+      try {
+        const result = await apiPostAnswer(
+          `/api/hosts/${encodeURIComponent(hostId)}/writes/${encodeURIComponent(write.id)}/${verb}`,
+          {},
+        );
+        const after = isRecord(result.body.card) ? parseCard(result.body.card) : null;
+        if (!result.ok) toast({ body: str(result.body.error) || "Couldn't do that. Try again." });
+        else if (verb === 'cancel') toast({ body: 'Cancelled. The question is back.' });
+        else toast({ body: after?.outcome ?? 'Trying again.' });
+      } finally {
+        setWriteBusy(null);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+      }
+    },
+    [hostId, queryClient, toast, writeBusy],
+  );
+
+  const answer = useCallback(
+    (card: QuestionCard, option: number) => {
+      if (busy !== null) return;
+      void act(
+        card.id,
+        'answer',
+        noteFor === card.id && note.trim() !== '' ? { option, note } : { option },
+      );
+    },
+    [act, busy, note, noteFor],
+  );
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const action = inboxKey(
+        {
+          key: event.key,
+          modified: event.metaKey || event.ctrlKey || event.altKey,
+          typing: isTyping(event.target),
+        },
+        cards.map((card) => ({
+          id: card.id,
+          options: card.options.length,
+          recommended: card.recommended,
+        })),
+        focused,
+      );
+      if (action === null || busy !== null) return;
+      event.preventDefault();
+      const card = cards.find((c) => c.id === ('cardId' in action ? action.cardId : ''));
+      if (action.type === 'focus') setFocused(action.index);
+      else if (action.type === 'note') setNoteFor(action.cardId);
+      else if (action.type === 'later') void act(action.cardId, 'later', {});
+      else if (card !== undefined) answer(card, action.option);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [act, answer, busy, cards, focused]);
 
   const errorBanner = query.isError ? (
     <Banner
@@ -333,14 +740,48 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   let body = null;
   if (snapshot === undefined) {
     body = query.isError ? null : <NeedsYouLoading />;
-  } else if (needsYouCount(snapshot) === 0) {
-    body = <NeedsYouEmpty />;
   } else {
+    const focusIndex = Math.min(focused, Math.max(cards.length - 1, 0));
     body = (
-      <VStack gap={4}>
-        {snapshot.runItems.map((item) => (
-          <RunItemBlock key={item.id} hostId={hostId} item={item} />
-        ))}
+      <VStack gap={6}>
+        {cards.length === 0 ? (
+          <NeedsYouEmpty />
+        ) : (
+          <VStack gap={3}>
+            {cards.map((card, index) => (
+              <CardBlock
+                key={card.id}
+                hostId={hostId}
+                card={card}
+                detail={snapshot.runItems.find(
+                  (item) =>
+                    item.kind === 'parked' &&
+                    item.changeId === card.change &&
+                    card.kind === 'parked',
+                )}
+                isFocused={index === focusIndex}
+                isBusy={busy === card.id}
+                isNoteOpen={noteFor === card.id}
+                note={noteFor === card.id ? note : ''}
+                onFocus={() => setFocused(index)}
+                onNote={setNote}
+                onOpenNote={() => {
+                  setFocused(index);
+                  setNoteFor(card.id);
+                }}
+                onAnswer={(option) => answer(card, option)}
+                onLater={() => void act(card.id, 'later', {})}
+              />
+            ))}
+          </VStack>
+        )}
+        <LandingList
+          cards={snapshot.landing}
+          busy={writeBusy}
+          onWrite={(card, verb) => void onWrite(card, verb)}
+        />
+        <AnsweredList cards={snapshot.answered} />
+        <DoneForYouList entries={snapshot.doneForYou} />
       </VStack>
     );
   }
@@ -349,9 +790,18 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
     <Layout
       header={
         <LayoutHeader>
-          <Heading level={2} accessibilityLevel={1}>
-            Needs You
-          </Heading>
+          <HStack gap={4} vAlign="center" justify="between" wrap="wrap">
+            <Heading level={2} accessibilityLevel={1}>
+              Needs You
+            </Heading>
+            {notifications.permission === 'default' ? (
+              <Button
+                label="Notify me here"
+                variant="ghost"
+                onClick={() => void notifications.ask()}
+              />
+            ) : null}
+          </HStack>
         </LayoutHeader>
       }
       content={

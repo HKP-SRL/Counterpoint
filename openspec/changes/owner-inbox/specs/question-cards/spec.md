@@ -41,11 +41,15 @@ When a question follows from Counterpoint acting as the owner, Counterpoint SHAL
 - **THEN** the run uses the new PATH, raises no card, and "Done for you" notes that the environment was refreshed
 
 ### Requirement: Unanswered cards
-An unanswered reversible card that work depends on SHALL let that work proceed on the recommended option, logged as assumed where the owner reviews it (the pull request and the run report). A later different answer SHALL become a revision note on the open pull request, or a backlog item once it is merged. An unanswered irreversible card SHALL park only the work that depends on it, and the run SHALL continue with the rest.
+An unanswered reversible card that work depends on SHALL let that work proceed on the recommended option, logged as assumed where the owner reviews it (the pull request and the run report). An answer given later SHALL be recorded and kept for the change's next build, and the card SHALL say that it was recorded and which option the pull request was built on. An unanswered irreversible card SHALL park only the work that depends on it, and the run SHALL continue with the rest.
 
 #### Scenario: Reversible question during a build
 - **WHEN** a builder asks a reversible question and the owner is away
 - **THEN** the builder continues on the recommended option and the pull request lists it as assumed
+
+#### Scenario: Answer after the pull request was built
+- **WHEN** the owner answers a builder's reversible question with another option after the change's pull request was built on the recommended one
+- **THEN** the card says the answer was recorded and names the option the pull request was built on, and the change's next build gets the answer
 
 #### Scenario: Irreversible question during a run
 - **WHEN** a builder asks whether to change a database schema and nobody answers

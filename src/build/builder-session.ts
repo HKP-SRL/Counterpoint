@@ -38,6 +38,8 @@ export interface BuilderSessionInput {
   maxTurns?: number;
   maxBudgetUsd?: number;
   timeoutMs: number;
+  /** The MCP config file with the session's ask tool (owner-inbox D-5), and its tool names. */
+  ask?: { mcpConfig: string; tools: readonly string[] };
   /** Called once the process exists (record the pid for crash recovery). */
   onStart?: (pid: number) => void;
   onEvent?: (event: StreamEvent) => void;
@@ -80,6 +82,10 @@ export async function startBuilderSession(input: BuilderSessionInput): Promise<B
     maxTurns: input.maxTurns ?? 400,
     maxBudgetUsd: input.maxBudgetUsd ?? 50,
     streamInput: true,
+    // The ask tool never needs the classifier: it only posts a card and reads its answer.
+    ...(input.ask === undefined
+      ? {}
+      : { mcpConfig: input.ask.mcpConfig, allowedTools: input.ask.tools }),
   });
 
   // `session` is set right after start resolves; events before that only update the meter.

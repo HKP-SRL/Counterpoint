@@ -127,6 +127,13 @@ export interface FrameworkAdapter {
    */
   tickedTasks(before: string, after: string): string[];
   /**
+   * The task list with the open task `task` ticked (matched by its text, with or without its
+   * number), unchanged when it is already done, or null when the list has no such task. Only the
+   * checkbox changes. Planning writes use it, so a tick made again on a newer base keeps every
+   * other edit to the list.
+   */
+  tickTask(tasks: string, task: string): string | null;
+  /**
    * The open tasks of a task list that are not owner steps, by their text, in file order. A build
    * is done only when this is empty.
    */

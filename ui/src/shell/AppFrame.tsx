@@ -28,6 +28,7 @@ import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { type HostSummary, hostsQuery } from '../api';
 import { useConnectionState, useLiveEvents } from '../live';
+import { useBlockingNotifications } from '../notify';
 import { needsYouQuery, needsYouCount as needsYouTotal } from '../pages/NeedsYouPage';
 import { stopCounterpoint } from '../run';
 import { parseThemePreference, useThemeChoice } from '../theme';
@@ -213,6 +214,11 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const needsYou = useQuery(needsYouQuery(hostId));
   const needsYouCount = needsYou.data?.hostId === hostId ? needsYouTotal(needsYou.data) : null;
   useTitleCount(needsYouCount);
+  // A new card that blocks work notifies in the browser once the owner allowed it (D-9).
+  useBlockingNotifications(
+    hostId,
+    needsYou.data?.hostId === hostId ? needsYou.data.cards : undefined,
+  );
 
   // New items are announced politely; the first count and decreases are not.
   const announce = useAnnounce();

@@ -38,6 +38,7 @@ import {
 import { packageRoot } from '../server/app.ts';
 import { controlRequest, isDaemonRunning } from './control-client.ts';
 import { INSTANCE_RE, isRecordedDaemon } from './daemon-process.ts';
+import type { AskTransport } from './mcp-ask.ts';
 import { runReportCommand, runStartCommand, runStatusCommand, runStopCommand } from './run.ts';
 
 const START_TIMEOUT_MS = 10_000;
@@ -498,15 +499,86 @@ function runReport(hostId: string | undefined): void {
   exitWith(runReportCommand(home, hostId));
 }
 
+/**
+ * `counterpoint mcp ask`: the ask tool's stdio MCP server (owner-inbox D-5). A builder session gets
+ * its capability in COUNTERPOINT_ASK_CAPABILITY. An interactive session has none: it opens its own
+ * with the setup key from the owner-only file in the home (written by the setup card). Only
+ * protocol messages go to stdout.
+ */
+async function mcpAsk(): Promise<void> {
+  const { home } = homeOrExit();
+  const capability = process.env.COUNTERPOINT_ASK_CAPABILITY ?? '';
+  delete process.env.COUNTERPOINT_ASK_CAPABILITY;
+  const { askKeyPath } = await import('../core/store/ask.ts');
+  let key = '';
+  if (capability === '') {
+    try {
+      key = readFileSync(askKeyPath(home), 'utf8').trim();
+    } catch {
+      // not set up
+    }
+    if (key === '') {
+      throw new CliExit(
+        2,
+        "Not set up: answer the ask tool's setup card in Counterpoint's Needs You.",
+      );
+    }
+  }
+  const { createAskMcp, serveAskMcp, sessionTransport } = await import('./mcp-ask.ts');
+  const withCapability =
+    (bearer: string): AskTransport =>
+    (method, path, body, options) =>
+      controlRequest(home, method, path, body, { ...options, bearer });
+  const transport =
+    capability !== ''
+      ? withCapability(capability)
+      : sessionTransport(
+          () =>
+            controlRequest(
+              home,
+              'POST',
+              '/control/ask/session',
+              { cwd: process.cwd() },
+              { bearer: key },
+            ),
+          withCapability,
+        );
+  await serveAskMcp(process.stdin, process.stdout, (notify) =>
+    createAskMcp({ version: packageVersion(), notify, transport }),
+  );
+}
+
 async function daemon(options: { port?: number; instance?: string }): Promise<void> {
   const { home } = homeOrExit();
   const port = options.port ?? readConfig(home).port;
+  // A planned self-restart (owner-inbox D-10) passes its nonce here; no child process gets it.
+  const handover = process.env.COUNTERPOINT_HANDOVER;
+  delete process.env.COUNTERPOINT_HANDOVER;
+  // Loading the daemon first proves this install runs before the previous daemon is asked to stop.
   const { runDaemon } = await import('../server/daemon.ts');
   const instance =
     options.instance !== undefined && INSTANCE_RE.test(options.instance)
       ? options.instance
       : undefined;
-  await runDaemon({ home, port, ...(instance === undefined ? {} : { instance }) });
+  let planned: string | undefined;
+  if (handover !== undefined && /^[0-9a-f]{64}$/.test(handover)) {
+    // Ask the running daemon to hand over. An answer cut short by its stopping still counts: the
+    // lock and the handover record decide what happens next.
+    const answer = await controlRequest(home, 'POST', '/control/handover', {
+      nonce: handover,
+    }).catch(() => null);
+    if (answer !== null && answer.status !== 202) {
+      console.log(JSON.stringify({ event: 'handover-refused', status: answer.status }));
+      process.exit(1);
+    }
+    planned = handover;
+  }
+  await runDaemon({
+    home,
+    port,
+    ...(instance === undefined ? {} : { instance }),
+    ...(planned === undefined ? {} : { handover: planned }),
+  });
 }
 
 export function buildProgram(): Command {
@@ -580,6 +652,13 @@ export function buildProgram(): Command {
     .description("show the project's current or last run")
     .argument('[host]', 'the registered project id')
     .action((hostId: string | undefined) => runStatus(hostId));
+
+  program
+    .command('mcp')
+    .description('MCP servers for Claude Code sessions')
+    .command('ask')
+    .description("the ask tool: a session's questions become cards in Needs You")
+    .action(() => mcpAsk());
 
   program
     .command('__daemon', { hidden: true })
