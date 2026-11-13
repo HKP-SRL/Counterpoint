@@ -1,7 +1,9 @@
 // The console chrome (local-console: Host-scoped navigation): TopNav with the wordmark, host
 // switcher, live-updates dot and theme menu; SideNav `Main`; below the `md` width AppShell moves
 // the SideNav into its mobile drawer. Items: Mission, Changes, Needs You (with its count badge),
-// Settings. While Needs You has items the tab title reads `({n}) {Page} · Counterpoint`. The frame
+// Settings. The badge, the tab title and browser notifications count what waits in every project,
+// not only the one open, and the switcher shows each project's count. While anything waits the
+// tab title reads `({n}) {Page} · Counterpoint`. The frame
 // owns the page's one live stream: while it is down the dot pulses warning and the
 // `Live updates paused` Banner sits at the top of the content until the stream is back.
 import { AlertDialog } from '@astryxdesign/core/AlertDialog';
@@ -25,20 +27,21 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { type HostSummary, hostsQuery } from '../api';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type HostSummary, hostsQuery, type NeedsYouCounts, needsYouCountsQuery } from '../api';
 import { useConnectionState, useLiveEvents } from '../live';
-import { useBlockingNotifications } from '../notify';
-import { needsYouQuery, needsYouCount as needsYouTotal } from '../pages/NeedsYouPage';
+import { type BlockingCard, useBlockingNotifications } from '../notify';
 import { stopCounterpoint } from '../run';
 import { parseThemePreference, useThemeChoice } from '../theme';
 
 function HostSwitcher({
   hosts,
   current,
+  counts,
 }: {
   hosts: HostSummary[];
   current: HostSummary | undefined;
+  counts: NeedsYouCounts | undefined;
 }) {
   const navigate = useNavigate();
   const label =
@@ -66,6 +69,11 @@ function HostSwitcher({
         id: host.id,
         label: host.name,
         description: host.baseBranch,
+        endContent: (
+          <NeedsYouCount
+            count={counts?.hosts.find((entry) => entry.hostId === host.id)?.count ?? null}
+          />
+        ),
         onClick: () => {
           void navigate({ to: '/h/$hostId', params: { hostId: host.id } });
         },
@@ -210,30 +218,35 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
   const connected = useConnectionState() === 'connected';
   const [stopping, setStopping] = useState<null | { withRun: boolean }>(null);
 
-  // The Needs You count for the badge and the tab title: unknown (hidden) until it arrives.
-  const needsYou = useQuery(needsYouQuery(hostId));
-  const needsYouCount = needsYou.data?.hostId === hostId ? needsYouTotal(needsYou.data) : null;
+  // What waits in every project, for the badge and the tab title: hidden until it arrives.
+  const counts = useQuery(needsYouCountsQuery).data;
+  const needsYouCount = counts?.total ?? null;
   useTitleCount(needsYouCount);
-  // A new card that blocks work notifies in the browser once the owner allowed it (D-9).
-  useBlockingNotifications(
-    hostId,
-    needsYou.data?.hostId === hostId ? needsYou.data.cards : undefined,
+  // A new card that blocks work, in any project, notifies in the browser once allowed (D-9).
+  const blocking = useMemo<BlockingCard[] | undefined>(
+    () => counts?.blocking.map((card) => ({ ...card, blocking: true, state: 'open' })),
+    [counts],
   );
+  const navigate = useNavigate();
+  useBlockingNotifications(blocking, (card) => {
+    const target = card.hostId ?? hostId;
+    void navigate({ to: '/h/$hostId/needs-you', params: { hostId: target } });
+  });
 
   // New items are announced politely; the first count and decreases are not.
   const announce = useAnnounce();
-  const lastCount = useRef<{ hostId: string; count: number } | null>(null);
+  const lastCount = useRef<number | null>(null);
   useEffect(() => {
     if (needsYouCount === null) return;
     const previous = lastCount.current;
-    lastCount.current = { hostId, count: needsYouCount };
-    if (previous !== null && previous.hostId === hostId && needsYouCount > previous.count) {
+    lastCount.current = needsYouCount;
+    if (previous !== null && needsYouCount > previous) {
       announce(
         needsYouCount === 1 ? '1 item needs you' : `${needsYouCount} items need you`,
         'polite',
       );
     }
-  }, [needsYouCount, hostId, announce]);
+  }, [needsYouCount, announce]);
 
   return (
     <AppShell
@@ -243,7 +256,7 @@ export function AppFrame({ hostId, children }: { hostId: string; children: React
         <TopNav
           label="Counterpoint"
           heading={<TopNavHeading heading="Counterpoint" />}
-          startContent={<HostSwitcher hosts={hosts} current={current} />}
+          startContent={<HostSwitcher hosts={hosts} current={current} counts={counts} />}
           endContent={
             <HStack gap={2} vAlign="center">
               <StatusDot

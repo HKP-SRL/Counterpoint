@@ -29,8 +29,9 @@ export const EVENT_FAMILIES = [
 export type EventFamily = (typeof EVENT_FAMILIES)[number];
 
 /** Which cached queries each event family makes stale, for the event's host. */
+// Anything that can change a project's inbox also refetches the counts across every project.
 export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly QueryKey[]> = {
-  host: () => [queryKeys.hosts],
+  host: () => [queryKeys.hosts, queryKeys.needsYouCounts],
   // A `planning` event means the base tip moved. The runway and Needs You are derived from the
   // tip too, and the watcher only publishes `runway` / `needs-you` when their value differs from
   // its own last pass: an edit and its revert inside one poll leave a page that fetched the middle
@@ -40,19 +41,26 @@ export const FAMILY_TO_KEYS: Record<EventFamily, (hostId: string) => readonly Qu
     queryKeys.change(hostId),
     queryKeys.runway(hostId),
     queryKeys.needsYou(hostId),
+    queryKeys.needsYouCounts,
   ],
   approval: (hostId) => [
     queryKeys.change(hostId),
     queryKeys.changes(hostId),
     queryKeys.runway(hostId),
     queryKeys.needsYou(hostId),
+    queryKeys.needsYouCounts,
   ],
   runway: (hostId) => [queryKeys.runway(hostId)],
-  'needs-you': (hostId) => [queryKeys.needsYou(hostId)],
+  'needs-you': (hostId) => [queryKeys.needsYou(hostId), queryKeys.needsYouCounts],
   // Stored by earlier versions only; nothing publishes it now.
   doctor: () => [],
   // A build run moved on: the Run card, and what it changes (parked items, the runway).
-  run: (hostId) => [queryKeys.run(hostId), queryKeys.needsYou(hostId), queryKeys.runway(hostId)],
+  run: (hostId) => [
+    queryKeys.run(hostId),
+    queryKeys.needsYou(hostId),
+    queryKeys.runway(hostId),
+    queryKeys.needsYouCounts,
+  ],
   // A project's run settings were saved: the Settings page and the Run card's summary.
   settings: (hostId) => [queryKeys.settings(hostId)],
   // A change's design drafts moved: the Drafts page, and the hold the listings show (D-12).
@@ -86,7 +94,7 @@ export function keysForEvent(family: EventFamily, data: unknown): readonly Query
   if (family === 'host') return FAMILY_TO_KEYS.host('');
   const hostId = eventHostId(data);
   // A machine card (a restart, a one-time setup) belongs to every project's inbox.
-  if (family === 'needs-you' && hostId === null) return [['host']];
+  if (family === 'needs-you' && hostId === null) return [['host'], queryKeys.needsYouCounts];
   return hostId === null ? [] : FAMILY_TO_KEYS[family](hostId);
 }
 

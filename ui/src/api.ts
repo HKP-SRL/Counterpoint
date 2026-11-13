@@ -105,6 +105,8 @@ export const queryKeys = {
       : (['host', hostId, 'change', changeId] as const),
   runway: (hostId: string) => ['host', hostId, 'runway'] as const,
   needsYou: (hostId: string) => ['host', hostId, 'needs-you'] as const,
+  /** What waits across every project: refetched by every event that can change an inbox. */
+  needsYouCounts: ['needs-you-counts'] as const,
   run: (hostId: string) => ['host', hostId, 'run'] as const,
   budget: (hostId: string, model: string, percent: number) =>
     ['host', hostId, 'run', 'budget', model, percent] as const,
@@ -148,3 +150,68 @@ export const hostsQuery = queryOptions({
   queryKey: queryKeys.hosts,
   queryFn: ({ signal }) => fetchHosts(signal),
 });
+
+/** What waits on the owner across every project (GET /api/needs-you/counts). */
+export interface NeedsYouCounts {
+  /** Everything waiting, in every project; the machine's cards once. */
+  total: number;
+  /** The machine's open cards, shown in every project's inbox. */
+  machine: number;
+  /** Each project's own waiting items (open cards and blocked planning writes). */
+  hosts: { hostId: string; count: number }[];
+  /** Open cards that block work, for browser notifications. */
+  blocking: { id: string; hostId: string | null; question: string }[];
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const countOf = (value: unknown): number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+
+export function parseNeedsYouCounts(body: unknown): NeedsYouCounts {
+  const raw = isObject(body) ? body : {};
+  const hosts = Array.isArray(raw.hosts) ? raw.hosts.filter(isObject) : [];
+  const blocking = Array.isArray(raw.blocking) ? raw.blocking.filter(isObject) : [];
+  return {
+    total: countOf(raw.total),
+    machine: countOf(raw.machine),
+    hosts: hosts
+      .filter((h) => typeof h.hostId === 'string')
+      .map((h) => ({ hostId: String(h.hostId), count: countOf(h.count) })),
+    blocking: blocking
+      .filter((b) => typeof b.id === 'string' && typeof b.question === 'string')
+      .map((b) => ({
+        id: String(b.id),
+        hostId: typeof b.hostId === 'string' ? b.hostId : null,
+        question: String(b.question),
+      })),
+  };
+}
+
+export const needsYouCountsQuery = queryOptions({
+  queryKey: queryKeys.needsYouCounts,
+  queryFn: async ({ signal }) => parseNeedsYouCounts(await apiGet('/api/needs-you/counts', signal)),
+});
+
+/** A project, other than the one open, with items waiting: for the switcher and empty inbox. */
+export interface WaitingElsewhere {
+  id: string;
+  name: string;
+  count: number;
+}
+
+/** The other projects with items waiting, most first. */
+export function waitingElsewhere(
+  counts: NeedsYouCounts | undefined,
+  hosts: readonly HostSummary[],
+  hostId: string,
+): WaitingElsewhere[] {
+  if (counts === undefined) return [];
+  return counts.hosts
+    .filter((entry) => entry.hostId !== hostId && entry.count > 0)
+    .flatMap((entry) => {
+      const host = hosts.find((h) => h.id === entry.hostId);
+      return host === undefined ? [] : [{ id: host.id, name: host.name, count: entry.count }];
+    })
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}

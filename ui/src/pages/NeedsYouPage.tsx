@@ -26,10 +26,30 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
 import { keepPreviousData, queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
-import { apiGet, apiPostAnswer, queryKeys } from '../api';
+import { useRouterState } from '@tanstack/react-router';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  apiGet,
+  apiPostAnswer,
+  hostsQuery,
+  needsYouCountsQuery,
+  queryKeys,
+  type WaitingElsewhere,
+  waitingElsewhere,
+} from '../api';
 import { isChangeId } from '../ids';
-import { focusAfterAnswer, inboxKey } from '../inbox-keys';
+import {
+  enterAction,
+  type FocusSince,
+  focusAfterAnswer,
+  type InboxCardKeys,
+  type InboxFocus,
+  type InboxKeyAction,
+  inboxKey,
+  isSettling,
+  noteKey,
+  resolveFocus,
+} from '../inbox-keys';
 import { useNotificationPermission } from '../notify';
 
 export type RunAttempt = {
@@ -66,8 +86,11 @@ export type RunItem = {
   action: string;
 };
 
-/** One option on a card: its label, its consequence, and whether Counterpoint acts on it. */
-export type CardOption = { label: string; consequence: string; acts: boolean };
+/**
+ * One option on a card: its label, its consequence, whether Counterpoint acts on it, and whether
+ * picking it merges into the base branch (never picked with Enter).
+ */
+export type CardOption = { label: string; consequence: string; acts: boolean; merges: boolean };
 
 /** The planning write an answer started, while it lands as a small PR (D-12). */
 export type CardWrite = {
@@ -80,12 +103,16 @@ export type CardWrite = {
 /** A question card (question-cards: Card contents). */
 export type QuestionCard = {
   id: string;
+  /** The project the card is in; null for a card in every project's inbox. */
+  hostId: string | null;
   kind: string;
   source: 'run' | 'change' | 'session' | 'machine';
   runId: string | null;
   change: string | null;
   /** The session that asked ("builder session 2"), for a session's card. */
   session: string | null;
+  /** The folder an interactive session runs in, when the server knows it. */
+  folder: string | null;
   question: string;
   why: string;
   options: CardOption[];
@@ -102,6 +129,8 @@ export type QuestionCard = {
   /** The merged build PR a step after the build links to. */
   prUrl: string | null;
   createdAt: number;
+  /** When the question was asked, if the server says; else createdAt. */
+  askedAt: number | null;
 };
 
 export type DoneForYou = { id: number; text: string; at: number };
@@ -160,6 +189,7 @@ function parseCard(value: unknown): QuestionCard | null {
         label: str(o.label),
         consequence: str(o.consequence),
         acts: o.acts === true,
+        merges: o.merges === true,
       }))
     : [];
   if (options.length < 2) return null;
@@ -168,11 +198,13 @@ function parseCard(value: unknown): QuestionCard | null {
     typeof value.answer === 'number' && value.answer < options.length ? value.answer : null;
   return {
     id: value.id,
+    hostId: typeof value.hostId === 'string' ? value.hostId : null,
     kind: str(value.kind),
     source: CARD_SOURCES.find((s) => s === value.source) ?? 'machine',
     runId: typeof value.runId === 'string' ? value.runId : null,
     change: typeof value.change === 'string' && isChangeId(value.change) ? value.change : null,
     session: typeof value.session === 'string' ? value.session : null,
+    folder: typeof value.folder === 'string' && value.folder !== '' ? value.folder : null,
     question: value.question,
     why: str(value.why),
     options,
@@ -187,6 +219,7 @@ function parseCard(value: unknown): QuestionCard | null {
     diff: typeof value.diff === 'string' && value.diff !== '' ? value.diff : null,
     prUrl: typeof value.prUrl === 'string' && PR_URL_RE.test(value.prUrl) ? value.prUrl : null,
     createdAt: count(value.createdAt),
+    askedAt: count(value.askedAt) || null,
   };
 }
 
@@ -326,19 +359,84 @@ const KIND_BADGE: Record<string, { label: string; variant: 'warning' | 'error' |
   'drafts-hold': { label: 'Drafts', variant: 'info' },
 };
 
-function whereFrom(card: QuestionCard): string {
-  if (card.change !== null) return card.change;
-  if (card.source === 'run') return 'The run';
-  if (card.source === 'session') return 'A Claude Code session';
-  return 'This Mac';
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** When a question was asked: the time today, else the day and the time. */
+export function askedText(at: number, now: number): string {
+  if (at <= 0) return '';
+  const date = new Date(at);
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === new Date(now).toDateString()) return `asked ${time}`;
+  return `asked ${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/** The last segment of a folder path: the folder's name. */
+const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/**
+ * Where a card came from, after its change link (if any): for a session's card the session, the
+ * project and folder it runs in (without a change) and when it asked; else the run or the Mac.
+ * `project` is the name of the card's project, if known.
+ */
+export function originParts(card: QuestionCard, project: string | null, now: number): string[] {
+  const parts: string[] = [];
+  if (card.source === 'session') {
+    const session = card.session ?? 'a Claude Code session';
+    if (card.change === null) {
+      parts.push(capitalized(session));
+      if (card.hostId === null) parts.push('outside your projects');
+      else if (project !== null) parts.push(project);
+      if (card.folder !== null) parts.push(`folder ${folderName(card.folder)}`);
+    } else {
+      parts.push(session);
+      if (card.runId !== null) parts.push(`run ${card.runId}`);
+    }
+    const asked = askedText(card.askedAt ?? card.createdAt, now);
+    if (asked !== '') parts.push(asked);
+  } else if (card.change === null) {
+    parts.push(card.source === 'run' ? 'The run' : 'This Mac');
+  }
+  if (!card.reversible) parts.push('hard to undo');
+  return parts;
+}
+
+/** What the keyboard needs to know about a card. */
+export function cardKeys(card: QuestionCard): InboxCardKeys {
+  return {
+    id: card.id,
+    options: card.options.length,
+    recommended: card.recommended,
+    merging: card.options.flatMap((option, index) => (option.merges ? [index] : [])),
+  };
+}
+
+/** The key that picks an option: Enter for the recommended one, unless it merges; else its digit. */
+export function optionKey(card: QuestionCard, index: number): string {
+  const enter = enterAction(cardKeys(card));
+  return enter.type === 'answer' && enter.option === index ? 'Enter' : String(index + 1);
+}
+
+const isMac = () =>
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '');
+
+/** The note field's hint: what Enter sends, and the Cmd (Ctrl) digits for the options. */
+export function noteHint(card: QuestionCard, mac: boolean): string {
+  const command = mac ? '⌘' : 'Ctrl+';
+  const digits = `${command}1–${command}${card.options.length}`;
+  return enterAction(cardKeys(card)).type === 'answer'
+    ? `Enter sends it with the recommended option, ${digits} with another.`
+    : `${digits} sends it with that option.`;
 }
 
 /**
  * One card: where it came from, the question, why it matters, and its options as buttons with
- * their key (the recommended one preselected for Enter), Later, and an optional note.
+ * their key (the recommended one preselected for Enter, unless it merges into the base), Later,
+ * and an optional note.
  */
 export function CardBlock(props: {
   hostId: string;
+  /** The name of the card's project, if known. */
+  project: string | null;
   card: QuestionCard;
   detail: RunItem | undefined;
   isFocused: boolean;
@@ -349,10 +447,13 @@ export function CardBlock(props: {
   onNote: (value: string) => void;
   onOpenNote: () => void;
   onAnswer: (option: number) => void;
+  /** Enter in the note field: the recommended option, or a hint when that one needs its digit. */
+  onNoteEnter: () => void;
   onLater: () => void;
 }) {
   const { card } = props;
   const badge = KIND_BADGE[card.kind];
+  const origin = originParts(card, props.project, Date.now());
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut to focus the card; the keyboard has J/K
     // biome-ignore lint/a11y/useKeyWithClickEvents: the page's keys act on the focused card
@@ -368,17 +469,12 @@ export function CardBlock(props: {
             <HStack gap={2} vAlign="center">
               {badge === undefined ? null : <Badge variant={badge.variant} label={badge.label} />}
               {card.state === 'deferred' ? <Badge label="Later" /> : null}
-              <Text type="supporting" color="secondary">
-                {card.change === null ? (
-                  whereFrom(card)
-                ) : (
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {card.change === null ? null : (
                   <Link href={`/h/${props.hostId}/changes/${card.change}`}>{card.change}</Link>
                 )}
-                {card.change !== null && card.session !== null ? ` · ${card.session}` : ''}
-                {card.change !== null && card.session !== null && card.runId !== null
-                  ? ` · run ${card.runId}`
-                  : ''}
-                {card.reversible ? '' : ' · hard to undo'}
+                {card.change !== null && origin.length > 0 ? ' · ' : ''}
+                {origin.join(' · ')}
               </Text>
             </HStack>
             <Text weight="semibold">{card.question}</Text>
@@ -408,11 +504,7 @@ export function CardBlock(props: {
                   size="sm"
                   variant={index === card.recommended ? 'secondary' : 'ghost'}
                   isDisabled={props.isBusy}
-                  endContent={
-                    props.isFocused ? (
-                      <Kbd keys={index === card.recommended ? 'Enter' : String(index + 1)} />
-                    ) : undefined
-                  }
+                  endContent={props.isFocused ? <Kbd keys={optionKey(card, index)} /> : undefined}
                   onClick={() => props.onAnswer(index)}
                 />
                 <Text type="supporting" color="secondary">
@@ -445,11 +537,20 @@ export function CardBlock(props: {
           {props.isNoteOpen ? (
             <TextInput
               label="Note with your answer"
-              description="Enter sends it with the recommended option."
+              description={noteHint(card, isMac())}
               value={props.note}
               hasAutoFocus
               onChange={(value) => props.onNote(value)}
-              onEnter={() => props.onAnswer(card.recommended)}
+              onEnter={props.onNoteEnter}
+              onKeyDown={(event) => {
+                const action = noteKey(
+                  { key: event.key, command: event.metaKey || event.ctrlKey },
+                  cardKeys(card),
+                );
+                if (action?.type !== 'answer') return;
+                event.preventDefault();
+                props.onAnswer(action.option);
+              }}
             />
           ) : null}
           {props.detail === undefined ? null : <GateDetails item={props.detail} />}
@@ -605,13 +706,85 @@ export function NeedsYouLoading({ rows = 3 }: { rows?: number }) {
   );
 }
 
-export function NeedsYouEmpty({ headingLevel = 2 }: { headingLevel?: 2 | 3 }) {
+/** The other projects with items waiting; the project open comes from the address if not given. */
+function useWaitingElsewhere(hostId?: string): WaitingElsewhere[] {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const current = hostId ?? /^\/h\/([^/]+)/.exec(pathname)?.[1] ?? '';
+  const hosts = useQuery(hostsQuery).data ?? [];
+  const counts = useQuery(needsYouCountsQuery).data;
+  return waitingElsewhere(counts, hosts, current);
+}
+
+const needsYouHref = (hostId: string) => `/h/${hostId}/needs-you`;
+
+/** One line on what waits in other projects: "2 wait in Cena." */
+export function elsewhereText(elsewhere: readonly WaitingElsewhere[]): string {
+  const first = elsewhere[0];
+  if (first === undefined) return '';
+  if (elsewhere.length > 1) return `Items wait in ${elsewhere.length} other projects.`;
+  return `${first.count === 1 ? '1 item waits' : `${first.count} items wait`} in ${first.name}.`;
+}
+
+/** Links to the other projects' inboxes, each with its count. */
+function ElsewhereLinks({ elsewhere }: { elsewhere: readonly WaitingElsewhere[] }) {
+  return (
+    <HStack gap={3} vAlign="center" wrap="wrap">
+      {elsewhere.map((entry) => (
+        <Link key={entry.id} href={needsYouHref(entry.id)}>
+          {`Open ${entry.name} (${entry.count})`}
+        </Link>
+      ))}
+    </HStack>
+  );
+}
+
+/** The empty inbox; when another project has items waiting, it names it with a link. */
+export function NeedsYouEmptyView({
+  headingLevel = 2,
+  elsewhere,
+}: {
+  headingLevel?: 2 | 3;
+  elsewhere: readonly WaitingElsewhere[];
+}) {
+  if (elsewhere.length === 0) {
+    return (
+      <EmptyState
+        headingLevel={headingLevel}
+        title="Nothing needs you"
+        description="When a run needs an answer or a fix from you, it shows up here."
+      />
+    );
+  }
   return (
     <EmptyState
       headingLevel={headingLevel}
-      title="Nothing needs you"
-      description="When a run needs an answer or a fix from you, it shows up here."
+      title="Nothing needs you here"
+      description={elsewhereText(elsewhere)}
+      actions={<ElsewhereLinks elsewhere={elsewhere} />}
     />
+  );
+}
+
+export function NeedsYouEmpty({
+  headingLevel = 2,
+  hostId,
+}: {
+  headingLevel?: 2 | 3;
+  hostId?: string;
+}) {
+  return <NeedsYouEmptyView headingLevel={headingLevel} elsewhere={useWaitingElsewhere(hostId)} />;
+}
+
+/** Under a non-empty inbox: what also waits in other projects, one quiet line. */
+export function AlsoWaiting({ elsewhere }: { elsewhere: readonly WaitingElsewhere[] }) {
+  if (elsewhere.length === 0) return null;
+  return (
+    <HStack gap={3} vAlign="center" wrap="wrap">
+      <Text type="supporting" color="secondary">
+        {`Also waiting: ${elsewhereText(elsewhere)}`}
+      </Text>
+      <ElsewhereLinks elsewhere={elsewhere} />
+    </HStack>
   );
 }
 
@@ -623,6 +796,14 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
+const CONTROLS =
+  'button, a[href], summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"], [role="option"]';
+
+/** True when focus is on a button, link or other control: Enter and Space are its own. */
+function isControl(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(CONTROLS) !== null;
+}
+
 export function NeedsYouPage({ hostId }: { hostId: string }) {
   const query = useQuery(needsYouQuery(hostId));
   const queryClient = useQueryClient();
@@ -630,14 +811,46 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   // keepPreviousData can briefly hold another host's items while switching; never show them.
   const snapshot = query.data?.hostId === hostId ? query.data : undefined;
   const cards = snapshot?.cards ?? [];
-  const [focused, setFocused] = useState(0);
+  const ids = useMemo(() => cards.map((card) => card.id), [cards]);
+  // The focus follows a card, not a position: a card arriving live never takes it (inbox-keys).
+  const [focus, setFocus] = useState<InboxFocus>({ id: null, index: 0 });
+  const current = resolveFocus(ids, focus);
+  // The list as it is when an answer comes back (a card may have arrived meanwhile).
+  const latestIds = useRef(ids);
+  latestIds.current = ids;
+  const since = useRef<FocusSince>({ id: null, at: 0, byOwner: false });
+  useLayoutEffect(() => {
+    // The card in focus changed by itself (it left, or the owner answered): answers wait a moment.
+    if (since.current.id !== current.id) {
+      since.current = { id: current.id, at: Date.now(), byOwner: false };
+    }
+    if (current.id !== focus.id || current.index !== focus.index) {
+      setFocus({ id: current.id, index: current.index });
+    }
+  }, [current.id, current.index, focus.id, focus.index]);
+  /** The owner moved the focus (J/K, a click): no wait. */
+  const moveFocus = useCallback(
+    (index: number) => {
+      const id = ids[index] ?? null;
+      since.current = { id, at: 0, byOwner: true };
+      setFocus({ id, index });
+    },
+    [ids],
+  );
   const [busy, setBusy] = useState<string | null>(null);
   const [noteFor, setNoteFor] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const notifications = useNotificationPermission();
+  const elsewhere = useWaitingElsewhere(hostId);
+  const projects = useQuery(hostsQuery).data;
 
   useEffect(() => {
     document.title = 'Needs You · Counterpoint';
+    // The navigation link clicked to get here keeps the focus; Enter belongs to the inbox now.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest('nav') !== null && isControl(active)) {
+      active.blur();
+    }
   }, []);
 
   const act = useCallback(
@@ -659,14 +872,17 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
         }
         setNoteFor(null);
         setNote('');
-        const remaining = cards.filter((c) => c.id !== cardId).length;
-        setFocused((index) => focusAfterAnswer(index, path === 'later' ? cards.length : remaining));
+        // The card that takes its place gets the focus; a deferred card moves to the end.
+        if (result.ok) setFocus(focusAfterAnswer(latestIds.current, cardId));
       } finally {
         setBusy(null);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYouCounts }),
+        ]);
       }
     },
-    [cards, hostId, queryClient, toast],
+    [hostId, queryClient, toast],
   );
 
   const [writeBusy, setWriteBusy] = useState<string | null>(null);
@@ -686,7 +902,10 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
         else toast({ body: after?.outcome ?? 'Trying again.' });
       } finally {
         setWriteBusy(null);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYouCounts }),
+        ]);
       }
     },
     [hostId, queryClient, toast, writeBusy],
@@ -704,6 +923,30 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
     [act, busy, note, noteFor],
   );
 
+  /** Enter on an option that merges into the base does nothing but say which digit picks it. */
+  const needsDigit = useCallback(
+    (card: QuestionCard, option: number, inNote: boolean) => {
+      const label = card.options[option]?.label ?? 'This option';
+      const base = snapshot?.baseBranch || 'the base branch';
+      const key = `${inNote ? (isMac() ? '⌘' : 'Ctrl+') : ''}${option + 1}`;
+      toast({ body: `"${label}" merges into ${base}. Press ${key} to pick it.` });
+    },
+    [snapshot?.baseBranch, toast],
+  );
+
+  const run = useCallback(
+    (action: InboxKeyAction, inNote = false) => {
+      const card = cards.find((c) => c.id === ('cardId' in action ? action.cardId : ''));
+      if (action.type === 'focus') moveFocus(action.index);
+      else if (action.type === 'note') setNoteFor(action.cardId);
+      else if (action.type === 'later') void act(action.cardId, 'later', {});
+      else if (card === undefined) return;
+      else if (action.type === 'needs-digit') needsDigit(card, action.option, inNote);
+      else answer(card, action.option);
+    },
+    [act, answer, cards, moveFocus, needsDigit],
+  );
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const action = inboxKey(
@@ -711,25 +954,23 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
           key: event.key,
           modified: event.metaKey || event.ctrlKey || event.altKey,
           typing: isTyping(event.target),
+          onControl: isControl(event.target),
+          settling: isSettling(since.current, Date.now()),
         },
-        cards.map((card) => ({
-          id: card.id,
-          options: card.options.length,
-          recommended: card.recommended,
-        })),
-        focused,
+        cards.map(cardKeys),
+        current.index,
       );
       if (action === null || busy !== null) return;
       event.preventDefault();
-      const card = cards.find((c) => c.id === ('cardId' in action ? action.cardId : ''));
-      if (action.type === 'focus') setFocused(action.index);
-      else if (action.type === 'note') setNoteFor(action.cardId);
-      else if (action.type === 'later') void act(action.cardId, 'later', {});
-      else if (card !== undefined) answer(card, action.option);
+      // Moving through the inbox takes the keys back from a button or link that kept the focus.
+      if (action.type === 'focus' && isControl(document.activeElement)) {
+        (document.activeElement as HTMLElement).blur();
+      }
+      run(action);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [act, answer, busy, cards, focused]);
+  }, [busy, cards, current.index, run]);
 
   const errorBanner = query.isError ? (
     <Banner
@@ -755,17 +996,17 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
   if (snapshot === undefined) {
     body = query.isError ? null : <NeedsYouLoading />;
   } else {
-    const focusIndex = Math.min(focused, Math.max(cards.length - 1, 0));
     body = (
       <VStack gap={6}>
         {cards.length === 0 ? (
-          <NeedsYouEmpty />
+          <NeedsYouEmptyView elsewhere={elsewhere} />
         ) : (
           <VStack gap={3}>
             {cards.map((card, index) => (
               <CardBlock
                 key={card.id}
                 hostId={hostId}
+                project={projects?.find((project) => project.id === card.hostId)?.name ?? null}
                 card={card}
                 detail={snapshot.runItems.find(
                   (item) =>
@@ -773,20 +1014,22 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
                     item.changeId === card.change &&
                     card.kind === 'parked',
                 )}
-                isFocused={index === focusIndex}
+                isFocused={card.id === current.id}
                 isBusy={busy === card.id}
                 isNoteOpen={noteFor === card.id}
                 note={noteFor === card.id ? note : ''}
-                onFocus={() => setFocused(index)}
+                onFocus={() => moveFocus(index)}
                 onNote={setNote}
                 onOpenNote={() => {
-                  setFocused(index);
+                  moveFocus(index);
                   setNoteFor(card.id);
                 }}
                 onAnswer={(option) => answer(card, option)}
+                onNoteEnter={() => run(enterAction(cardKeys(card)), true)}
                 onLater={() => void act(card.id, 'later', {})}
               />
             ))}
+            <AlsoWaiting elsewhere={elsewhere} />
           </VStack>
         )}
         <LandingList

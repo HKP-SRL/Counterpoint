@@ -2,12 +2,21 @@
 // blocks work). Only once the owner allowed them (asked from a click, never on load), only while
 // the console's tab is in the background, at most one a minute (cards arriving meanwhile are
 // merged), and one tag so open tabs replace each other's notification instead of stacking.
+// Cards from every project notify, whichever project the console shows; a click opens the
+// project the (first) card is in.
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 export const NOTIFY_INTERVAL_MS = 60_000;
 const TAG = 'counterpoint-needs-you';
 
-export type BlockingCard = { id: string; question: string; blocking: boolean; state: string };
+export type BlockingCard = {
+  id: string;
+  question: string;
+  blocking: boolean;
+  state: string;
+  /** The project the card is in; null for the machine's cards. */
+  hostId?: string | null;
+};
 
 /**
  * The open blocking cards not in `seen`, and the ids now seen. With no `seen` yet (the first
@@ -61,12 +70,13 @@ export function useNotificationPermission(): {
   };
 }
 
-function show(text: string): void {
+function show(text: string, onClick: () => void): void {
   if (!supported() || Notification.permission !== 'granted') return;
   try {
     const notification = new Notification('Counterpoint', { body: text, tag: TAG });
     notification.onclick = () => {
       window.focus();
+      onClick();
       notification.close();
     };
   } catch {
@@ -74,23 +84,27 @@ function show(text: string): void {
   }
 }
 
-/** Notifies new blocking cards of `hostId`'s Needs You while the tab is in the background. */
+/**
+ * Notifies new blocking cards, of every project, while the tab is in the background. `open` runs
+ * when the owner clicks the notification, with the first card it names.
+ */
 export function useBlockingNotifications(
-  hostId: string,
   cards: readonly BlockingCard[] | undefined,
+  open: (card: BlockingCard) => void = () => undefined,
 ): void {
-  const seen = useRef<{ hostId: string; ids: Set<string> } | null>(null);
+  const seen = useRef<Set<string> | null>(null);
   const last = useRef(Number.NEGATIVE_INFINITY);
   const pending = useRef<BlockingCard[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
   useEffect(() => {
     if (cards === undefined) return;
-    const previous = seen.current?.hostId === hostId ? seen.current.ids : null;
-    const { fresh, seen: ids } = newBlockingCards(previous, cards);
-    seen.current = { hostId, ids };
+    const { fresh, seen: ids } = newBlockingCards(seen.current, cards);
+    seen.current = ids;
     if (fresh.length === 0 || permission() !== 'granted') return;
     if (document.visibilityState === 'visible') return;
     const flush = () => {
@@ -99,12 +113,13 @@ export function useBlockingNotifications(
       pending.current = [];
       if (batch.length === 0) return;
       last.current = Date.now();
-      show(notificationText(batch));
+      const first = batch[0] as BlockingCard;
+      show(notificationText(batch), () => openRef.current(first));
     };
     pending.current = [...pending.current, ...fresh];
     if (timer.current !== undefined) return;
     const wait = last.current + NOTIFY_INTERVAL_MS - Date.now();
     if (wait <= 0) flush();
     else timer.current = setTimeout(flush, wait);
-  }, [hostId, cards]);
+  }, [cards]);
 }
