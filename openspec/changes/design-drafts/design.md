@@ -197,7 +197,7 @@ Route `/h/$hostId/changes/$changeId/drafts`, opened from a Drafts button on the 
 ## Migration Plan
 
 - One store migration (D-8) and an optional host config section (D-3). Nothing changes for a host until the owner opens Drafts.
-- Rollback: older versions ignore the new tables, and `drafts` folders in a change are plain files to them.
+- Rollback: store migrations are forward-only. An older Counterpoint refuses a store newer than it knows, so going back needs the `state.db` saved before the upgrade. `drafts` folders in a change are plain files to older versions.
 
 ## Open Questions
 
