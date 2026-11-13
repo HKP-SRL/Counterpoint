@@ -71,6 +71,12 @@ export interface AgentRunner {
   start?(request: AgentSessionRequest): Promise<AgentSession>;
   /** The agent CLI's version string, or null when it cannot be read. */
   version?(): Promise<string | null>;
+  /**
+   * Whether the agent CLI holds a sign-in on this machine (a local check, no API call); null when
+   * it cannot tell. Asked before a run says "not signed in" (build-runs: Usage limits pause every
+   * lane), because an outage can fail a session's sign-in too.
+   */
+  signedIn?(): Promise<boolean | null>;
 }
 
 /** The environment variable that tags every process of one agent session (crash sweep). */
@@ -368,6 +374,34 @@ export async function claudeVersion(
   }
 }
 
+/**
+ * `claude auth status --json` (claude 2.1.325: `{ "loggedIn": true, ... }`, read from the local
+ * login, no API call): its `loggedIn`, or null when it cannot be run or read. Only that field is
+ * read; the rest names the account and is never kept.
+ */
+export async function claudeSignedIn(
+  binary?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean | null> {
+  try {
+    const result = await execa(binary ?? resolveClaudeBinary(env), ['auth', 'status', '--json'], {
+      env: sessionEnv(env),
+      extendEnv: false,
+      stdin: 'ignore',
+      timeout: 15_000,
+      reject: false,
+    });
+    const parsed: unknown = JSON.parse(String(result.stdout ?? ''));
+    const loggedIn =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { loggedIn?: unknown }).loggedIn
+        : undefined;
+    return typeof loggedIn === 'boolean' ? loggedIn : null;
+  } catch {
+    return null;
+  }
+}
+
 export class ClaudeCliRunner implements AgentRunner {
   readonly binary: string;
   /** The environment sessions get when a request names none (the run's). */
@@ -413,5 +447,9 @@ export class ClaudeCliRunner implements AgentRunner {
 
   version(): Promise<string | null> {
     return claudeVersion(this.binary, this.#env);
+  }
+
+  signedIn(): Promise<boolean | null> {
+    return claudeSignedIn(this.binary, this.#env);
   }
 }

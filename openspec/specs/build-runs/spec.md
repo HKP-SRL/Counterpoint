@@ -113,8 +113,26 @@ On a usage limit every agent lane SHALL pause until the reported reset time plus
 - **THEN** the run goes on as after any successful session
 
 #### Scenario: Expired login
-- **WHEN** a session fails with an authentication error
+- **WHEN** a session fails with an authentication error and claude holds no login
 - **THEN** the run stops and Needs You says why
+
+### Requirement: A failed sign-in is checked before the run stops
+When a session's sign-in fails, Counterpoint SHALL ask claude whether it holds a login. Without one, the run SHALL stop and Needs You SHALL say to sign in. With one, or when claude cannot tell, the session SHALL be tried again after a backoff of 1, 2 and 4 minutes. If it still fails, the run SHALL stop, and Needs You SHALL say it may be an outage and offer to resume the run.
+
+#### Scenario: Sign-in fails during an outage
+- **WHEN** a session's sign-in fails with an error page from the API's proxy after server errors, while claude holds a login
+- **THEN** the session runs again a minute later, and the run goes on once it passes
+
+#### Scenario: The outage outlasts the retries
+- **WHEN** the sign-in fails four times in a row while claude holds a login
+- **THEN** the run stops, and Needs You asks "Sign-in failed, maybe an outage. Resume?" with resuming the run recommended
+
+### Requirement: Passing errors in calibration and version checks never end a run
+The session that learns a model's context window SHALL end like any session: a usage limit SHALL wait for the reset, and transient API errors and failed sign-ins SHALL be tried again after a backoff, up to three times. A `claude --version` that fails SHALL be tried again up to three times. Only an error no retry fixes SHALL end the run.
+
+#### Scenario: Overloaded API after a claude update
+- **WHEN** the run learns the window of a new claude version and the API answers overloaded
+- **THEN** it tries again a minute later and the run builds
 
 ### Requirement: Single governor in front of every spawn
 Every agent spawn on the machine, across hosts, SHALL go through one governor that applies usage-limit pauses to all lanes together.

@@ -91,6 +91,13 @@ import {
 } from '../core/store/runs.ts';
 import { endAgentSession, insertAgentSession, setAgentSessionPid } from '../core/store/sessions.ts';
 import { type AskServer, type BuilderAsk, openBuilderAsk } from './ask-session.ts';
+import {
+  accountStopMessage,
+  afterAuthFailure,
+  CALIBRATION_RETRIES,
+  VERSION_RETRY_MS,
+  VERSION_TRIES,
+} from './auth-failures.ts';
 import { blocksMerge, measureTestShare, planningEdits } from './branch-diff.ts';
 import { deliveryTicks, onlyBuildTicks } from './build-ticks.ts';
 import {
@@ -104,6 +111,7 @@ import {
   GovernorRefusal,
   governedRunner,
   MAX_TRANSIENT_RETRIES,
+  type SessionOutcome,
   transientBackoffMs,
 } from './governor.ts';
 import { HostSettings, readHostSettings, withDefaults } from './host-settings.ts';
@@ -119,7 +127,13 @@ import {
 } from './services.ts';
 import { commitSession, type SessionCommit } from './session-commit.ts';
 import { describeMissingTools, missingRunTools } from './tools.ts';
-import { calibrateWindow, formatBudget, knownWindow, normalizeClaudeVersion } from './windows.ts';
+import {
+  CalibrationError,
+  calibrateWindow,
+  formatBudget,
+  knownWindow,
+  normalizeClaudeVersion,
+} from './windows.ts';
 import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.ts';
 
 /** The longest one builder session may run. */
@@ -760,9 +774,23 @@ export class Orchestrator {
     } catch (error) {
       throw new RunEnd('error', `claude could not be found: ${(error as Error).message}`);
     }
-    const version = (await runner.version?.()) ?? null;
-    if (version === null)
-      throw new RunEnd('error', 'claude could not be run (claude --version failed).');
+    // One slow `claude --version` (a busy machine, an update half done) is not a broken claude:
+    // it is asked again before the run ends.
+    let version: string | null = null;
+    for (let tries = 1; version === null; tries += 1) {
+      version = (await runner.version?.()) ?? null;
+      if (version !== null) break;
+      if (active.stop.signal.aborted) {
+        throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the next session.');
+      }
+      if (tries >= VERSION_TRIES) {
+        throw new RunEnd(
+          'error',
+          `claude could not be run (claude --version failed ${VERSION_TRIES} times).`,
+        );
+      }
+      await this.#sleep(VERSION_RETRY_MS * tries, active.stop.signal);
+    }
     return { runner, version };
   }
 
@@ -788,31 +816,71 @@ export class Orchestrator {
     });
     const dir = join(this.#runDir(active), 'calibration');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    try {
-      return record(
-        await (this.#o.calibrateWindow ?? calibrateWindow)({
-          runner: governedRunner(this.#o.governor, runner, {
+    // The calibration session ends like any session (build-runs: Usage limits pause every lane):
+    // a usage limit waits for the reset, transient errors and sign-in failures that may be an
+    // outage are tried again; only what no retry fixes ends the run.
+    let transient = 0;
+    let auth = 0;
+    for (;;) {
+      let outcome: SessionOutcome | null = null;
+      let failure: string;
+      try {
+        return record(
+          await (this.#o.calibrateWindow ?? calibrateWindow)({
+            runner: governedRunner(this.#o.governor, runner, {
+              hostId: active.hostId,
+              kind: 'calibration',
+              signal: active.stop.signal,
+            }),
+            db: this.#o.db,
             hostId: active.hostId,
-            kind: 'calibration',
-            signal: active.stop.signal,
+            model: settings.model,
+            claudeVersion: normalized,
+            cwd: dir,
+            rawLogPath: join(dir, 'session.jsonl'),
+            processTag: randomBytes(16).toString('hex'),
           }),
-          db: this.#o.db,
-          hostId: active.hostId,
-          model: settings.model,
-          claudeVersion: normalized,
-          cwd: dir,
-          rawLogPath: join(dir, 'session.jsonl'),
-          processTag: randomBytes(16).toString('hex'),
-        }),
-      );
-    } catch (error) {
-      if (error instanceof GovernorRefusal) {
+        );
+      } catch (error) {
+        if (error instanceof GovernorRefusal) {
+          throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the first build.');
+        }
+        if (error instanceof CalibrationError) outcome = error.outcome;
+        failure = `The model's context window could not be learned: ${(error as Error).message}`;
+      }
+      if (active.stop.signal.aborted) {
         throw new RunEnd(active.stopReason ?? 'stopped', 'Stopped before the first build.');
       }
-      throw new RunEnd(
-        'error',
-        `The model's context window could not be learned: ${(error as Error).message}`,
-      );
+      let waitMs = 0;
+      if (outcome?.kind === 'usage-limit') {
+        // The governor paused every lane; the next calibration waits for the reset.
+        this.#o.governor.noteOutcome(outcome);
+      } else if (outcome?.kind === 'transient' && transient < CALIBRATION_RETRIES) {
+        transient += 1;
+        waitMs = transientBackoffMs(transient);
+      } else if (outcome?.kind === 'stop' && outcome.cause === 'auth') {
+        auth += 1;
+        const step = await afterAuthFailure({
+          runner,
+          detail: outcome.detail,
+          outage: outcome.outage === true,
+          failures: auth,
+        });
+        if (step.kind === 'stop') throw new RunEnd('error', step.message);
+        waitMs = step.waitMs;
+      } else if (outcome?.kind === 'stop') {
+        throw new RunEnd('error', accountStopMessage(outcome.cause, outcome.detail));
+      } else {
+        throw new RunEnd('error', failure);
+      }
+      if (waitMs > 0) {
+        this.#activity(active, {
+          change: null,
+          phase: 'waiting',
+          detail: `${outcome.kind === 'stop' ? 'Sign-in failed' : 'API error'}; learning ${settings.model}'s context window again in ${Math.round(waitMs / 60_000)} min`,
+        });
+        await this.#sleep(waitMs, active.stop.signal);
+      }
     }
   }
 
@@ -1176,6 +1244,7 @@ export class Orchestrator {
     const adapter = runtime.adapter;
     if (adapter === null) throw new RunEnd('error', 'The project has no planning framework.');
     let transient = 0;
+    let auth = 0;
     let gateFeedback = c.feedback;
     // Build tasks left open after the latest session (null: the change has no task list).
     let open: string[] | null = null;
@@ -1327,16 +1396,33 @@ export class Orchestrator {
           continue;
         }
         case 'stop': {
-          const what =
-            result.outcome.cause === 'auth'
-              ? 'claude is not signed in (authentication failed). Sign in to claude, then start a new run.'
-              : result.outcome.cause === 'credit'
-                ? 'Usage credits are needed. Add credit, then start a new run.'
-                : 'A spend limit was reached. Raise it, then start a new run.';
-          throw new RunEnd('error', `${what} (${result.outcome.detail})`);
+          if (result.outcome.cause !== 'auth') {
+            throw new RunEnd(
+              'error',
+              accountStopMessage(result.outcome.cause, result.outcome.detail),
+            );
+          }
+          // Signed out, or an outage? claude's own login decides; an outage is tried again.
+          auth += 1;
+          const step = await afterAuthFailure({
+            runner,
+            detail: result.outcome.detail,
+            outage: result.outcome.outage === true,
+            failures: auth,
+          });
+          if (step.kind === 'stop') throw new RunEnd('error', step.message);
+          this.#activity(active, {
+            change: c.row.change,
+            phase: 'waiting',
+            detail: `Sign-in failed; retrying in ${Math.round(step.waitMs / 60_000)} min`,
+          });
+          await this.#sleep(step.waitMs, active.stop.signal);
+          inAttempt -= 1;
+          continue;
         }
         default:
           transient = 0;
+          auth = 0;
       }
       if (active.stop.signal.aborted || result.reason === 'stop-handoff') return 'stopped';
       open = done === null ? null : done.open;

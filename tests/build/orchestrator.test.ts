@@ -28,6 +28,7 @@ import { recoverRuns } from '../../src/build/recovery.ts';
 import { runCards } from '../../src/build/run-cards.ts';
 import { buildRunReport, reportMarkdown } from '../../src/build/run-report.ts';
 import { missingRunTools } from '../../src/build/tools.ts';
+import { CalibrationError } from '../../src/build/windows.ts';
 import { BaseFetcher } from '../../src/core/git/base-fetch.ts';
 import { createBaseResolver } from '../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
@@ -566,7 +567,7 @@ describe('a run', () => {
     });
   });
 
-  it('stops the run on an authentication error and says so in Needs You', async () => {
+  it('stops the run on an authentication error when claude holds no login, and says so in Needs You', async () => {
     const ctx = await host();
     const sessions = fakeSessions(() => ({
       reason: 'error',
@@ -575,10 +576,12 @@ describe('a run', () => {
     const { o } = orchestrator(ctx, {
       startBuilderSession: sessions.start,
       runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => false }),
     });
     const started = await o.start('cena', SETTINGS);
     if (!started.ok) throw new Error(started.error);
     await o.idle();
+    expect(sessions.count()).toBe(1);
     expect(getRun(ctx.db, started.runId)).toMatchObject({
       endReason: 'error',
       endDetail: expect.stringMatching(/not signed in/),
@@ -588,9 +591,71 @@ describe('a run', () => {
       'stopped',
     ]);
     expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
+    expect(runCards(ctx.db, 'cena')[0]?.question).toMatch(/not logged in/);
     // The session's work was still committed.
     const log = await runGit(ctx.repo.root, ['log', '--format=%s', '-1', 'cp/a-thing']);
     expect(log.stdout.trim()).toBe('cp: a-thing session 1');
+  });
+
+  // Seen live (run 20261113-0940, session 13): 503 retries, then a Cloudflare 403 for a sign-in;
+  // the owner was signed in, and the next run worked.
+  const CLOUDFLARE: SessionOutcome = {
+    kind: 'stop',
+    cause: 'auth',
+    detail: 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare',
+    outage: true,
+  };
+
+  it('tries a sign-in failure again while claude holds a login, and goes on once it passes', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions((n) => (n === 1 ? { reason: 'error', outcome: CLOUDFLARE } : {}));
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => true }),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(2);
+    expect(slept).toEqual([60_000]);
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+    expect(listRunChanges(ctx.db, started.runId)[0]).toMatchObject({ state: 'green' });
+  });
+
+  it('stops as a possible outage when the sign-in keeps failing, with a card to resume', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions(() => ({ reason: 'error', outcome: CLOUDFLARE }));
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: gates([]).round,
+      runnerFactory: () => ({ ...runner, signedIn: async () => true }),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(4);
+    expect(slept).toEqual([60_000, 120_000, 240_000]);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^Sign-in failed, maybe an outage\. It failed 4 times/),
+    });
+    const card = runCards(ctx.db, 'cena')[0];
+    expect(card).toMatchObject({
+      kind: 'run-stopped',
+      question: 'Sign-in failed, maybe an outage. Resume?',
+      recommended: 0,
+    });
+    expect(card?.options[0]?.action).toEqual({ type: 'resume-run', runId: started.runId });
+    expect(card?.why).not.toMatch(/terminal|\/login/);
   });
 
   // Seen live: the daemon's PATH predated the owner's Supabase install, and three builder
@@ -897,6 +962,120 @@ describe('a run', () => {
       ['b-thing', 'skipped'],
     ]);
     expect(sessions.count()).toBe(1);
+  });
+});
+
+describe('learning the window and finding claude (calibration runs after every claude update)', () => {
+  const failing = (outcomes: SessionOutcome[]) => {
+    let calls = 0;
+    const calibrate: OrchestratorOptions['calibrateWindow'] = async () => {
+      const outcome = outcomes[calls];
+      calls += 1;
+      if (outcome === undefined) return 1_000_000;
+      throw new CalibrationError(`The calibration session for opus failed: ${calls}`, outcome);
+    };
+    return { calibrate, calls: () => calls };
+  };
+
+  it('waits out a usage limit and tries API errors again, then builds', async () => {
+    const ctx = await host();
+    const cal = failing([
+      { kind: 'transient', detail: 'API Error: 529 overloaded' },
+      { kind: 'usage-limit', resetsAt: null, detail: 'usage limit reached' },
+      { kind: 'transient', detail: 'API Error: 503' },
+    ]);
+    const slept: number[] = [];
+    const governor = new Governor({ db: ctx.db });
+    const { o } = orchestrator(ctx, {
+      governor,
+      calibrateWindow: cal.calibrate,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(4);
+    expect(slept).toEqual([60_000, 120_000]);
+    // The usage limit paused every lane: the next calibration's spawn waited for it.
+    expect(governor.holdUntil()?.reason).toBe('usage limit reached');
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+  });
+
+  it('ends the run when API errors outlast three retries, or what failed is no outage', async () => {
+    const ctx = await host();
+    const transient: SessionOutcome = { kind: 'transient', detail: 'API Error: 503' };
+    const cal = failing([transient, transient, transient, transient]);
+    const { o } = orchestrator(ctx, { calibrateWindow: cal.calibrate });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(4);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^The model's context window could not be learned/),
+    });
+
+    const bad = failing([{ kind: 'failed', detail: 'model_not_found' }]);
+    const second = orchestrator(ctx, { calibrateWindow: bad.calibrate }).o;
+    const again = await second.start('cena', SETTINGS);
+    if (!again.ok) throw new Error(again.error);
+    await second.idle();
+    expect(bad.calls()).toBe(1);
+    expect(getRun(ctx.db, again.runId)?.endReason).toBe('error');
+  });
+
+  it('says "not signed in" for a calibration only when claude holds no login', async () => {
+    const ctx = await host();
+    const cal = failing([{ kind: 'stop', cause: 'auth', detail: 'Not logged in' }]);
+    const { o } = orchestrator(ctx, {
+      calibrateWindow: cal.calibrate,
+      runnerFactory: () => ({ ...runner, signedIn: async () => false }),
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(cal.calls()).toBe(1);
+    expect(getRun(ctx.db, started.runId)?.endDetail).toMatch(/^claude is not signed in/);
+  });
+
+  it('asks claude for its version again before ending the run', async () => {
+    const ctx = await host();
+    let asked = 0;
+    const flaky: AgentRunner = {
+      ...runner,
+      version: async () => {
+        asked += 1;
+        return asked <= 2 ? null : VERSION;
+      },
+    };
+    const slept: number[] = [];
+    const { o } = orchestrator(ctx, {
+      runnerFactory: () => flaky,
+      startBuilderSession: fakeSessions().start,
+      runGateRound: gates([]).round,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const started = await o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(slept.slice(0, 2)).toEqual([10_000, 20_000]);
+    expect(getRun(ctx.db, started.runId)?.endReason).toBe('finished');
+
+    const broken = orchestrator(ctx, {
+      runnerFactory: () => ({ ...runner, version: async () => null }),
+    }).o;
+    const again = await broken.start('cena', { ...SETTINGS, changes: ['b-thing'] });
+    if (!again.ok) throw new Error(again.error);
+    await broken.idle();
+    expect(getRun(ctx.db, again.runId)?.endDetail).toBe(
+      'claude could not be run (claude --version failed 3 times).',
+    );
   });
 });
 

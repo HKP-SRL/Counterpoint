@@ -146,6 +146,18 @@ describe('buildClaudeArgv', () => {
   });
 });
 
+describe('sign-in check (fake claude)', () => {
+  const runnerWith = (login: string) =>
+    new ClaudeCliRunner({ binary: FAKE, env: { ...process.env, FAKE_CLAUDE_LOGIN: login } });
+
+  it("reads claude's own login state, and says it cannot tell when the answer is not JSON", async () => {
+    expect(await runnerWith('in').signedIn()).toBe(true);
+    expect(await runnerWith('out').signedIn()).toBe(false);
+    expect(await runnerWith('garbled').signedIn()).toBeNull();
+    expect(await new ClaudeCliRunner({ binary: '/nonexistent/claude' }).signedIn()).toBeNull();
+  });
+});
+
 describe('streaming session (fake claude)', () => {
   const runner = new ClaudeCliRunner({ binary: FAKE });
 

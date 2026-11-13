@@ -26,6 +26,10 @@ Every item Counterpoint puts in Needs You SHALL offer options the owner can pick
 - **WHEN** a run stops because agent sessions report they are not logged in
 - **THEN** its card names the cause, and the one step only the owner can take, instead of a downstream symptom
 
+#### Scenario: Sign-in may be an outage
+- **WHEN** a run stops because the sign-in kept failing while claude holds a login
+- **THEN** its card says the sign-in failed and may be an outage, and recommends resuming the run instead of asking the owner to log in
+
 ### Requirement: Options for a parked change
 A parked change SHALL offer to retry with the failure as a note to the builder, to open the change for re-planning, or to leave it parked.
 

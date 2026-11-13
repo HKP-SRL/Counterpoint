@@ -146,6 +146,56 @@ describe('classifySession', () => {
     ).toMatchObject({ kind: 'stop', cause });
   });
 
+  // Seen live (run 20261113-0940, session 13): three 503 retries, then a Cloudflare page for a
+  // body; the owner was signed in and the next run worked.
+  it('marks a sign-in failure that may be an outage: an HTML body, or after server errors', () => {
+    const retry = (status: number | null): StreamEvent => ({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 500,
+      error_status: status,
+      error: 'server_error',
+    });
+    const cloudflare = 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare';
+    expect(
+      classifySession([
+        retry(503),
+        retry(503),
+        retry(503),
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: cloudflare }),
+      ]),
+    ).toEqual({ kind: 'stop', cause: 'auth', detail: cloudflare, outage: true });
+    expect(
+      classifySession([
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: 'API Error: 403 <!DOCTYPE html><html>...' }),
+      ]),
+    ).toMatchObject({ kind: 'stop', cause: 'auth', outage: true });
+    expect(
+      classifySession([
+        retry(null),
+        assistantError('authentication_failed'),
+        result({ is_error: true, result: 'Failed to authenticate.' }),
+      ]),
+    ).toMatchObject({ outage: true });
+    // A 429 retry is not a server error; a plain sign-in failure is not marked.
+    const plain = classifySession([
+      retry(429),
+      assistantError('authentication_failed'),
+      result({ is_error: true, result: 'Invalid API key' }),
+    ]);
+    expect(plain).toEqual({ kind: 'stop', cause: 'auth', detail: 'Invalid API key' });
+  });
+
+  it("reads claude's not-logged-in error as a sign-in failure", () => {
+    expect(
+      classifySession([result({ is_error: true, result: 'Not logged in · Please run /login' })]),
+    ).toMatchObject({ kind: 'stop', cause: 'auth' });
+  });
+
   it('stops on a credits-required rejection instead of pausing', () => {
     expect(
       classifySession([limitEvent({ status: 'rejected', errorCode: 'credits_required' })]),

@@ -7,7 +7,8 @@
 //   options and recommendation; any answer retries the change with the answer as a note.
 // - A run that stopped on something only the owner can fix: named by its root cause ("not logged
 //   in", not the "no context window" it led to), with Counterpoint's fix where the catalog has one
-//   (re-read the environment and resume) and otherwise the one step only the owner can take.
+//   (re-read the environment and resume) and otherwise the one step only the owner can take. A
+//   sign-in that kept failing while claude holds a login may be an outage: resume, nothing more.
 // - A note the run left (its login shell could not be read): re-read the environment.
 //
 // The cards are recomputed from the store: each has a key, so raising it again finds the same card,
@@ -16,6 +17,7 @@ import type { CardOption, NewCard } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
 import type { CardDesk } from '../server/cards.ts';
+import { OUTAGE_PREFIX } from './auth-failures.ts';
 
 const clip = (text: string, max = 300): string => {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -24,6 +26,7 @@ const clip = (text: string, max = 300): string => {
 
 /** Why a run stopped, by root cause. */
 export type StopCause =
+  | { kind: 'sign-in-outage' }
   | { kind: 'not-logged-in' }
   | { kind: 'missing-program'; programs: string[] }
   | { kind: 'account'; what: string }
@@ -35,6 +38,9 @@ export type StopCause =
  * when it surfaced as a failed context-window calibration.
  */
 export function stopCause(detail: string): StopCause {
+  // A sign-in that kept failing while claude holds a login (auth-failures.ts): first, since its
+  // detail quotes the failure ("authentication_failed", "Failed to authenticate").
+  if (detail.startsWith(OUTAGE_PREFIX)) return { kind: 'sign-in-outage' };
   if (
     /not logged in|please run \/login|not signed in|authentication[_ ]failed|oauth/i.test(detail)
   ) {
@@ -76,6 +82,13 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
     blocking: true,
   };
   switch (cause.kind) {
+    case 'sign-in-outage':
+      return {
+        ...base,
+        question: 'Sign-in failed, maybe an outage. Resume?',
+        why: clip(detail.slice(OUTAGE_PREFIX.length)),
+        options: [resume('Resume the run'), LEAVE_STOPPED],
+      };
     case 'not-logged-in':
       return {
         ...base,

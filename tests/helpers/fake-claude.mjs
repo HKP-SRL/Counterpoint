@@ -13,6 +13,18 @@
 // variables.
 import { spawn } from 'node:child_process';
 
+// `claude auth status --json`, like claude 2.1.325: `loggedIn` with account fields beside it.
+// FAKE_CLAUDE_LOGIN=out reports no login, =garbled prints something that is not JSON.
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  const login = process.env.FAKE_CLAUDE_LOGIN ?? 'in';
+  process.stdout.write(
+    login === 'garbled'
+      ? 'Logged in as someone\n'
+      : `${JSON.stringify({ loggedIn: login === 'in', email: 'owner@example.com' })}\n`,
+  );
+  process.exit(login === 'out' ? 1 : 0);
+}
+
 let turn = 0;
 let busy = null; // { abort(): void } while a turn waits
 let inputEnded = false;

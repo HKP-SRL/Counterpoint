@@ -16,7 +16,8 @@
 //   billing_error, rate_limit, overloaded, invalid_request, model_not_found, server_error,
 //   max_output_tokens, cloud_credential_error, unknown.
 // - `system/api_retry`: claude's own retries (attempt, max_retries, retry_delay_ms, error_status,
-//   error); claude retries transient failures itself up to 10 times before giving up.
+//   error); claude retries transient failures itself up to 10 times before giving up. Server-error
+//   retries before a sign-in failure mark it as a possible outage.
 // - the `result`: subtype success | error_max_turns | error_during_execution |
 //   error_max_budget_usd | error_max_structured_output_retries, `is_error`, the result text.
 // `rejected`, `api_retry` and the error values have not been seen live yet (design: Risks).
@@ -160,8 +161,12 @@ export type SessionOutcome =
   | { kind: 'usage-limit'; resetsAt: number | null; detail: string }
   /** Worth retrying the session after a backoff (server errors, overload, throttles). */
   | { kind: 'transient'; detail: string }
-  /** Stop the run and tell the owner (Needs You). */
-  | { kind: 'stop'; cause: 'auth' | 'credit' | 'spend-limit'; detail: string }
+  /**
+   * Stop the run and tell the owner (Needs You). A sign-in failure that may be an outage
+   * (`outage`: an HTML error page for a body, or after server-error retries) is retried first,
+   * and so is any sign-in failure while claude still holds a login (auth-failures.ts).
+   */
+  | { kind: 'stop'; cause: 'auth' | 'credit' | 'spend-limit'; detail: string; outage?: boolean }
   /** The session itself failed (turn or budget cap, bad request, ...): counts as an attempt. */
   | { kind: 'failed'; detail: string };
 
@@ -177,6 +182,32 @@ const SPEND_LIMIT_RE =
   /spend limit|individual usage limit|team's shared budget|exceeds your group's budget/i;
 /** The plan's own windows, which reset by themselves (errors.md "You've hit your session limit"). */
 const PLAN_LIMIT_RE = /hit your (session|weekly|opus|sonnet|fable) limit|usage limit reached/i;
+
+/** claude's own words when it holds no login (the result text of an errored session). */
+const NOT_LOGGED_IN_RE = /not logged in|please run \/login/i;
+/**
+ * An HTML error page in place of an API answer: a proxy or CDN refused the request, not the API.
+ * Seen live (run 20261113-0940, session 13): "Failed to authenticate. API Error: 403 Attention
+ * Required! | Cloudflare" after three 503 retries; the owner was signed in.
+ */
+const HTML_ERROR_RE = /<\s*(!doctype|html)\b|cloudflare|attention required/i;
+
+/** The events classifySession reads; sessions keep only these for it. */
+export function classifiedEvent(event: StreamEvent): boolean {
+  return (
+    event.type === 'rate_limit_event' ||
+    event.type === 'result' ||
+    (event.type === 'system' && (event as KnownStreamEvent).subtype === 'api_retry') ||
+    (event.type === 'assistant' && (event as KnownStreamEvent).error !== undefined)
+  );
+}
+
+/** A `system/api_retry` for a server error (5xx), or a connection error with no status. */
+function serverRetry(event: StreamEvent): boolean {
+  if (event.type !== 'system' || (event as KnownStreamEvent).subtype !== 'api_retry') return false;
+  const status = (event as KnownStreamEvent).error_status;
+  return status === null || status === undefined || (typeof status === 'number' && status >= 500);
+}
 
 function resultText(result: KnownStreamEvent | null): string {
   const text = result?.result;
@@ -194,7 +225,9 @@ export function classifySession(
   let rejected: { resetsAt: number | null; errorCode: string | null } | null = null;
   let assistantError: string | null = null;
   let result: KnownStreamEvent | null = null;
+  let serverRetries = 0;
   for (const event of events) {
+    if (serverRetry(event)) serverRetries += 1;
     const limits = rateLimitWindows(event);
     if (limits !== null && limits.status === 'rejected') {
       const resets = Object.values(limits.windows)
@@ -226,8 +259,14 @@ export function classifySession(
   if (rejected?.errorCode === 'credits_required') {
     return { kind: 'stop', cause: 'credit', detail: text || 'Usage credits are required.' };
   }
-  if (assistantError !== null && AUTH_ERRORS.has(assistantError)) {
-    return { kind: 'stop', cause: 'auth', detail: text || assistantError };
+  if ((assistantError !== null && AUTH_ERRORS.has(assistantError)) || NOT_LOGGED_IN_RE.test(text)) {
+    const outage = HTML_ERROR_RE.test(text) || serverRetries > 0;
+    return {
+      kind: 'stop',
+      cause: 'auth',
+      detail: text || assistantError || 'authentication failed',
+      ...(outage ? { outage } : {}),
+    };
   }
   if (SPEND_LIMIT_RE.test(text)) {
     return { kind: 'stop', cause: 'spend-limit', detail: text };
@@ -436,14 +475,8 @@ export function governedRunner(
       const session = await start({
         ...request,
         onEvent: (event) => {
-          // Only what classifySession reads: limit events, results, assistant errors.
-          if (
-            event.type === 'rate_limit_event' ||
-            event.type === 'result' ||
-            (event.type === 'assistant' && (event as KnownStreamEvent).error !== undefined)
-          ) {
-            events.push(event);
-          }
+          // Only what classifySession reads: limit events, results, retries, assistant errors.
+          if (classifiedEvent(event)) events.push(event);
           governor.observe(event);
           request.onEvent?.(event);
         },
@@ -453,5 +486,6 @@ export function governedRunner(
     };
   }
   if (inner.version !== undefined) runner.version = inner.version.bind(inner);
+  if (inner.signedIn !== undefined) runner.signedIn = inner.signedIn.bind(inner);
   return runner;
 }
