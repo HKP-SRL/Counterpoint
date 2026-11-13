@@ -1,12 +1,12 @@
 # planning-writes Specification
 
 ## Purpose
-One serialized path for every write Counterpoint makes to the host's planning files, so parallel builds never conflict on planning bookkeeping and approvals are never invalidated by accident.
+One serialized path for every write Counterpoint makes to the host's planning files, so parallel builds never conflict on planning bookkeeping.
 
 ## Requirements
 
 ### Requirement: Single serialized write path
-Every write Counterpoint makes to the host's planning files (decisions, backlog items, approvals, bookkeeping such as ticking tasks or archiving a change) SHALL go through one serialized path that commits one write at a time.
+Every write Counterpoint makes to the host's planning files (decisions, backlog items, bookkeeping such as ticking tasks or archiving a change) SHALL go through one serialized path that commits one write at a time.
 
 #### Scenario: Two writes at once
 - **WHEN** two builds finish at the same moment and both need bookkeeping

@@ -13,18 +13,11 @@ The Mission page SHALL lead with the runway count and list the changes on the ru
 - **THEN** the Mission headline goes from 0 to 1 without a reload
 
 ### Requirement: Uncommitted edits do not change the runway
-Uncommitted edits in the owner's checkout SHALL NOT take a change off the runway; the console SHALL show a soft hint that an approved change has uncommitted edits.
+Uncommitted edits in the owner's checkout SHALL NOT take a change off the runway or change what its build uses; the runway and builds read the change's files at the base-branch tip.
 
 #### Scenario: Owner edits an approved proposal locally
 - **WHEN** the owner edits an approved change's proposal without committing
-- **THEN** the change stays on the runway and shows the uncommitted-edits hint
-
-### Requirement: Uncommitted-edits hint runs no repository program
-The check behind the uncommitted-edits hint SHALL NOT run any content filter, hook or other program configured by the host repository; a covered file that a filter applies to SHALL show as edited and not checkable.
-
-#### Scenario: Clean filter configured
-- **WHEN** the host's attributes assign a clean filter to a covered file
-- **THEN** the hint check runs no filter and shows the file as not checkable
+- **THEN** the change stays on the runway, and its build uses the proposal as committed at the base-branch tip
 
 ### Requirement: Runway is the approved work not yet built
 The runway SHALL be the set of changes the owner has approved that are readable and not yet built. It SHALL follow the owner's approvals and withdrawals at once, and the base branch within a few seconds.
