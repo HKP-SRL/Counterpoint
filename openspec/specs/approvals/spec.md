@@ -23,6 +23,13 @@ An approval SHALL stay valid when the change's planning files or the host's gate
 - **WHEN** the owner revises an approved change's tasks and commits them to the base branch
 - **THEN** the change stays on the runway and its next build uses the revised tasks
 
+### Requirement: Approval of a removed change ends
+When an approved change is no longer in the planning files at the base-branch tip (renamed or removed), its approval SHALL end, and Needs You SHALL say so once, naming the change, in a card that does not block work. A change created later under that name SHALL need a new approval.
+
+#### Scenario: Approved change renamed
+- **WHEN** an approved change is renamed on the base branch
+- **THEN** its approval ends, Needs You names it once, and the renamed change shows Ready to approve
+
 ### Requirement: Withdraw in one click
 The console SHALL offer Withdraw on every On runway change. A withdrawn change SHALL leave the runway at once and show Ready to approve again.
 

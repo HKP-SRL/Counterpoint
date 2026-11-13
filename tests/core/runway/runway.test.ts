@@ -7,10 +7,11 @@ import { createOpenSpecAdapter } from '../../../src/adapters/openspec/index.ts';
 import type { ChangeFacts } from '../../../src/core/framework/port.ts';
 import { createBaseResolver } from '../../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../../src/core/git/reader.ts';
+import { runGit } from '../../../src/core/git/run.ts';
 import { approvalStateOf, computeRunway, endedApprovals } from '../../../src/core/runway/runway.ts';
 import { approveChange, listApprovals } from '../../../src/core/store/approvals.ts';
 import { openStore, upsertHost } from '../../../src/core/store/db.ts';
-import { createApprovalViews } from '../../../src/server/approval-views.ts';
+import { createApprovalViews, endedApprovalCard } from '../../../src/server/approval-views.ts';
 import { commitChange, materializeOpenSpecHost } from '../../helpers/fixture-repo.ts';
 import { makeScratchDir, removeScratchDirs } from '../../helpers/scratch.ts';
 
@@ -157,6 +158,37 @@ describe('an approval stays with the change', () => {
       reason: 'unreadable',
     });
     expect(listApprovals(db, 'cena')).toHaveLength(1);
+  });
+
+  it('ends the approval of a change that is gone, says so once, and a later change of that name needs a click', async () => {
+    const { repo, db, runtime } = await setup();
+    const told: string[] = [];
+    const views = createApprovalViews({
+      store: db,
+      onMissing: (hostId, approval) => {
+        told.push(`${hostId}:${approval.change}`);
+        expect(endedApprovalCard(hostId, approval)).toMatchObject({
+          kind: 'approval-ended',
+          change: 'a-thing',
+          blocking: false,
+        });
+      },
+    });
+    await views.approve(runtime, 'a-thing');
+    // Renamed on the base branch.
+    await runGit(repo.root, ['mv', 'openspec/changes/a-thing', 'openspec/changes/a-thing-v2']);
+    await runGit(repo.root, ['commit', '--quiet', '-m', 'rename a-thing']);
+    expect((await views.runway(runtime)).count).toBe(0);
+    expect(listApprovals(db, 'cena')).toEqual([]);
+    await views.runway(runtime);
+    expect(told).toEqual(['cena:a-thing']);
+    // A new a-thing later is Ready to approve, not On runway.
+    await commitChange(repo.root, 'openspec/changes/a-thing/proposal.md', proposal('A again'));
+    await commitChange(repo.root, 'openspec/changes/a-thing/tasks.md', open);
+    expect(await views.state(runtime, 'a-thing')).toEqual({
+      state: 'off-runway',
+      reason: 'not-approved',
+    });
   });
 
   it('works from the state of the store alone: a restart keeps the runway', async () => {

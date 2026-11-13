@@ -14,7 +14,12 @@
 // Approve takes effect at once, with no terminal step: it is allowed only on a Ready to approve
 // change (readable, not built, a proposal and at least one task, not approved yet) at the tip now,
 // and records that tip as the commit it was given at. Withdraw takes a change off the runway.
-import type { ChangeFacts, FrameworkAdapter, GitFileReader } from '../core/framework/port.ts';
+import type {
+  ChangeFacts,
+  ChangeSnapshot,
+  FrameworkAdapter,
+  GitFileReader,
+} from '../core/framework/port.ts';
 import { findChange } from '../core/framework/port.ts';
 import {
   type BuildStage,
@@ -38,11 +43,13 @@ import {
   withMerged,
 } from '../core/runway/status.ts';
 import {
+  type ApprovalRow,
   approveChange,
   getApproval,
   listApprovals,
   withdrawApproval,
 } from '../core/store/approvals.ts';
+import type { NewCard } from '../core/store/cards.ts';
 import {
   latestBuilds,
   openIrreversibleQuestions,
@@ -125,7 +132,39 @@ export interface ApprovalViews {
   merged(hostId: string): ReadonlySet<string>;
 }
 
-export function createApprovalViews(options: { store: Store }): ApprovalViews {
+/**
+ * The card for an approval that ended because its change is gone from the base branch (renamed or
+ * removed): the owner is told once, and a later change of that name needs a click again.
+ */
+export function endedApprovalCard(hostId: string, approval: ApprovalRow): NewCard {
+  return {
+    hostId,
+    key: `approval-ended:${approval.change}:${approval.approvedAt}`,
+    kind: 'approval-ended',
+    source: 'change',
+    change: approval.change,
+    question: `${approval.change} is no longer in the plan, so its approval ended.`,
+    why: 'It was renamed or removed on the base branch. A renamed change needs Approve again under its new name.',
+    options: [
+      { label: 'Got it', consequence: 'Nothing else changes.' },
+      {
+        label: 'I will approve its new name',
+        consequence: 'Open Changes and click Approve on the renamed change.',
+      },
+    ],
+    recommended: 0,
+    reversible: true,
+    blocking: false,
+  };
+}
+
+export interface ApprovalViewsOptions {
+  store: Store;
+  /** Told of each approval ended because its change is gone from the base branch. */
+  onMissing?: (hostId: string, approval: ApprovalRow) => void;
+}
+
+export function createApprovalViews(options: ApprovalViewsOptions): ApprovalViews {
   const db = options.store;
   /** Whether a merged PR row still covers its change at a tip (`${row}:${tip}`). */
   const covers = new Map<string, boolean>();
@@ -169,29 +208,53 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
   /** The changes at the tip now, with the ones a merged build PR makes built marked. */
   const current = async (
     runtime: ApprovalHost,
-  ): Promise<{ tip: string | null; changes: (ChangeFacts & MergedFact)[] | null }> => {
+  ): Promise<{
+    tip: string | null;
+    changes: (ChangeFacts & MergedFact)[] | null;
+    /** The planning root itself read: a change missing from it is really gone. */
+    whole: boolean;
+  }> => {
     let tip: string | null;
-    let changes: ChangeFacts[] | null;
+    let snapshot: ChangeSnapshot | null;
     if (runtime.view !== undefined) {
       const view = await runtime.view();
       tip = view.tip;
-      changes = view.snapshot?.changes ?? null;
+      snapshot = view.snapshot;
     } else {
       tip = await runtime.tip();
-      changes =
+      snapshot =
         tip === null || runtime.adapter === null
           ? null
-          : (await runtime.adapter.snapshot(runtime.reader, tip)).changes;
+          : await runtime.adapter.snapshot(runtime.reader, tip);
     }
-    if (tip === null || changes === null) return { tip, changes: null };
-    return { tip, changes: withMerged(changes, await mergedAt(runtime, tip, changes)) };
+    if (tip === null || snapshot === null) return { tip, changes: null, whole: false };
+    const { changes } = snapshot;
+    return {
+      tip,
+      changes: withMerged(changes, await mergedAt(runtime, tip, changes)),
+      whole: snapshot.unreadable === null,
+    };
   };
 
-  /** The host's approvals, with those of built changes ended first. */
-  const approvalsAt = (hostId: string, changes: readonly ChangeFacts[] | null) => {
+  /**
+   * The host's approvals, with those of built changes ended first, and those of changes gone from a
+   * whole snapshot (renamed or removed) ended and told.
+   */
+  const approvalsAt = (hostId: string, changes: readonly ChangeFacts[] | null, whole: boolean) => {
     if (changes !== null) {
       for (const change of endedApprovals(listApprovals(db, hostId), changes)) {
         withdrawApproval(db, hostId, change);
+      }
+      if (whole) {
+        const known = new Set(changes.map((change) => change.id));
+        for (const row of listApprovals(db, hostId)) {
+          if (known.has(row.change) || !withdrawApproval(db, hostId, row.change)) continue;
+          try {
+            options.onMissing?.(hostId, row);
+          } catch {
+            // the approval has ended either way; a lost card changes nothing else
+          }
+        }
       }
     }
     return listApprovals(db, hostId);
@@ -199,8 +262,8 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
 
   const boardOf = async (runtime: ApprovalHost): Promise<Board> => {
     const hostId = runtime.host.id;
-    const { tip, changes } = await current(runtime);
-    const approvals = new Map(approvalsAt(hostId, changes).map((row) => [row.change, row]));
+    const { tip, changes, whole } = await current(runtime);
+    const approvals = new Map(approvalsAt(hostId, changes, whole).map((row) => [row.change, row]));
     const entries = new Map<string, BoardEntry>();
     if (changes === null) return { tip, changes, entries };
     const builds = latestBuilds(db, hostId);
