@@ -61,6 +61,19 @@ export interface RunChangeRow {
   baseFetch: BaseFetchNote | null;
   /** Where the delivered build's ticks are; null before delivery or before this was recorded. */
   ticks: TicksPlace | null;
+  /** The commit Counterpoint last pushed to the branch for this row, or null. */
+  headCommit: string | null;
+  /** The change's last failing gate (cleared when the gates pass), for the next session. */
+  gateFailure: StoredGateFailure | null;
+}
+
+/** A failing gate as the next builder session is told about it. */
+export interface StoredGateFailure {
+  gate: string;
+  attempt: number;
+  reason: string;
+  /** The gate's last output lines. */
+  tail: string;
 }
 
 /**
@@ -283,6 +296,8 @@ function toRunChange(row: Record<string, SQLOutputValue>): RunChangeRow {
     testShare: json<StoredTestShare | null>(row.test_share, null),
     baseFetch: json<BaseFetchNote | null>(row.base_fetch, null),
     ticks: ticksPlace(row.ticks),
+    headCommit: str(row.head_commit),
+    gateFailure: json<StoredGateFailure | null>(row.gate_failure, null),
   };
 }
 
@@ -324,6 +339,38 @@ export function latestBuiltRunChange(
   return row === undefined ? undefined : toRunChange(row);
 }
 
+/**
+ * The change's run entry before `beforeId` on the host that got as far as a branch (newest
+ * first): what a new build of the change on the same branch continues from.
+ */
+export function previousRunChange(
+  db: Store,
+  hostId: string,
+  change: string,
+  beforeId: number,
+): RunChangeRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT rc.* FROM run_changes rc JOIN runs r ON r.id = rc.run_id
+       WHERE r.host_id = ? AND rc.change = ? AND rc.id < ? AND rc.branch IS NOT NULL
+       ORDER BY rc.id DESC LIMIT 1`,
+    )
+    .get(hostId, change, beforeId);
+  return row === undefined ? undefined : toRunChange(row);
+}
+
+/** The commit Counterpoint last pushed to the change's branch on the host, or null. */
+export function lastPushedHead(db: Store, hostId: string, change: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT rc.head_commit FROM run_changes rc JOIN runs r ON r.id = rc.run_id
+       WHERE r.host_id = ? AND rc.change = ? AND rc.head_commit IS NOT NULL
+       ORDER BY rc.id DESC LIMIT 1`,
+    )
+    .get(hostId, change);
+  return str(row?.head_commit);
+}
+
 export interface RunChangeUpdate {
   state?: RunChangeState;
   reason?: string | null;
@@ -341,6 +388,8 @@ export interface RunChangeUpdate {
   testShare?: StoredTestShare | null;
   baseFetch?: BaseFetchNote | null;
   ticks?: TicksPlace | null;
+  headCommit?: string | null;
+  gateFailure?: StoredGateFailure | null;
 }
 
 const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
@@ -360,6 +409,8 @@ const UPDATE_COLUMNS: Readonly<Record<keyof RunChangeUpdate, string>> = {
   testShare: 'test_share',
   baseFetch: 'base_fetch',
   ticks: 'ticks',
+  headCommit: 'head_commit',
+  gateFailure: 'gate_failure',
 };
 
 export function updateRunChange(db: Store, id: number, update: RunChangeUpdate): void {

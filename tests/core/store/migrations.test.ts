@@ -1,5 +1,12 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { openStore, STORE_VERSION, type Store, upsertHost } from '../../../src/core/store/db.ts';
+import {
+  getRunChange,
+  insertRunChange,
+  lastPushedHead,
+  previousRunChange,
+  updateRunChange,
+} from '../../../src/core/store/runs.ts';
 import { makeScratchDir, removeScratchDirs } from '../../helpers/scratch.ts';
 
 afterAll(() => {
@@ -124,6 +131,35 @@ describe('store migration 2 (build lane)', () => {
     expect(() =>
       db.prepare("INSERT INTO governor (id, utilization, updated_at) VALUES (2, '{}', 0)").run(),
     ).toThrow(/CHECK/);
+    db.close();
+  });
+});
+
+describe('what a build leaves for the next one (migration 15)', () => {
+  it("keeps each row's pushed head and last failing gate, and finds the change's previous build", () => {
+    const db = freshStore();
+    insertRun(db, 'r1', 'ended');
+    const first = insertRunChange(db, { runId: 'r1', change: 'a-thing', position: 0 });
+    insertRunChange(db, { runId: 'r1', change: 'b-thing', position: 1 });
+    expect(lastPushedHead(db, 'cena', 'a-thing')).toBeNull();
+    const failure = { gate: 'unit', attempt: 2, reason: 'exit code 1', tail: 'FAIL x' };
+    updateRunChange(db, first, {
+      branch: 'cp/a-thing',
+      headCommit: 'a'.repeat(40),
+      gateFailure: failure,
+    });
+    insertRun(db, 'r2');
+    const second = insertRunChange(db, { runId: 'r2', change: 'a-thing', position: 0 });
+    expect(getRunChange(db, first)).toMatchObject({
+      headCommit: 'a'.repeat(40),
+      gateFailure: failure,
+    });
+    expect(getRunChange(db, second)).toMatchObject({ headCommit: null, gateFailure: null });
+    expect(lastPushedHead(db, 'cena', 'a-thing')).toBe('a'.repeat(40));
+    expect(previousRunChange(db, 'cena', 'a-thing', second)?.id).toBe(first);
+    // Only a build that got as far as a branch counts; nothing before the first.
+    expect(previousRunChange(db, 'cena', 'b-thing', second)).toBeUndefined();
+    expect(previousRunChange(db, 'cena', 'a-thing', first)).toBeUndefined();
     db.close();
   });
 });
