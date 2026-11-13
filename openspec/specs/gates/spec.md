@@ -64,8 +64,19 @@ A service program that cannot be started during a run SHALL park the change at o
 - **THEN** the change parks at once with that reason and zero attempts spent
 
 #### Scenario: Migration breaks the reset
-- **WHEN** a service's reset command runs and exits 1 on the change's own migration
+- **WHEN** a service's reset command runs and exits 1 on the change's own migration, and the service's start command still succeeds
 - **THEN** the failure goes back to the builder as a gate failure and counts one attempt
+
+### Requirement: A service that will not start stops the run
+A service whose start command runs and fails or times out SHALL NOT count as a judgment of the change: the gate round SHALL end without spending an attempt, the run SHALL stop, and Needs You SHALL show a card naming the service with its last output lines, whose recommended option resumes the run. When a service's reset fails, Counterpoint SHALL run its start command again; if that fails too, the service SHALL count as not starting.
+
+#### Scenario: Docker is not running
+- **WHEN** `supabase start` exits 1 because Docker is not running
+- **THEN** no attempt is counted, the run stops, and Needs You asks to resume once the supabase service is running, showing its last lines
+
+#### Scenario: Docker stopped mid-run
+- **WHEN** a service's reset fails and its start command then fails too
+- **THEN** the run stops the same way, and no attempt is counted
 
 ### Requirement: Zero-test guard
 A test gate that ran zero tests SHALL fail.

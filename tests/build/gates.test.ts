@@ -270,6 +270,72 @@ describe('host services', () => {
     });
   });
 
+  // gates: A service that will not start stops the run. Docker not running made `supabase start`
+  // fail, and three builder sessions were spent on it before the change parked.
+  it('says the service is down when its start fails', async () => {
+    const worktree = makeScratchDir('cp-svc');
+    const session = createServiceSession({
+      config: SUPABASE_CONFIG,
+      worktree,
+      run: fakeServices([], undefined, 'supabase start'),
+    });
+    const prep = await session.prepare(SUPABASE_CONFIG.gates[0] as never, worktree);
+    expect(prep).toMatchObject({
+      ok: false,
+      service: 'supabase',
+      step: 'start',
+      detail: 'service supabase start exited 1',
+      down: true,
+    });
+  });
+
+  it('judges a failed reset by starting the service again: down only when that fails too', async () => {
+    const worktree = makeScratchDir('cp-svc');
+    const unit = SUPABASE_CONFIG.gates[0] as never;
+    // The service still starts: the reset failed on the change's own migration.
+    const calls: string[] = [];
+    const broken = createServiceSession({
+      config: SUPABASE_CONFIG,
+      worktree,
+      run: fakeServices(calls, undefined, 'supabase db reset'),
+    });
+    const judged = await broken.prepare(unit, worktree);
+    expect(judged).toMatchObject({ ok: false, step: 'reset' });
+    expect(judged).not.toHaveProperty('down');
+    expect(calls.map((call) => call.split(' @')[0])).toEqual([
+      'supabase start',
+      'supabase db reset',
+      'supabase start',
+    ]);
+    // Docker stopped since the start: the start fails as well.
+    let starts = 0;
+    const stopped = createServiceSession({
+      config: SUPABASE_CONFIG,
+      worktree,
+      run: async ({ argv }) => {
+        const command = argv.join(' ');
+        if (command === 'supabase start') starts += 1;
+        const failed =
+          command === 'supabase db reset' || (command === 'supabase start' && starts > 1);
+        return {
+          exitCode: failed ? 1 : 0,
+          timedOut: false,
+          stopped: false,
+          stdout: '',
+          output: failed
+            ? 'Cannot connect to the Docker daemon. Is the docker daemon running?'
+            : '',
+        };
+      },
+    });
+    expect(await stopped.prepare(unit, worktree)).toMatchObject({
+      ok: false,
+      step: 'start',
+      down: true,
+      tail: 'Cannot connect to the Docker daemon. Is the docker daemon running?',
+    });
+  });
+
   it('reports a program that could not be started as not started, apart from a failing one', async () => {
     const worktree = makeScratchDir('cp-svc');
     const config = parseHostConfig({
@@ -666,6 +732,43 @@ describe('gate rounds', () => {
       },
     });
     expect(cleaned).toBe(1);
+  });
+
+  it('stops the run, spending no attempt, when a service will not start', async () => {
+    const r = round(
+      TWO_GATES,
+      {},
+      {
+        acquireTestLock: async () => ({ env: {}, waitedMs: 0, release() {} }),
+        services: {
+          prepare: async () => ({
+            ok: false,
+            service: 'supabase',
+            step: 'start',
+            detail: 'service supabase start exited 1',
+            tail: 'Starting database...\nCannot connect to the Docker daemon. Is it running?',
+            down: true,
+          }),
+          cleanup: () => {},
+        },
+      },
+    );
+    const out = await runGateRound(r.input);
+    expect(r.ran).toEqual([]);
+    expect(out.kind).toBe('service-down');
+    const next = afterGateRound(r.db, r.runChangeId, out, 3);
+    expect(next).toEqual({
+      next: 'stop-run',
+      reason:
+        'The host service "supabase" would not start (service supabase start exited 1), so no ' +
+        'gate could judge the change and no attempt was counted. Start it, then resume the run. ' +
+        'Its last lines: Starting database... | Cannot connect to the Docker daemon. Is it running?',
+    });
+    expect(getRunChange(r.db, r.runChangeId)).toMatchObject({ attempts: 0, state: 'queued' });
+    expect(listGateResults(r.db, r.runChangeId).map((g) => [g.gate, g.reason])).toEqual([
+      ['unit', 'service'],
+      ['lint', null],
+    ]);
   });
 
   it('parks at once, spending no attempt, when a service program cannot be started', async () => {

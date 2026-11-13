@@ -14,7 +14,7 @@ import type {
   startBuilderSession,
 } from '../../src/build/builder-session.ts';
 import { createDeliver } from '../../src/build/deliver.ts';
-import type { GateRound, runGateRound } from '../../src/build/gates.ts';
+import { describeServiceDown, type GateRound, type runGateRound } from '../../src/build/gates.ts';
 import { Governor, type SessionOutcome } from '../../src/build/governor.ts';
 import { DEFAULT_HOST_SETTINGS, writeHostSettings } from '../../src/build/host-settings.ts';
 import {
@@ -619,6 +619,52 @@ describe('a run', () => {
       ['stopped', 0],
     ]);
     expect(runNeedsYou(ctx.db, 'cena')[0]).toMatchObject({ kind: 'run-stopped' });
+  });
+
+  // gates: A service that will not start stops the run. Seen live: Docker was not running, so
+  // `supabase start` failed, and three builder sessions were spent before the change parked.
+  it('stops the run with a resume card, spending no attempt, when a service will not start', async () => {
+    const ctx = await host();
+    const sessions = fakeSessions();
+    let rounds = 0;
+    const { o } = orchestrator(ctx, {
+      startBuilderSession: sessions.start,
+      runGateRound: async () => {
+        rounds += 1;
+        return {
+          kind: 'service-down',
+          entries: [],
+          detail: describeServiceDown({
+            service: 'supabase',
+            detail: 'service supabase start exited 1',
+            tail: 'Cannot connect to the Docker daemon. Is the docker daemon running?',
+          }),
+        };
+      },
+    });
+    const started = await o.start('cena', SETTINGS);
+    if (!started.ok) throw new Error(started.error);
+    await o.idle();
+    expect(sessions.count()).toBe(1);
+    expect(rounds).toBe(1);
+    expect(getRun(ctx.db, started.runId)).toMatchObject({
+      endReason: 'error',
+      endDetail: expect.stringMatching(/^The host service "supabase" would not start/),
+    });
+    expect(listRunChanges(ctx.db, started.runId).map((c) => [c.state, c.attempts])).toEqual([
+      ['stopped', 0],
+      ['stopped', 0],
+    ]);
+    const [card] = runCards(ctx.db, 'cena');
+    expect(card).toMatchObject({
+      kind: 'run-stopped',
+      question: "The supabase service won't start. Resume once it's running?",
+      why: expect.stringContaining('Cannot connect to the Docker daemon'),
+      recommended: 0,
+    });
+    expect(card?.options[0]).toMatchObject({
+      action: { type: 'resume-run', runId: started.runId },
+    });
   });
 
   it('parks on an ask-first question and shows it in Needs You with its options', async () => {

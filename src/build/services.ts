@@ -20,8 +20,14 @@
 // A service program that cannot be run at all (not on PATH, not executable) is the machine's
 // problem, never the change's: the orchestrator checks every program before a change builds
 // (missingServicePrograms), and a program that cannot start mid-run is reported as `notStarted`,
-// which parks the change without giving the failure to the builder. A program that runs and fails
-// (a migration the change broke, for instance) goes back to the builder like any gate failure.
+// which parks the change without giving the failure to the builder.
+//
+// A service that will not come up (its `start` fails or times out: Docker is not running, say) is
+// the machine's problem too: it is reported as `down`, and the run stops for the owner without
+// spending an attempt (gates: A service that will not start stops the run). A `reset` that fails
+// is judged by asking the service to start again: if that fails too the service is down; if it
+// succeeds, the reset failed on the change's own work (a migration it broke), which goes back to
+// the builder like any gate failure.
 import { spawn } from 'node:child_process';
 import {
   accessSync,
@@ -61,6 +67,8 @@ export type ServicePrep =
       tail: string;
       /** True when the step's program could not be started at all: nothing the change did. */
       notStarted?: boolean;
+      /** True when the service will not come up (its start fails): nothing the change did. */
+      down?: boolean;
     };
 
 export interface ServiceCommandResult {
@@ -433,6 +441,13 @@ export function createServiceSession(input: {
     };
   };
 
+  /** A failed start: the service is down, unless the program never ran or the run is stopping. */
+  const down = (
+    failure: Extract<ServicePrep, { ok: false }>,
+    signal: AbortSignal | undefined,
+  ): Extract<ServicePrep, { ok: false }> =>
+    failure.notStarted || signal?.aborted ? failure : { ...failure, down: true };
+
   return {
     async prepare(gate, logDir, signal) {
       const out: Record<string, string> = {};
@@ -449,12 +464,17 @@ export function createServiceSession(input: {
         }
         if (!started.has(name)) {
           const result = await step(name, 'start', service.start, service, logDir, signal);
-          if ('ok' in result) return result;
+          if ('ok' in result) return down(result, signal);
           started.add(name);
         }
         if (service.reset !== undefined) {
           const result = await step(name, 'reset', service.reset, service, logDir, signal);
-          if ('ok' in result) return result;
+          if ('ok' in result) {
+            if (result.notStarted || signal?.aborted) return result;
+            // Down since its start (it stopped), or the change's own work? Ask it to start again.
+            const again = await step(name, 'start', service.start, service, logDir, signal);
+            return 'ok' in again ? down(again, signal) : result;
+          }
         }
         if (service.env !== undefined) {
           const result = await step(name, 'env', service.env.command, service, logDir, signal);

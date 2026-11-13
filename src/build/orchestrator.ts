@@ -1020,6 +1020,8 @@ export class Orchestrator {
         });
         const next = afterGateRound(db, row.id, round, config.attempts);
         if (next.next === 'stopped') return;
+        // A service the gates need will not start: the machine's problem, so the run stops.
+        if (next.next === 'stop-run') throw new RunEnd('error', next.reason);
         if (next.next === 'park') {
           this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'parked' });
           return;

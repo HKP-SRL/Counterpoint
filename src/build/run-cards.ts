@@ -16,6 +16,7 @@ import type { CardOption, NewCard } from '../core/store/cards.ts';
 import type { Store } from '../core/store/db.ts';
 import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
 import type { CardDesk } from '../server/cards.ts';
+import { SERVICE_DOWN_PREFIX } from './gates.ts';
 
 const clip = (text: string, max = 300): string => {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -25,6 +26,7 @@ const clip = (text: string, max = 300): string => {
 /** Why a run stopped, by root cause. */
 export type StopCause =
   | { kind: 'not-logged-in' }
+  | { kind: 'service-down'; service: string }
   | { kind: 'missing-program'; programs: string[] }
   | { kind: 'account'; what: string }
   | { kind: 'config' }
@@ -35,6 +37,11 @@ export type StopCause =
  * when it surfaced as a failed context-window calibration.
  */
 export function stopCause(detail: string): StopCause {
+  // First: its last output lines may say anything (gates.ts describeServiceDown).
+  const service = new RegExp(`^${SERVICE_DOWN_PREFIX} "([^"]{1,100})" would not start`).exec(
+    detail,
+  );
+  if (service !== null) return { kind: 'service-down', service: service[1] as string };
   if (
     /not logged in|please run \/login|not signed in|authentication[_ ]failed|oauth/i.test(detail)
   ) {
@@ -101,6 +108,13 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
         ],
       };
     }
+    case 'service-down':
+      return {
+        ...base,
+        question: `The ${cause.service} service won't start. Resume once it's running?`,
+        why: clip(detail),
+        options: [resume("It's running: resume the run"), LEAVE_STOPPED],
+      };
     case 'account':
       return {
         ...base,
