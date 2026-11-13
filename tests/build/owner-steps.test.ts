@@ -233,6 +233,14 @@ describe('owner steps as cards', () => {
     expect(config.options.map((option) => option.label)).toEqual(['Done', 'Do it for me', 'Later']);
   });
 
+  it('keeps the cards of a change whose only open tasks are owner steps', async () => {
+    const { store, steps } = await setup({ list: LIST.replace('[ ] 1.2', '[x] 1.2') });
+    await steps.sync('cena');
+    const cards = listWaitingCards(store, 'cena');
+    expect(cards.map((card) => card.question).sort()).toEqual(['check the menu', 'tell the cook']);
+    expect(cards.every((card) => !card.why.includes('merged'))).toBe(true);
+  });
+
   it("keeps a built change's open steps as cards naming its merged PR, until it is archived", async () => {
     const { repo, bare, store, steps } = await setup();
     await steps.sync('cena');

@@ -184,7 +184,7 @@ export function ownerStepCards(
   for (const change of changes) {
     if (change.archived) continue;
     const { status } = deriveChangeStatus(change, onRunway.has(change.id) ? 'on-runway' : null);
-    if (status !== 'ready' && status !== 'on-runway' && status !== 'built') continue;
+    if (status === 'unreadable' || status === 'not-planned') continue;
     const merged = status === 'built' ? { prUrl: mergedPrs.get(change.id) ?? null } : null;
     const afterBuild = new Set(status === 'built' ? [] : (change.tasks.ownerStepsAfterBuild ?? []));
     for (const step of ownerSteps(change)) {

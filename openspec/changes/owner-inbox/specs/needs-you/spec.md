@@ -39,11 +39,15 @@ Every item Counterpoint puts in Needs You SHALL offer options the owner can pick
 - **THEN** its card says the sign-in failed and may be an outage, and recommends resuming the run instead of asking the owner to log in
 
 ### Requirement: Options for a parked change
-A parked change SHALL offer to retry with the failure as a note to the builder, to open the change for re-planning, or to leave it parked.
+A parked change SHALL offer to retry with the failure as a note to the builder, to open the change for re-planning, or to leave it parked. Re-plan and Leave it parked SHALL hold the change: no run builds it until the owner retries it from its page. An unanswered question that cannot be undone SHALL hold its change the same way until it is answered.
 
 #### Scenario: Retry a parked change
 - **WHEN** the owner picks "Retry with this note" on a parked change and types a hint
 - **THEN** the change is queued for the next run and its first session receives the hint
+
+#### Scenario: Leave it parked
+- **WHEN** the owner picks "Leave it parked" and later clicks Run
+- **THEN** the run does not build the change, and the change shows On hold with Retry on its page
 
 ### Requirement: Notified when a card blocks work
 When a card that blocks work arrives, Counterpoint SHALL notify the owner on this machine: a macOS notification naming the question, the count in the tab title, and a browser notification when the console is open and the owner has allowed it, whichever project the console shows. Clicking the browser notification SHALL open the card's project. Notifications SHALL carry no secret and no host file content beyond the card's question.

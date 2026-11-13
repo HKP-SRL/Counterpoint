@@ -1,8 +1,10 @@
-// What the host's latest run left for the owner, as question cards (owner-inbox 2.4; needs-you:
+// What the host's runs left for the owner, as question cards (owner-inbox 2.4; needs-you:
 // Every item can be answered; Options for a parked change).
 //
 // - A change parked on a gate or a stuck builder: retry with the failure as a note (recommended),
-//   re-plan it, or leave it parked.
+//   re-plan it, or leave it parked. Re-plan and Leave it parked hold the change: no run builds it
+//   until the owner retries it (from its page). The card belongs to the change's parked build, not
+//   to the latest run: it stays until the change builds again, is retried or leaves the runway.
 // - A change parked on the builder's ask-first questions: one card per question, the builder's
 //   options and recommendation; any answer retries the change with the answer as a note.
 // - A run that stopped on something only the owner can fix: named by its root cause ("not logged
@@ -13,10 +15,19 @@
 //   note is a "Done for you" line, since no answer would change anything.
 //
 // The cards are recomputed from the store: each has a key, so raising it again finds the same card,
-// and a card whose cause is gone (a later run replaced it) resolves itself.
+// and a card whose cause is gone (a later run replaced a stopped run, a parked change built again)
+// resolves itself.
+import { ASKED_PARK, parkedOnAsk } from '../core/runway/lane.ts';
+import { listApprovals } from '../core/store/approvals.ts';
 import { type CardOption, getCardByKey, type NewCard } from '../core/store/cards.ts';
+import { latestBuilds, parkDecisions } from '../core/store/change-lane.ts';
 import type { Store } from '../core/store/db.ts';
-import { type ChangeQuestion, latestRun, listRunChanges } from '../core/store/runs.ts';
+import {
+  type ChangeQuestion,
+  getRunChange,
+  latestRun,
+  listRunChanges,
+} from '../core/store/runs.ts';
 import { HOLD_REASON, holdCard } from '../drafts/hold.ts';
 import type { CardDesk } from '../server/cards.ts';
 import { OUTAGE_PREFIX } from './auth-failures.ts';
@@ -160,14 +171,10 @@ function stoppedCard(hostId: string, runId: string, detail: string): NewCard {
  * parked reason (after "Not built: "). The question's own card is what the owner answers, so no
  * parked card is raised for it; the answer reaches the change's next session.
  */
-export const ASKED_PARK = 'Waits on your answer to ';
+export { ASKED_PARK };
 
 export function askParkWhy(count: number): string {
   return `${ASKED_PARK}${count === 1 ? 'a question' : `${count} questions`} its builder asked in Needs You.`;
-}
-
-function parkedOnAsk(reason: string | null): boolean {
-  return (reason ?? '').replace(/^Not built: /, '').startsWith(ASKED_PARK);
 }
 
 function parkedCard(hostId: string, runId: string, change: string, reason: string): NewCard {
@@ -189,9 +196,15 @@ function parkedCard(hostId: string, runId: string, change: string, reason: strin
       },
       {
         label: 'Re-plan it',
-        consequence: 'It stays parked; open the change and revise its plan.',
+        consequence:
+          'No run builds it until you retry it from its page. Open the change and revise its plan.',
+        action: { type: 'hold-parked', runId, change, why: 'replan' },
       },
-      { label: 'Leave it parked', consequence: 'Nothing happens until you retry it.' },
+      {
+        label: 'Leave it parked',
+        consequence: 'No run builds it until you retry it from its page.',
+        action: { type: 'hold-parked', runId, change, why: 'left-parked' },
+      },
     ],
     recommended: 0,
     reversible: true,
@@ -273,7 +286,10 @@ export function runNoticeLines(db: Store, hostId: string): { key: string; text: 
   );
 }
 
-/** The cards the host's latest run calls for now. */
+/**
+ * The cards the host's runs call for now: the latest run's stop, notes and drafts holds, and each
+ * change whose latest build parked, while it is approved and the owner has not retried it.
+ */
 export function runCards(db: Store, hostId: string): NewCard[] {
   const run = latestRun(db, hostId);
   if (run === undefined) return [];
@@ -285,29 +301,38 @@ export function runCards(db: Store, hostId: string): NewCard[] {
     const card = noticeCard(hostId, run.id, notice, index);
     if (card !== null) cards.push(card);
   });
+  // A change its design drafts held in the latest run (design-drafts D-12): one card per change
+  // and run.
   for (const change of listRunChanges(db, run.id)) {
-    // A change its design drafts held (design-drafts D-12): one card per change and run.
     if (change.state === 'skipped' && (change.reason ?? '').startsWith(HOLD_REASON)) {
       cards.push(holdCard(hostId, run.id, change.change, change.reason ?? ''));
-      continue;
     }
-    if (change.state !== 'parked') continue;
-    const asked = change.questions
-      .map((question, index) => questionCard(hostId, run.id, change.change, question, index))
+  }
+  const approved = new Set(listApprovals(db, hostId).map((row) => row.change));
+  const decisions = parkDecisions(db, hostId);
+  for (const build of latestBuilds(db, hostId).values()) {
+    if (build.state !== 'parked' || !approved.has(build.change)) continue;
+    const decision = decisions.get(build.change);
+    if (decision?.runChangeId === build.runChangeId && decision.state === 'released') continue;
+    const questions = getRunChange(db, build.runChangeId)?.questions ?? [];
+    const asked = questions
+      .map((question, index) => questionCard(hostId, build.runId, build.change, question, index))
       .filter((card): card is NewCard => card !== null);
     if (asked.length > 0) cards.push(...asked);
-    else if (!parkedOnAsk(change.reason)) {
-      cards.push(parkedCard(hostId, run.id, change.change, change.reason ?? 'Parked.'));
+    else if (!parkedOnAsk(build.reason)) {
+      cards.push(parkedCard(hostId, build.runId, build.change, build.reason ?? 'Parked.'));
     }
   }
   return cards;
 }
 
-const RUN_PREFIXES = ['run-stopped:', 'parked:', 'question:', 'notice:', 'drafts-hold:'] as const;
+const RUN_PREFIXES = ['run-stopped:', 'notice:', 'drafts-hold:'] as const;
+const CHANGE_PREFIXES = ['parked:', 'question:'] as const;
 
 /**
- * Raises the cards the latest run calls for and resolves the ones it no longer does (a later run
- * replaced them). Cheap enough to run on every read of Needs You and every run event.
+ * Raises the cards the runs call for and resolves the ones they no longer do (a later run replaced
+ * a stop or a note; a parked change built again, was retried or left the runway). Cheap enough to
+ * run on every read of Needs You and every run event.
  */
 export function syncRunCards(desk: CardDesk, hostId: string): void {
   const cards = runCards(desk.store, hostId);
@@ -330,5 +355,13 @@ export function syncRunCards(desk: CardDesk, hostId: string): void {
   }
   for (const prefix of RUN_PREFIXES) {
     desk.resolveMissing(hostId, prefix, keep, 'A later run replaced it.');
+  }
+  for (const prefix of CHANGE_PREFIXES) {
+    desk.resolveMissing(
+      hostId,
+      prefix,
+      keep,
+      'It is no longer parked: it built again, was retried or left the runway.',
+    );
   }
 }

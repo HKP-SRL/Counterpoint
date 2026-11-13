@@ -7,7 +7,9 @@
 // arrives; a refresh keeps the current rows on screen.
 //
 // Approving is one click (approvals: Approve in one click): `Approve` on a Ready to approve row,
-// `Approve all` in the header, and `Withdraw` on an On runway row.
+// `Approve all` in the header, and `Withdraw` on an On runway row. A change in the build lane shows
+// where it stands instead of its status (runway: Where each runway change stands): Building,
+// Parked, On hold, PR open (with the PR), PR closed, or Waits on a change that is not built.
 //
 // Every string here comes from the host's planning files (agent-written, untrusted) and renders
 // as React text only.
@@ -32,8 +34,13 @@ import { useNavigate } from '@tanstack/react-router';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { apiGet, queryKeys } from '../api';
 import { useApprovalActions } from '../approvals';
-import { type ChangeStatus, isChangeStatus, StatusBadge } from '../components/StatusBadge';
+import {
+  ChangeBadge,
+  type ChangeStatus,
+  isChangeStatus,
+} from '../components/StatusBadge';
 import { isChangeId } from '../ids';
+import { type ChangeStage, parseStage } from '../stage';
 
 // ---------------------------------------------------------------------------------------------
 // API shapes (GET /api/hosts/{id}/changes and /changes/{changeId}); shared with Change detail.
@@ -58,6 +65,12 @@ export type ChangeRow = {
   ownerStepCount: number;
   unreadable: UnreadableFile | null;
   approval: ApprovalFacts | null;
+  /** Where it stands in the build lane, or null. */
+  stage: ChangeStage | null;
+  /** Why it shows Built: archived, every task checked, or its build PR merged. */
+  builtBy: 'archived' | 'tasks' | 'merged' | null;
+  /** Its latest build PR, if it has one. */
+  prUrl: string | null;
   /** The change's design drafts, when started (design-drafts D-12). */
   drafts: { held: boolean; waiting: string[] } | null;
 };
@@ -196,6 +209,15 @@ export function parseChangeRow(value: unknown): ChangeRow | null {
     ownerStepCount: count(value.ownerStepCount),
     unreadable: parseUnreadable(value.unreadable),
     approval: parseApproval(value.approval),
+    stage: parseStage(value.stage),
+    builtBy:
+      value.builtBy === 'archived' || value.builtBy === 'tasks' || value.builtBy === 'merged'
+        ? value.builtBy
+        : null,
+    prUrl:
+      isRecord(value.pr) && typeof value.pr.url === 'string' && value.pr.url.startsWith('https://')
+        ? value.pr.url
+        : null,
     drafts: parseDrafts(value.drafts),
   };
 }
@@ -211,10 +233,14 @@ function parseDrafts(value: unknown): ChangeRow['drafts'] {
 }
 
 /** A change's status, with "Waiting for sign-off" when its design drafts hold it. */
-export function ChangeStatusBadges({ row }: { row: Pick<ChangeRow, 'status' | 'drafts'> }) {
+export function ChangeStatusBadges({
+  row,
+}: {
+  row: Pick<ChangeRow, 'status' | 'stage' | 'drafts'>;
+}) {
   return (
     <HStack gap={2} vAlign="center" wrap="wrap">
-      <StatusBadge status={row.status} />
+      <ChangeBadge status={row.status} stage={row.stage} />
       {row.drafts?.held === true ? <Badge variant="warning" label="Waiting for sign-off" /> : null}
     </HStack>
   );
@@ -401,7 +427,21 @@ export function ChangesPage({ hostId }: { hostId: string }) {
     {
       key: 'status',
       header: 'Status',
-      renderCell: (row) => <ChangeStatusBadges row={row} />,
+      renderCell: (row) =>
+        row.stage?.kind === 'pr-open' || row.stage?.kind === 'pr-closed' ? (
+          // biome-ignore lint/a11y/noStaticElementInteractions: only stops the row's click
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the link inside takes the keyboard
+          <span onClick={(event) => event.stopPropagation()}>
+            <HStack gap={2} vAlign="center" wrap="wrap">
+              <ChangeStatusBadges row={row} />
+              <Link href={row.stage.prUrl} target="_blank" rel="noreferrer">
+                Open the PR
+              </Link>
+            </HStack>
+          </span>
+        ) : (
+          <ChangeStatusBadges row={row} />
+        ),
     },
     {
       key: 'tasks',

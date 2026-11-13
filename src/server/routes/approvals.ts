@@ -2,8 +2,11 @@
 //
 //   POST /api/hosts/:hostId/changes/:changeId/approve    approve a Ready to approve change
 //   POST /api/hosts/:hostId/changes/:changeId/withdraw   take an approved change off the runway
+//   POST /api/hosts/:hostId/changes/:changeId/retry      build a parked or held change again
 //   POST /api/hosts/:hostId/approve-all                  approve every Ready to approve change
-//   GET  /api/hosts/:hostId/runway                       the runway at the base tip, build order
+//   GET  /api/hosts/:hostId/runway                       the runway at the base tip, build order,
+//                                                        each change with its stage and whether
+//                                                        Run builds it (`ready` counts those)
 //
 // Every write is a guarded POST (session cookie, exact Origin, JSON body: mutationGuard and
 // sessionGuard on every /api write, so a cross-site page cannot approve anything). An approval
@@ -54,6 +57,15 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
     return c.json({ approved: true, changed: result.approved });
   });
 
+  app.post('/api/hosts/:hostId/changes/:changeId/retry', async (c) => {
+    const found = target(c);
+    if ('error' in found) return c.json({ error: found.error }, found.status);
+    const retried = await approvals.retry(found.runtime, found.changeId);
+    if (!retried) return c.json({ error: `${found.changeId} is not parked.` }, 409);
+    changed(found.runtime.host.id);
+    return c.json({ retried });
+  });
+
   app.post('/api/hosts/:hostId/changes/:changeId/withdraw', (c) => {
     const found = target(c);
     if ('error' in found) return c.json({ error: found.error }, found.status);
@@ -83,11 +95,15 @@ export function mountApprovalRoutes(app: Hono, options: ApprovalRoutesOptions): 
       tip: runway.tip,
       count: runway.count,
       taskCount: runway.taskCount,
+      ready: runway.ready,
       items: runway.onRunway.map((entry) => ({
         changeId: entry.changeId,
         title: entry.title ?? entry.changeId,
         taskCount: entry.taskCount,
         approvedAt: entry.approvedAt,
+        stage: entry.stage,
+        // False while its drafts wait for sign-off: Run leaves it out (approval views).
+        canBuild: entry.canBuild,
         // Approved work, so it counts, but it waits for sign-off (D-12).
         waitingForSignOff: holds.get(entry.changeId)?.held === true,
       })),
