@@ -6,6 +6,11 @@
 //   repeats once per content block (thinking, text, tool use), so a message counts once.
 // - The model's window is only in a `result` event: `modelUsage[model].contextWindow`. There is
 //   one `result` per turn. No window size is ever assumed here.
+// - A subagent's messages (the Task tool, forks) arrive in the same stream with
+//   `parent_tool_use_id` set to the tool call that started it; the main thread's have it null.
+//   A subagent has its own context, so only the main thread's messages measure the session's fill
+//   (seen live 2026-11-13: a fork peaked at 459k while the main thread peaked at 410k, and the
+//   wrap-up fired on the fork's value). Subagent usage still counts as cost, in the result.
 import type { StreamEvent } from './runner.ts';
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -18,9 +23,18 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-/** The context fill an assistant event reports, with its message id; null for other events. */
+/** True for an event a subagent printed (it names the tool call that started the subagent). */
+export function fromSubagent(event: StreamEvent): boolean {
+  const parent = (event as Record<string, unknown>).parent_tool_use_id;
+  return typeof parent === 'string' && parent !== '';
+}
+
+/**
+ * The context fill a main-thread assistant event reports, with its message id; null for other
+ * events, a subagent's included.
+ */
 export function assistantFill(event: StreamEvent): { id: string; tokens: number } | null {
-  if (event.type !== 'assistant') return null;
+  if (event.type !== 'assistant' || fromSubagent(event)) return null;
   const message = record((event as Record<string, unknown>).message);
   if (message === null || typeof message.id !== 'string') return null;
   const usage = record(message.usage);
@@ -59,7 +73,7 @@ export function initModel(event: StreamEvent): string | null {
   return typeof model === 'string' && model !== '' ? model : null;
 }
 
-/** Follows a session's context fill as events arrive. */
+/** Follows a session's context fill (its main thread's) as events arrive. */
 export class ContextMeter {
   #seen = new Set<string>();
   #latest = 0;

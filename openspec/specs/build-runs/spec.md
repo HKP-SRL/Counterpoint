@@ -64,6 +64,13 @@ Each build SHALL run in fresh `claude -p` sessions. When a session's context pas
 - **WHEN** a session's context passes 40% of the model's window mid-task
 - **THEN** it finishes that task, writes a handoff and stops, Counterpoint commits the work with the handoff, and a new session continues from it
 
+### Requirement: The budget measures the main thread
+A session's context fill SHALL be its main thread's. A subagent the session starts has its own context: its usage SHALL count toward cost, never toward the budget or the fill the console shows.
+
+#### Scenario: A subagent's context is larger
+- **WHEN** a subagent's context passes the budget while the session's main thread is under it
+- **THEN** the session goes on, and the console shows the main thread's fill
+
 ### Requirement: A change is built only when its task list is done
 A change SHALL go to its gates only after a session ends by itself with no task left open except owner steps. When a session ends by itself with build tasks open, Counterpoint SHALL start a fresh session from its handoff. It SHALL instead park the change, without gates or delivery and with the reason in Needs You, when the session names the tasks left as waiting on the owner, when it made no progress, or when the attempt's sessions are used up.
 
@@ -95,11 +102,15 @@ The builder SHALL keep working until no task it can do is left, and SHALL never 
 - **THEN** the builder installs the dependency, starts the database and does the task
 
 ### Requirement: Usage limits pause every lane
-On a usage limit every agent lane SHALL pause until the reported reset time plus 2 minutes and then resume on its own. Transient API errors SHALL back off and retry. Auth, credit and spend-limit errors SHALL stop the run and land in Needs You.
+On a usage limit every agent lane SHALL pause until the reported reset time plus 2 minutes and then resume on its own. Transient API errors SHALL back off and retry. Auth, credit and spend-limit errors SHALL stop the run and land in Needs You. Only claude's own error decides how a session ended: a session that succeeds is never read as a limit or an error because of what its summary says.
 
 #### Scenario: Five-hour limit hit at 02:00
 - **WHEN** a usage limit resets at 03:10
 - **THEN** the run holds and resumes at 03:12 without the owner
+
+#### Scenario: Summary mentions a limit
+- **WHEN** a session succeeds and its summary says it fixed the "spend limit" message
+- **THEN** the run goes on as after any successful session
 
 #### Scenario: Expired login
 - **WHEN** a session fails with an authentication error

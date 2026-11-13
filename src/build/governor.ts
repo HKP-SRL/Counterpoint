@@ -29,6 +29,7 @@ import type {
   KnownStreamEvent,
   StreamEvent,
 } from '../agent/runner.ts';
+import { fromSubagent } from '../agent/usage.ts';
 import type { Store } from '../core/store/db.ts';
 
 /** Two minutes past the reported reset, so the first request after the pause is not refused. */
@@ -207,12 +208,19 @@ export function classifySession(
         errorCode: limits.errorCode,
       };
     }
-    if (event.type === 'assistant') {
+    // A subagent's error is the subagent's: the main thread goes on, and its result says how.
+    if (event.type === 'assistant' && !fromSubagent(event)) {
       const error = (event as KnownStreamEvent).error;
       if (typeof error === 'string') assistantError = error;
     }
     if (event.type === 'result') result = event as KnownStreamEvent;
   }
+  const subtype = typeof result?.subtype === 'string' ? result.subtype : '';
+  // A session that succeeded is ok whatever its summary says: the result text is the model's own
+  // free-form summary, and a builder working on code about limits writes "spend limit" or "usage
+  // limit reached" in it. Limits seen in its stream still pause every lane (Governor.observe).
+  if (result !== null && subtype === 'success' && result.is_error !== true) return { kind: 'ok' };
+  // From here the result, if any, is an error, and its text is claude's error message.
   const text = resultText(result);
 
   if (rejected?.errorCode === 'credits_required') {
@@ -248,8 +256,6 @@ export function classifySession(
       ? { kind: 'ok' }
       : { kind: 'transient', detail: 'The session ended without a result.' };
   }
-  const subtype = typeof result.subtype === 'string' ? result.subtype : '';
-  if (subtype === 'success' && result.is_error !== true) return { kind: 'ok' };
   if (subtype === 'error_during_execution' && options.interrupted === true) return { kind: 'ok' };
   if (
     assistantError === 'unknown' ||

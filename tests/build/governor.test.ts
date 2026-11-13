@@ -93,6 +93,31 @@ describe('classifySession', () => {
     expect(classifySession([result()])).toEqual({ kind: 'ok' });
   });
 
+  // Counterpoint builds itself, and its own code talks about limits: a builder's summary is not
+  // claude's error message.
+  it.each([
+    'Done: the governor now stops the run when a spend limit is reached.',
+    'Fixed the test for "usage limit reached" and "You\'ve hit your session limit".',
+    'Handled the credit balance is too low message.',
+  ])('is ok for a successful session whatever its summary says: %s', (text) => {
+    expect(classifySession([result({ result: text })])).toEqual({ kind: 'ok' });
+    expect(classifySession([assistantError('rate_limit'), result({ result: text })])).toEqual({
+      kind: 'ok',
+    });
+  });
+
+  it("does not read a subagent's error as the session's", () => {
+    const sub: StreamEvent = {
+      type: 'assistant',
+      error: 'authentication_failed',
+      message: { id: 's' },
+      parent_tool_use_id: 'toolu_fork',
+    };
+    expect(
+      classifySession([sub, result({ subtype: 'error_max_turns', is_error: true })]),
+    ).toMatchObject({ kind: 'failed' });
+  });
+
   it('is a usage limit, with the reset, on a rejected window', () => {
     const outcome = classifySession([
       limitEvent({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1_794_398_400 }),

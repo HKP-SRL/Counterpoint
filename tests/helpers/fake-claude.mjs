@@ -7,8 +7,10 @@
 //
 // A user message containing `SLOW` makes the turn wait 30 s (like a long tool call) unless it is
 // interrupted; a message sent during it ends the turn (delivered mid-turn). `CHILD` starts a background `sleep 60` in the same process group and reports its
-// pid. `HANG` ignores SIGTERM for the rest of the process. Every turn reports the
-// `CP_AGENT_RUN` tag it sees, its working folder, its arguments and a few variables.
+// pid. `HANG` ignores SIGTERM for the rest of the process. `SUBAGENT` interleaves a subagent's
+// messages (`parent_tool_use_id` set, 3000 tokens of its own context) with the main thread's.
+// Every turn reports the `CP_AGENT_RUN` tag it sees, its working folder, its arguments and a few
+// variables.
 import { spawn } from 'node:child_process';
 
 let turn = 0;
@@ -49,10 +51,23 @@ function startTurn(text) {
     cache_read_input_tokens: 1000 * turn,
     cache_creation_input_tokens: 5,
   };
-  out({ type: 'assistant', message: { id, usage, content: [{ type: 'thinking' }] } });
+  out({
+    type: 'assistant',
+    message: { id, usage, content: [{ type: 'thinking' }] },
+    parent_tool_use_id: null,
+  });
+  if (text.includes('SUBAGENT')) {
+    const sub = { input_tokens: 0, cache_read_input_tokens: 2990, cache_creation_input_tokens: 10 };
+    out({
+      type: 'assistant',
+      message: { id: `${id}_sub`, usage: sub, content: [{ type: 'text', text: 'fork' }] },
+      parent_tool_use_id: 'toolu_fork',
+    });
+  }
   out({
     type: 'assistant',
     message: { id, usage, content: [{ type: 'text', text: text.slice(0, 40) }] },
+    parent_tool_use_id: null,
   });
   if (text.includes('HANG')) process.on('SIGTERM', () => {});
   if (text.includes('CHILD')) {
