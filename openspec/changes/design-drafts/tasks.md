@@ -42,9 +42,9 @@
 
 ## 7. Counterpoint on itself
 
-- [ ] 7.1 Owner: add the `drafts` section to Counterpoint's `.counterpoint/config.yaml`, pointing at `scripts/render-draft.ts` and `docs/drafts.md` (Do it for me works). Verify: Counterpoint's Drafts page offers hi-fi.
-- [ ] 7.2 Owner: land Counterpoint's `.counterpoint/design-rules.md` (Do it for me drafts it from the sketch findings). Verify: a builder prompt for Counterpoint shows the rules.
-- [ ] 7.3 Owner: draft `quiet-console`'s home screen end to end (low-fi rounds, Lock, hi-fi comments, full-screen, Sign off). Note anything that was not easy. Verify: the signed-off pages are in `quiet-console`'s `drafts/` folder on `main`, and the notes become cards or backlog items.
+- [ ] 7.1 Owner: after design-drafts is merged, Counterpoint has restarted into the new install, and you have run `pnpm install` in your checkout, add the `drafts` section to Counterpoint's `.counterpoint/config.yaml`, pointing at `scripts/render-draft.ts` and `docs/drafts.md` (by hand or with Do it for me). Not earlier: a Counterpoint that does not know `drafts` stops every run on the config. Verify: Counterpoint's Drafts page offers hi-fi.
+- [ ] 7.2 Owner: after design-drafts is merged and Counterpoint has restarted into the new install, land Counterpoint's `.counterpoint/design-rules.md`, drafted from the sketch findings (by hand or with Do it for me). Verify: a builder prompt for Counterpoint shows the rules.
+- [ ] 7.3 Owner: draft quiet-console's Home screen through its task 1.1, the first real use, and note anything that was not easy. Verify: quiet-console's 1.1 is ticked, and the notes became cards or backlog items.
 
 ## Workflow follow-up
 
