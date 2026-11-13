@@ -56,6 +56,7 @@ import {
   readHostConfig,
 } from '../core/host/host-config.ts';
 import { isChangeId } from '../core/ids.ts';
+import { canPick, stageText } from '../core/runway/lane.ts';
 import type { ApprovalState, Runway } from '../core/runway/runway.ts';
 import {
   listRunChangeAskCards,
@@ -425,10 +426,15 @@ export class Orchestrator {
     // The base as it is on the remote now: the runway, the build order and the config check read
     // it. A failed fetch leaves the base as last fetched.
     await this.#fetchBase(runtime, undefined, new AbortController().signal);
+    // Run builds what can build now; a change the owner picks may also be parked (a retry), have
+    // an open PR (a rebuild) or wait on a dependency (it is skipped, with why). A held change
+    // never builds: it waits for the owner's Retry.
     const runway = await this.#o.approvals.runway(runtime);
-    const onRunway = new Set(runway.onRunway.map((entry) => entry.changeId));
-    const chosen = request.changes ?? [...onRunway];
-    const off = chosen.filter((change) => !onRunway.has(change));
+    const entries = new Map(runway.onRunway.map((entry) => [entry.changeId, entry]));
+    const chosen =
+      request.changes ??
+      runway.onRunway.filter((entry) => entry.canBuild).map((entry) => entry.changeId);
+    const off = chosen.filter((change) => !entries.has(change));
     if (off.length > 0) {
       return {
         ok: false,
@@ -436,7 +442,30 @@ export class Orchestrator {
         error: `Not on the runway now: ${off.join(', ')}. Only approved changes can build.`,
       };
     }
-    if (chosen.length === 0) return { ok: false, status: 409, error: 'The runway is empty.' };
+    const held = chosen.flatMap((change) => {
+      const stage = entries.get(change)?.stage ?? null;
+      return stage === null || canPick(stage) ? [] : [`${change} (${stageText(stage)})`];
+    });
+    if (held.length > 0) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Not built now: ${held.join(', ')}. Retry a held change from Needs You or its page first.`,
+      };
+    }
+    if (chosen.length === 0) {
+      if (runway.onRunway.length === 0)
+        return { ok: false, status: 409, error: 'The runway is empty.' };
+      const why = runway.onRunway.map(
+        (entry) =>
+          `${entry.changeId} (${entry.stage === null ? 'on the runway' : stageText(entry.stage)})`,
+      );
+      return {
+        ok: false,
+        status: 409,
+        error: `Nothing on the runway can build now: ${why.join(', ')}.`,
+      };
+    }
     const order = await this.#buildOrder(runtime, chosen);
 
     const runId = newRunId(now);
@@ -820,10 +849,18 @@ export class Orchestrator {
     return join(hostDir(this.#o.home, active.hostId), 'runs', active.id);
   }
 
-  /** Null while the change is on the runway; otherwise why it is not (in a sentence). */
+  /**
+   * Null while the change is on the runway and every change it depends on is built; otherwise why
+   * not (in a sentence). A change waiting on a dependency is skipped with WAITS_ON, so its own
+   * dependents wait too.
+   */
   async #offRunway(runtime: RunHost, change: string): Promise<string | null> {
     const state = await this.#o.approvals.state(runtime, change);
-    if (state.state === 'on-runway') return null;
+    if (state.state === 'on-runway') {
+      const waits = state.waitsOn ?? [];
+      if (waits.length === 0) return null;
+      return `${WAITS_ON}${waits.join(', ')}, which ${waits.length === 1 ? 'is' : 'are'} not built yet (merged, or every task checked).`;
+    }
     switch (state.reason) {
       case 'not-approved':
         return 'Its approval was withdrawn.';

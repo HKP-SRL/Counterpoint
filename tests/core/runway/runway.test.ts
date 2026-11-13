@@ -212,6 +212,7 @@ describe('the derivation', () => {
       tip: null,
       count: 0,
       taskCount: 0,
+      ready: 0,
       onRunway: [],
     });
     expect(endedApprovals([row], [facts({ archived: true })])).toEqual(['a-thing']);

@@ -350,6 +350,20 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE run_changes ADD COLUMN ticks TEXT CHECK (ticks IN ('pr', 'after-merge', 'base'));
   `,
+  // The owner's decision on a change's parked build (change-lane.ts): `held` (Leave it parked,
+  // Re-plan it) keeps every run from building it; `released` (Retry) lets the next run build it.
+  // It applies only while that parked run change row is the change's latest.
+  `
+  CREATE TABLE change_holds (
+    host_id TEXT NOT NULL REFERENCES hosts(id),
+    change TEXT NOT NULL,
+    run_change_id INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('held', 'released')),
+    reason TEXT NOT NULL CHECK (reason IN ('left-parked', 'replan', 'retry')),
+    at INTEGER NOT NULL,
+    PRIMARY KEY (host_id, change)
+  ) STRICT;
+  `,
 ];
 
 /** Path of the state database under a home. */

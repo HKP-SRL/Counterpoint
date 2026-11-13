@@ -76,7 +76,7 @@ const tasks = '# Tasks\n\n- [ ] 1.1 Do it\n- [ ] 1.2 Test it\n';
 async function host(extra: Record<string, string> = {}, approved = ['a-thing', 'b-thing']) {
   const repo = await materializeOpenSpecHost({
     'openspec/config.yaml': 'schema: spec-driven\n',
-    'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\nx-depends-on: [a-thing]\n',
+    'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\n',
     'openspec/changes/b-thing/proposal.md': proposal('B thing'),
     'openspec/changes/b-thing/tasks.md': tasks,
     'openspec/changes/a-thing/.openspec.yaml': 'schema: spec-driven\n',
@@ -726,7 +726,9 @@ describe('a run', () => {
   });
 
   it('goes on after a park: builds the two others and skips the one that depends on it', async () => {
-    const extra: Record<string, string> = {};
+    const extra: Record<string, string> = {
+      'openspec/changes/b-thing/.openspec.yaml': 'schema: spec-driven\nx-depends-on: [a-thing]\n',
+    };
     for (const id of ['c-thing', 'd-thing']) {
       extra[`openspec/changes/${id}/.openspec.yaml`] = 'schema: spec-driven\n';
       extra[`openspec/changes/${id}/proposal.md`] = proposal(id);
@@ -743,7 +745,11 @@ describe('a run', () => {
       startBuilderSession: sessions.start,
       runGateRound: gates([]).round,
     });
-    const started = await o.start('cena', SETTINGS);
+    // b-thing waits on a-thing: Run leaves it out; the owner picks it anyway.
+    const started = await o.start('cena', {
+      ...SETTINGS,
+      changes: ['a-thing', 'b-thing', 'c-thing', 'd-thing'],
+    });
     if (!started.ok) throw new Error(started.error);
     await o.idle();
     const states = Object.fromEntries(
@@ -752,7 +758,7 @@ describe('a run', () => {
     expect(states['a-thing']?.[0]).toBe('parked');
     expect(states['b-thing']).toEqual([
       'skipped',
-      'Waits on a-thing, which did not get built in this run.',
+      'Waits on a-thing, which is not built yet (merged, or every task checked).',
     ]);
     expect(states['c-thing']?.[0]).toBe('green');
     expect(states['d-thing']?.[0]).toBe('green');
@@ -776,7 +782,7 @@ describe('a run', () => {
     await o.idle();
     expect(listRunChanges(ctx.db, started.runId).map((c) => [c.change, c.state])).toEqual([
       ['a-thing', 'parked'],
-      ['b-thing', 'skipped'],
+      ['b-thing', 'green'],
     ]);
     expect(listRunChanges(ctx.db, started.runId)[0]?.reason).toMatch(/disk full/);
     expect(getRun(ctx.db, started.runId)).toMatchObject({ endReason: 'finished' });
@@ -1208,14 +1214,20 @@ describe('a merged build PR', () => {
     expect(await tick()).toEqual([]);
     expect(asked).toEqual(['https://github.com/x/y/pull/2']);
 
-    // A run of the merged change is refused; a run of the whole runway builds only the other.
+    // A run of the merged change is refused. Run leaves out b-thing too: its PR is open, so a
+    // one-click rebuild never replaces a green PR. The owner can still pick it.
     const second = orchestrator(ctx, {
       startBuilderSession: fakeSessions().start,
       runGateRound: gates([]).round,
     });
     const refused = await second.o.start('cena', { ...SETTINGS, changes: ['a-thing'] });
     expect(refused).toMatchObject({ ok: false });
-    const again = await second.o.start('cena', SETTINGS);
+    expect(await second.o.start('cena', SETTINGS)).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Nothing on the runway can build now: b-thing (its PR is open).',
+    });
+    const again = await second.o.start('cena', { ...SETTINGS, changes: ['b-thing'] });
     if (!again.ok) throw new Error(again.error);
     await second.o.idle();
     expect(listRunChanges(ctx.db, again.runId).map((c) => [c.change, c.state])).toEqual([
