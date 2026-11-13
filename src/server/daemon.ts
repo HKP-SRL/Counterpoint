@@ -498,6 +498,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     log('recovery-failed', { message: error.message });
     return null;
   });
+  // Previews are not in the store: end what a crashed daemon left running, by the home's tag.
+  const sweptPreviews = await previews.sweepLeftovers();
+  if (sweptPreviews.found.length > 0 || sweptPreviews.error !== null) {
+    log('previews-swept', { ended: sweptPreviews.found.length, error: sweptPreviews.error });
+  }
   // A Do it for me session the last daemon was running is gone: its step card comes back.
   await steps.recover().catch((error: Error) => {
     log('owner-steps-recovery-failed', { message: error.message });

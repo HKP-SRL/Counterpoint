@@ -114,9 +114,8 @@ export function PreviewPage({ hostId, changeId }: { hostId: string; changeId: st
           <Controls hostId={hostId} changeId={changeId} preview={preview} />
         </Card>
         <Text type="supporting" color="secondary">
-          The preview runs the change's code from its worktree, sandboxed like a gate: it writes
-          only its own folder, reads nothing protected and reaches only the ports the host config
-          lists. It keeps running until you stop it or Counterpoint stops.
+          The preview runs the change's code from its worktree as you, like a gate, on a local port.
+          It keeps running until you stop it or Counterpoint stops.
         </Text>
         {preview.tail.trim() !== '' ? (
           <VStack gap={2}>
