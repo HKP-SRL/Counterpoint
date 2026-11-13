@@ -4,6 +4,7 @@
 // this module hands them.
 import { createOpenSpecAdapter } from './adapters/openspec/index.ts';
 import type { FrameworkAdapter } from './core/framework/port.ts';
+import { resolveBase } from './core/git/base-ref.ts';
 import { createGitFileReader } from './core/git/reader.ts';
 
 /** The framework id stored on a host whose base tip no composed adapter recognises. */
@@ -21,14 +22,14 @@ export function adapterFor(host: { adapter: string }): FrameworkAdapter | null {
 
 /**
  * Returns the framework adapter id for a repository at its base branch: the id of the first
- * composed adapter whose `detect` recognises the committed tip of `refs/heads/{baseBranch}`, else
- * `none`. Only committed content counts (host-planning: Host detection): an uncommitted or
+ * composed adapter whose `detect` recognises the committed tip of the base branch (as the base-ref
+ * resolver reads it: the remote base as last fetched, else the local branch), else `none`. Only committed content counts (host-planning: Host detection): an uncommitted or
  * other-branch planning config does not.
  * Hosts registered earlier pick up their framework the next time they register (upsert).
  */
 export async function detectFramework(root: string, baseBranch: string): Promise<string> {
   const reader = createGitFileReader(root);
-  const tip = await reader.resolve(`refs/heads/${baseBranch}`);
+  const { tip } = await resolveBase(root, baseBranch);
   if (tip === null) return NO_FRAMEWORK;
   for (const adapter of FRAMEWORK_ADAPTERS) {
     if (await adapter.detect(reader, tip)) return adapter.id;

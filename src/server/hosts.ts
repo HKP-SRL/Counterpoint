@@ -1,6 +1,7 @@
 // Per-host runtimes: for each registered host, the committed-content reader, the framework
 // adapter (reached only through the composition root, never by naming an adapter here), the base
-// tip and a snapshot cached by tip.
+// tip and a snapshot cached by tip. The base is read through the base-ref resolver: the base
+// branch as last fetched from the remote, or the local branch of a host with no remote.
 //
 // Partial reads (a change that breaks mid-edit): when a change that read fine at the previous tip
 // is unreadable at a new tip, the previous good facts for that change stay on screen and the tip is
@@ -13,6 +14,7 @@ import type {
   FrameworkAdapter,
   GitFileReader,
 } from '../core/framework/port.ts';
+import { createBaseResolver, type ResolvedBase } from '../core/git/base-ref.ts';
 import { createGitFileReader } from '../core/git/reader.ts';
 import { getHost, type HostRow, listHosts, type Store } from '../core/store/db.ts';
 
@@ -22,6 +24,8 @@ export const DEFAULT_DEBOUNCE_MS = 1_000;
 export interface HostView {
   /** The base branch tip, or null when the branch no longer resolves. */
   tip: string | null;
+  /** Which ref the tip was read from (`origin/master`, or the local branch when local only). */
+  base: Omit<ResolvedBase, 'tip'>;
   /** The snapshot at `tip`; null when there is no tip or the host has no composed framework. */
   snapshot: ChangeSnapshot | null;
   /** True while a newly unreadable change is shown from its last good parse, awaiting the retry. */
@@ -32,7 +36,7 @@ export interface HostRuntime {
   readonly host: HostRow;
   readonly reader: GitFileReader;
   readonly adapter: FrameworkAdapter | null;
-  /** The commit `refs/heads/{base}` points at now. */
+  /** The base commit now, as the resolver reads it (the remote base as last fetched). */
   tip(): Promise<string | null>;
   /** The tip of the snapshot last served to the console, or null before the first one. */
   servedTip(): string | null;
@@ -88,7 +92,7 @@ function createRuntime(
 ): HostRuntime {
   const reader = createGitFileReader(host.root);
   const adapter = adapterFor(host);
-  const ref = `refs/heads/${host.baseBranch}`;
+  const base = createBaseResolver(host.root, host.baseBranch);
   let cache: CacheEntry | null = null;
   /** The last snapshot whose changes are all as the adapter reported them. */
   let lastActual: ChangeSnapshot | null = null;
@@ -101,7 +105,7 @@ function createRuntime(
       void (async () => {
         let settledTip: string | null = null;
         try {
-          settledTip = await reader.resolve(ref);
+          settledTip = await base.tip();
           if (settledTip !== null && adapter !== null) {
             const actual = await adapter.snapshot(reader, settledTip);
             // The retry's result is final, readable or not.
@@ -142,13 +146,15 @@ function createRuntime(
     host,
     reader,
     adapter,
-    tip: () => reader.resolve(ref),
+    tip: () => base.tip(),
     servedTip: () => cache?.tip ?? null,
     async view() {
-      const tip = await reader.resolve(ref);
-      if (tip === null || adapter === null) return { tip, snapshot: null, retryPending: false };
+      const { tip, ...from } = await base.resolve();
+      if (tip === null || adapter === null) {
+        return { tip, base: from, snapshot: null, retryPending: false };
+      }
       if (cache !== null && cache.tip === tip) {
-        return { tip, snapshot: cache.served, retryPending: cache.retryPending };
+        return { tip, base: from, snapshot: cache.served, retryPending: cache.retryPending };
       }
       let pending = inflight.get(tip);
       if (pending === undefined) {
@@ -158,7 +164,7 @@ function createRuntime(
       const entry = await pending;
       // A newer tip may have been cached meanwhile; only move forward to this one if not.
       if (cache === null || cache.tip !== tip) cache = entry;
-      return { tip, snapshot: cache.served, retryPending: cache.retryPending };
+      return { tip, base: from, snapshot: cache.served, retryPending: cache.retryPending };
     },
   };
   return runtime;

@@ -17,7 +17,7 @@ import {
   endedApprovals,
   type Runway,
 } from '../core/runway/runway.ts';
-import { deriveChangeStatus } from '../core/runway/status.ts';
+import { deriveChangeStatus, withMerged } from '../core/runway/status.ts';
 import {
   approveChange,
   getApproval,
@@ -25,6 +25,7 @@ import {
   withdrawApproval,
 } from '../core/store/approvals.ts';
 import type { Store } from '../core/store/db.ts';
+import { mergedChanges } from '../core/store/runs.ts';
 import type { HostView } from './hosts.ts';
 
 /** What the views need of a host: its runtime (the console's) or the orchestrator's view of it. */
@@ -32,6 +33,8 @@ export interface ApprovalHost {
   host: { id: string; baseBranch: string };
   reader: GitFileReader;
   adapter: FrameworkAdapter | null;
+  /** The base commit now, through the base-ref resolver. */
+  tip(): Promise<string | null>;
   /** The host runtime's cached view at the tip, when there is one. */
   view?: () => Promise<HostView>;
 }
@@ -53,18 +56,24 @@ export interface ApprovalViews {
   approveAll(runtime: ApprovalHost): Promise<string[]>;
   /** Takes a change off the runway. False when it was not approved. */
   withdraw(runtime: ApprovalHost, changeId: string): boolean;
+  /** The changes whose latest build PR merged: built, whatever their task list says. */
+  merged(hostId: string): ReadonlySet<string>;
 }
 
+/** The changes at the tip now, with the ones whose build PR merged marked. */
 async function current(
   runtime: ApprovalHost,
+  merged: ReadonlySet<string>,
 ): Promise<{ tip: string | null; changes: ChangeFacts[] | null }> {
   if (runtime.view !== undefined) {
     const view = await runtime.view();
-    return { tip: view.tip, changes: view.snapshot?.changes ?? null };
+    const changes = view.snapshot?.changes ?? null;
+    return { tip: view.tip, changes: changes === null ? null : withMerged(changes, merged) };
   }
-  const tip = await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`);
+  const tip = await runtime.tip();
   if (tip === null || runtime.adapter === null) return { tip, changes: null };
-  return { tip, changes: (await runtime.adapter.snapshot(runtime.reader, tip)).changes };
+  const { changes } = await runtime.adapter.snapshot(runtime.reader, tip);
+  return { tip, changes: withMerged(changes, merged) };
 }
 
 export function createApprovalViews(options: { store: Store }): ApprovalViews {
@@ -90,7 +99,7 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
 
   const views: ApprovalViews = {
     async states(runtime) {
-      const { changes } = await current(runtime);
+      const { changes } = await current(runtime, mergedChanges(db, runtime.host.id));
       const approvals = new Map(
         approvalsAt(runtime.host.id, changes).map((row) => [row.change, row]),
       );
@@ -103,7 +112,7 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
     },
 
     async state(runtime, changeId) {
-      const { changes } = await current(runtime);
+      const { changes } = await current(runtime, mergedChanges(db, runtime.host.id));
       const approvals = approvalsAt(runtime.host.id, changes);
       const change = changes === null ? null : findChange(changes, changeId);
       return approvalStateOf(
@@ -113,12 +122,12 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
     },
 
     async runway(runtime) {
-      const { tip, changes } = await current(runtime);
+      const { tip, changes } = await current(runtime, mergedChanges(db, runtime.host.id));
       return computeRunway(approvalsAt(runtime.host.id, changes), changes, tip);
     },
 
     async approve(runtime, changeId) {
-      const { tip, changes } = await current(runtime);
+      const { tip, changes } = await current(runtime, mergedChanges(db, runtime.host.id));
       const change = changes === null ? undefined : findChange(changes, changeId);
       if (change === undefined || change === null) {
         return { ok: false, status: 404, error: `There is no change ${changeId}.` };
@@ -146,7 +155,7 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
     },
 
     async approveAll(runtime) {
-      const { tip, changes } = await current(runtime);
+      const { tip, changes } = await current(runtime, mergedChanges(db, runtime.host.id));
       const approved: string[] = [];
       for (const change of changes ?? []) {
         if (change.archived || readyNow(change, runtime.host.id) !== null) continue;
@@ -159,6 +168,10 @@ export function createApprovalViews(options: { store: Store }): ApprovalViews {
 
     withdraw(runtime, changeId) {
       return withdrawApproval(db, runtime.host.id, changeId);
+    },
+
+    merged(hostId) {
+      return mergedChanges(db, hostId);
     },
   };
   return views;

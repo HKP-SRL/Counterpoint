@@ -21,6 +21,8 @@ export interface CarryOverHost {
   baseBranch: string;
   reader: GitFileReader;
   adapter: FrameworkAdapter | null;
+  /** The base commit now, through the base-ref resolver. */
+  tip(): Promise<string | null>;
 }
 
 /** Carries one host's approval files over; returns the changes recorded as approved. */
@@ -29,7 +31,7 @@ export async function carryOverHost(
   host: CarryOverHost,
   now: number = Date.now(),
 ): Promise<string[]> {
-  const tip = await host.reader.resolve(`refs/heads/${host.baseBranch}`);
+  const tip = await host.tip();
   const approved: string[] = [];
   if (tip !== null && host.adapter !== null) {
     const names = (await host.reader.list(tip, LEGACY_APPROVALS_DIR))

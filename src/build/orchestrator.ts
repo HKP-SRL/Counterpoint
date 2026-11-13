@@ -3,9 +3,13 @@
 //
 // One run at a time per machine, one change at a time within it. A run is a queue of runway
 // changes in the adapter's build order (dependencies first). For each change:
-// 1. its approval must verify now, on the runway (only runway changes build); its signed base
-//    commit is where the branch starts and where the host config is read; every service program
-//    its gates need must be runnable, or the run stops before any session (the machine's problem);
+// 1. the base branch is fetched from the remote (at the run's start too: the build order and the
+//    config check read it); a failed fetch is retried once after 5 seconds, then the base as last
+//    fetched is used and the change's run row says so (host-planning: A failed fetch never stops
+//    work). Its approval must verify now, on the runway (only runway changes build); the base
+//    commit now is where the branch starts and where the host config is read; every service
+//    program its gates need must be runnable, or the run stops before any session (the machine's
+//    problem);
 // 2. its worktree is prepared (`cp/<change>` from the base commit, outside the repository, locked,
 //    with the config's `worktree.clone` folders);
 // 3. builder sessions run until no build task is left open; each is committed by Counterpoint
@@ -41,6 +45,7 @@ import type { AgentRunner, StreamEvent } from '../agent/runner.ts';
 import { ContextMeter } from '../agent/usage.ts';
 import type { ChangeFacts } from '../core/framework/port.ts';
 import { findChange } from '../core/framework/port.ts';
+import type { BaseFetcher, BaseFetchState } from '../core/git/base-fetch.ts';
 import { runGit } from '../core/git/run.ts';
 import { hostDir } from '../core/host/home.ts';
 import {
@@ -56,6 +61,7 @@ import {
   activeRun,
   addRunChangeFlags,
   addRunNotice,
+  type BaseFetchNote,
   builderSessionCount,
   endRun,
   getRun,
@@ -108,6 +114,8 @@ import { prepareWorktree, releaseWorktree, WorktreeRefusal } from './worktrees.t
 
 /** The longest one builder session may run. */
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+/** How long a run waits before trying a failed base fetch again (D-4). */
+export const FETCH_RETRY_MS = 5_000;
 /** The least time between two context-fill events of one session. */
 const FILL_EVENT_MS = 20_000;
 /** How far ahead a stop time may be. */
@@ -202,6 +210,8 @@ export interface RunHost {
   host: HostContext;
   reader: import('../core/framework/port.ts').GitFileReader;
   adapter: import('../core/framework/port.ts').FrameworkAdapter | null;
+  /** The base commit now, through the base-ref resolver (the remote base as last fetched). */
+  tip(): Promise<string | null>;
 }
 
 export interface DeliverContext {
@@ -238,6 +248,8 @@ export interface OrchestratorOptions {
   runnerFactory: (env: Readonly<Record<string, string>>) => AgentRunner;
   /** Reads the owner's environment at run start (default: their login shell, D-2). */
   ownerEnv?: () => Promise<OwnerEnv>;
+  /** Fetches each host's base branch from its remote (the daemon's). Without one, none is fetched. */
+  fetcher?: Pick<BaseFetcher, 'fetch' | 'setOwnerEnv'>;
   consolePort: number;
   /** Tells open consoles something about the run changed (ids only). */
   publish: (hostId: string, payload: Record<string, unknown>) => void;
@@ -398,6 +410,9 @@ export class Orchestrator {
       return { ok: false, status: 409, error: 'A run is already going. Stop it first.' };
     }
 
+    // The base as it is on the remote now: the runway, the build order and the config check read
+    // it. A failed fetch leaves the base as last fetched.
+    await this.#fetchBase(runtime, undefined, new AbortController().signal);
     const runway = await this.#o.approvals.runway(runtime);
     const onRunway = new Set(runway.onRunway.map((entry) => entry.changeId));
     const chosen = request.changes ?? [...onRunway];
@@ -594,6 +609,7 @@ export class Orchestrator {
       // The owner's environment, read now: a tool installed since the daemon started is found.
       const owner = await (this.#o.ownerEnv ?? readOwnerEnv)();
       active.env = owner.env;
+      if (owner.fallback === null) this.#o.fetcher?.setOwnerEnv(owner.env);
       if (owner.fallback !== null) {
         addRunNotice(db, active.id, owner.fallback);
         this.#publish(active.hostId, { runId: active.id, notice: true });
@@ -691,10 +707,30 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Fetches the host's base branch (D-3, D-4): once more after 5 seconds if it fails. Never
+   * throws; null without a fetcher.
+   */
+  async #fetchBase(
+    runtime: RunHost,
+    env: Readonly<Record<string, string>> | undefined,
+    signal: AbortSignal,
+  ): Promise<BaseFetchState | null> {
+    const fetcher = this.#o.fetcher;
+    if (fetcher === undefined) return null;
+    let state = await fetcher.fetch(runtime.host, env);
+    if (state.error !== null && !signal.aborted) {
+      this.#o.log?.('base-fetch-retry', { hostId: runtime.host.id, message: state.error });
+      await this.#sleep(FETCH_RETRY_MS, signal);
+      if (!signal.aborted) state = await fetcher.fetch(runtime.host, env);
+    }
+    return state;
+  }
+
   /** The adapter's build order (dependencies first) for the chosen changes. */
   async #buildOrder(runtime: RunHost, chosen: readonly string[]): Promise<string[]> {
     const adapter = runtime.adapter;
-    const tip = await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`);
+    const tip = await runtime.tip();
     if (adapter === null || tip === null) return [...chosen];
     const snapshot = await adapter.snapshot(runtime.reader, tip);
     const index = new Map(snapshot.changes.map((change, i) => [change.id, i]));
@@ -793,7 +829,7 @@ export class Orchestrator {
    * runnable from the run's environment; otherwise the run ends before any session.
    */
   async #checkConfig(active: ActiveRun, runtime: RunHost): Promise<void> {
-    const tip = await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`);
+    const tip = await runtime.tip();
     if (tip === null) {
       throw new RunEnd('error', `The base branch ${runtime.host.baseBranch} cannot be read.`);
     }
@@ -836,17 +872,28 @@ export class Orchestrator {
     this.#activity(active, { change: row.change, phase: 'preparing' });
     this.#o.beforeBuild?.(active.hostId, row.change);
 
-    // 1. The approval, now: only a change on the runway builds.
+    // 1. The base as it is on the remote now (D-3), unless a change resumed after a crash already
+    // has the commit its build started from. A failed fetch builds from the base as last fetched
+    // and the row says so (D-4).
+    let baseFetch: BaseFetchNote | null = null;
+    if (row.baseCommit === null) {
+      const fetched = await this.#fetchBase(runtime, active.env, active.stop.signal);
+      if (fetched !== null && fetched.remote !== null) {
+        baseFetch = { base: fetched.label, fetchedAt: fetched.fetchedAt, error: fetched.error };
+      }
+      if (active.stop.signal.aborted) return;
+    }
+
+    // The approval, now: only a change on the runway builds.
     const off = await this.#offRunway(runtime, row.change);
     if (off !== null) {
       updateRunChange(db, row.id, { state: 'skipped', reason: off, endedAt: this.#now() });
       this.#publish(active.hostId, { runId: active.id, change: row.change, state: 'skipped' });
       return;
     }
-    // The build starts from the base-branch tip now (D-5); a change resumed after a crash keeps
-    // the commit its build started from.
-    const baseCommit =
-      row.baseCommit ?? (await runtime.reader.resolve(`refs/heads/${runtime.host.baseBranch}`));
+    // The build starts from the base as just fetched; a change resumed after a crash keeps the
+    // commit its build started from.
+    const baseCommit = row.baseCommit ?? (await runtime.tip());
     if (baseCommit === null) {
       throw new RunEnd('error', `The base branch ${runtime.host.baseBranch} cannot be read.`);
     }
@@ -906,6 +953,7 @@ export class Orchestrator {
     updateRunChange(db, row.id, {
       state: 'building',
       baseCommit,
+      ...(baseFetch === null ? {} : { baseFetch }),
       branch,
       worktree,
       ...(row.startedAt === null ? { startedAt: this.#now() } : {}),

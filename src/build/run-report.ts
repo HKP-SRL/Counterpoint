@@ -5,7 +5,8 @@
 //
 // It answers the morning questions in order: why the run ended, what is ready to merge (with
 // its preview), what must not be merged (planning edits), what parked and why (the last failing
-// gate's lines), what was not built, what waits on the owner, the decisions the builder assumed,
+// gate's lines), what was not built, which changes were built from an older base because the
+// fetch at their build start failed, what waits on the owner, the decisions the builder assumed,
 // and the flags. Builder-written text (assumptions) is shown as quoted plain text, never as HTML.
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -69,6 +70,11 @@ export interface RunReport {
   parked: ReportChange[];
   /** Queued, skipped or cut off when the run ended. */
   notBuilt: ReportChange[];
+  /**
+   * Changes built from the base as last fetched, because the fetch at their build start failed
+   * (host-planning: A failed fetch never stops work).
+   */
+  olderBase: { change: string; base: string; fetchedAt: number | null; error: string }[];
   /** What the owner has to do: the run-stopping error's fix, `Owner:` steps of built changes. */
   waiting: string[];
   assumptions: { change: string; text: string }[];
@@ -151,6 +157,7 @@ export async function buildRunReport(input: {
     notForMerge: [],
     parked: [],
     notBuilt: [],
+    olderBase: [],
     waiting: [],
     assumptions: [],
     flags: [],
@@ -181,6 +188,15 @@ export async function buildRunReport(input: {
       report.parked.push(entry);
     } else {
       report.notBuilt.push(entry);
+    }
+    const fetch = row.baseFetch;
+    if (fetch !== null && fetch.error !== null) {
+      report.olderBase.push({
+        change: row.change,
+        base: fetch.base,
+        fetchedAt: fetch.fetchedAt,
+        error: fetch.error,
+      });
     }
     const assumed = readSmallFile(join(runDir, row.change, 'assumptions.md'));
     const text = assumed === null ? '' : defuse(assumed);
@@ -299,6 +315,21 @@ export function reportMarkdown(r: RunReport): string {
     out.push(`## Not built (${r.notBuilt.length})`, '');
     for (const c of r.notBuilt) {
       out.push(`- \`${c.change}\`: ${line(c.reason ?? c.state)}`);
+    }
+    out.push('');
+  }
+
+  if (r.olderBase.length > 0) {
+    out.push(`## Built from an older base (${r.olderBase.length})`, '');
+    out.push(
+      'The fetch at their build start failed, so they were built from the base as last fetched.',
+      '',
+    );
+    for (const c of r.olderBase) {
+      const at = c.fetchedAt === null ? 'last fetched' : `fetched at ${when(c.fetchedAt)}`;
+      out.push(
+        `- \`${c.change}\`: built from ${c.base} as ${at}. The fetch failed: ${line(c.error)}`,
+      );
     }
     out.push('');
   }

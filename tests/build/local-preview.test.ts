@@ -6,6 +6,7 @@ import { createOpenSpecAdapter } from '../../src/adapters/openspec/index.ts';
 import { LocalPreviews, type PreviewStatus } from '../../src/build/local-preview.ts';
 import type { RunHost } from '../../src/build/orchestrator.ts';
 import { worktreePathFor } from '../../src/build/worktrees.ts';
+import { createBaseResolver } from '../../src/core/git/base-ref.ts';
 import { createGitFileReader } from '../../src/core/git/reader.ts';
 import { runGit } from '../../src/core/git/run.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
@@ -50,6 +51,7 @@ async function setup(config: string, state: 'green' | 'building' = 'green') {
     host,
     reader: createGitFileReader(repo.root),
     adapter: createOpenSpecAdapter(),
+    tip: createBaseResolver(repo.root, 'master').tip,
   };
   const events: Array<Record<string, unknown>> = [];
   const previews = new LocalPreviews({

@@ -216,6 +216,17 @@ const MIGRATIONS: readonly string[] = [
   DROP TABLE gate_results;
   ALTER TABLE gate_results_v7 RENAME TO gate_results;
   `,
+  // 8: how a change's base was fetched when its build started (host-planning: A failed fetch
+  // never stops work): `{ base, fetchedAt, error }` as JSON, null when nothing was fetched (a host with
+  // no remote, a resumed change, or a build before this version).
+  `
+  ALTER TABLE run_changes ADD COLUMN base_fetch TEXT;
+  `,
+  // 9: the state of the change's PR as `gh` last reported it (runway: A merged build PR means
+  // built). Null until first asked, and for a row with no PR.
+  `
+  ALTER TABLE run_changes ADD COLUMN pr_state TEXT CHECK (pr_state IN ('open', 'merged', 'closed'));
+  `,
 ];
 
 /** Path of the state database under a home. */

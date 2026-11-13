@@ -59,11 +59,24 @@ export type ChangeRow = {
   approval: ApprovalFacts | null;
 };
 
+/** Which base the changes were read from, and how its fetch went (host API `base`). */
+export type BaseFacts = {
+  /** `origin/master`, or the local branch when local only. */
+  ref: string;
+  remote: string | null;
+  localOnly: boolean;
+  fetchedAt: number | null;
+  error: string | null;
+  failedAt: number | null;
+  localAhead: number;
+};
+
 export type ChangesSnapshot = {
   hostId: string;
   hostName: string;
   baseBranch: string;
   tip: string | null;
+  base: BaseFacts | null;
   changes: ChangeRow[];
 };
 
@@ -73,6 +86,69 @@ const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 const strOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const count = (value: unknown): number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+
+const timeOrNull = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+
+function parseBase(value: unknown): BaseFacts | null {
+  if (!isRecord(value) || typeof value.ref !== 'string') return null;
+  return {
+    ref: value.ref,
+    remote: strOrNull(value.remote),
+    localOnly: value.localOnly === true,
+    fetchedAt: timeOrNull(value.fetchedAt),
+    error: strOrNull(value.error),
+    failedAt: timeOrNull(value.failedAt),
+    localAhead: count(value.localAhead),
+  };
+}
+
+/** "just now", "12 min ago", "3 h ago". */
+function ago(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  return `${Math.floor(minutes / 60)} h ago`;
+}
+
+/** "09:14" today, else the date too. */
+function clock(at: number, now: number): string {
+  const date = new Date(at);
+  const sameDay = date.toDateString() === new Date(now).toDateString();
+  return sameDay
+    ? date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/**
+ * The line under the source line, only when something is off (D-6): the latest fetch failed, the
+ * host has no remote, or the local base branch has commits that are not on the remote.
+ */
+export function baseNotes(baseBranch: string, base: BaseFacts | null, now: number): string[] {
+  if (base === null) return [];
+  const notes: string[] = [];
+  if (base.error !== null) {
+    const when = base.failedAt === null ? '' : ` ${ago(base.failedAt, now)}`;
+    const shown =
+      base.fetchedAt === null
+        ? `Showing ${base.ref} as last fetched.`
+        : `Showing ${base.ref} as fetched at ${clock(base.fetchedAt, now)}.`;
+    notes.push(`Last fetch failed${when}: ${base.error.replace(/\.$/, '')}. ${shown}`);
+  }
+  if (base.localOnly) {
+    notes.push(
+      base.remote === null
+        ? `Local only: ${baseBranch} has no remote, so it is read from this computer.`
+        : `Local only: ${base.remote} has no ${baseBranch} yet, so it is read from this computer.`,
+    );
+  } else if (base.localAhead > 0) {
+    const commits = base.localAhead === 1 ? '1 commit' : `${base.localAhead} commits`;
+    notes.push(
+      `${baseBranch} has ${commits} not on ${base.remote ?? 'the remote'}; ${base.localAhead === 1 ? 'it is' : 'they are'} not built.`,
+    );
+  }
+  return notes;
+}
 
 function parseUnreadable(value: unknown): UnreadableFile | null {
   return isRecord(value) ? { file: str(value.file), reason: str(value.reason) } : null;
@@ -128,6 +204,7 @@ async function fetchChanges(hostId: string, signal?: AbortSignal): Promise<Chang
     hostName: str(raw.hostName),
     baseBranch: str(raw.baseBranch),
     tip: strOrNull(raw.tip),
+    base: parseBase(raw.base),
     changes: Array.isArray(raw.changes)
       ? raw.changes.map(parseChangeRow).filter((row): row is ChangeRow => row !== null)
       : [],
@@ -439,11 +516,18 @@ export function ChangesPage({ hostId }: { hostId: string }) {
     body = (
       <VStack gap={6}>
         <VStack gap={4}>
-          <Text type="supporting" color="secondary">
-            {data.tip === null
-              ? `Read from ${hostName}'s openspec/changes/.`
-              : `Read from ${data.baseBranch} at ${data.tip.slice(0, 7)} (committed content only). Dependencies first.`}
-          </Text>
+          <VStack gap={1}>
+            <Text type="supporting" color="secondary">
+              {data.tip === null
+                ? `Read from ${hostName}'s openspec/changes/.`
+                : `Read from ${data.base?.ref ?? data.baseBranch} at ${data.tip.slice(0, 7)}. Dependencies first.`}
+            </Text>
+            {baseNotes(data.baseBranch, data.base, Date.now()).map((note) => (
+              <Text key={note} type="supporting">
+                {note}
+              </Text>
+            ))}
+          </VStack>
           <Table<ChangeRow>
             data={visible}
             columns={columns}
