@@ -842,6 +842,11 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
 
   useEffect(() => {
     document.title = 'Needs You · Counterpoint';
+    // The navigation link clicked to get here keeps the focus; Enter belongs to the inbox now.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest('nav') !== null && isControl(active)) {
+      active.blur();
+    }
   }, []);
 
   const act = useCallback(
@@ -867,7 +872,10 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
         if (result.ok) setFocus(focusAfterAnswer(latestIds.current, cardId));
       } finally {
         setBusy(null);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYouCounts }),
+        ]);
       }
     },
     [hostId, queryClient, toast],
@@ -890,7 +898,10 @@ export function NeedsYouPage({ hostId }: { hostId: string }) {
         else toast({ body: after?.outcome ?? 'Trying again.' });
       } finally {
         setWriteBusy(null);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYou(hostId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.needsYouCounts }),
+        ]);
       }
     },
     [hostId, queryClient, toast, writeBusy],
