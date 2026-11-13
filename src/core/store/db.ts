@@ -424,6 +424,14 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT;
   CREATE INDEX draft_marks_by_screen ON draft_marks(screen_id, state);
   `,
+  // 16: what a change's build leaves for the next one (build-runs: One worktree and branch per
+  // change). `head_commit` is the commit Counterpoint last pushed to the change's branch (at
+  // delivery, or when ticks are taken back out of its PR); `gate_failure` is the change's last
+  // failing gate as JSON `{ gate, attempt, reason, tail }`, cleared when the gates pass.
+  `
+  ALTER TABLE run_changes ADD COLUMN head_commit TEXT;
+  ALTER TABLE run_changes ADD COLUMN gate_failure TEXT;
+  `,
 ];
 
 /** Path of the state database under a home. */

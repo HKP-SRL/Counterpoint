@@ -36,18 +36,22 @@ Each project SHALL have a Settings page in the console holding its run settings:
 - **THEN** each builder session stops at 300 turns or $30 estimated cost, and a change with build tasks still open after 6 sessions of one attempt parks with the reason instead of going to its gates
 
 ### Requirement: Only runway changes are built
-A run SHALL build only changes that are approved at the moment their build starts. A change whose approval is withdrawn during a run SHALL NOT start; one already building SHALL stop at its next handoff and keep its branch.
+A run SHALL build only changes that are approved at the moment their build starts. A change whose approval is withdrawn during a run SHALL NOT start; one already building SHALL stop at its next handoff, before its gates or before its delivery, whichever comes first, and keep its branch.
 
 #### Scenario: Approval withdrawn mid-run
 - **WHEN** the owner withdraws a queued change's approval during a run
 - **THEN** that change is not built, and the run goes on with the rest
+
+#### Scenario: Approval withdrawn during the last session
+- **WHEN** the owner withdraws a change's approval while its last builder session runs
+- **THEN** its gates do not run, no pull request is opened or updated, and its branch keeps the work
 
 #### Scenario: Approval drifts mid-run
 - **WHEN** a queued change's proposal is edited on the base branch during a run
 - **THEN** that change is still built, from the edited version at the base-branch tip
 
 ### Requirement: One worktree and branch per change
-Each change SHALL build in its own git worktree and branch created from the base-branch tip on the remote, fetched at the moment its build starts, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout. Builder sessions SHALL leave git state alone: Counterpoint commits each session's work in the worktree itself.
+Each change SHALL build in its own git worktree and branch created from the base-branch tip on the remote, fetched at the moment its build starts, outside the owner's checkout. The builder SHALL never run git commands in the owner's checkout. Builder sessions SHALL leave git state alone: Counterpoint commits each session's work in the worktree itself. An existing branch SHALL be built on again, and a deleted worktree folder SHALL be made again.
 
 #### Scenario: Owner works during a day run
 - **WHEN** the owner edits files in their checkout while a change builds
@@ -56,6 +60,43 @@ Each change SHALL build in its own git worktree and branch created from the base
 #### Scenario: Local base branch behind the remote
 - **WHEN** the owner's local base branch is behind the remote when a change's build starts
 - **THEN** the change's branch starts from the remote's tip, its gates come from the host config there, and the owner's local base branch is unchanged
+
+### Requirement: A branch built again takes the moved base
+When the base has moved past a change's existing branch, Counterpoint SHALL merge the base into it as the owner, planning files taking the base's version. A conflict in any other file SHALL go to one builder session told to resolve only that conflict. When the change's latest pull request was closed or merged and nothing was built since, the change SHALL start again from the base, keeping the old branch as `cp-backup/<change>-<yyyymmdd-hhmm>`.
+
+#### Scenario: Base moved since the last build
+- **WHEN** a parked change is built again after other pull requests merged into the base
+- **THEN** the base is merged into its branch, the next session gets the last handoff and the last failing gate's output, and the change does not park because its branch is behind
+
+#### Scenario: Conflict with the base
+- **WHEN** merging the moved base into a change's branch conflicts in a source file
+- **THEN** one session resolves that conflict only, Counterpoint commits the merge, and the gates run as usual
+
+#### Scenario: Pull request closed
+- **WHEN** a change whose pull request the owner closed is built again
+- **THEN** it starts from the base, its old branch is kept as `cp-backup/<change>-<stamp>`, and the push replaces the closed pull request's branch
+
+### Requirement: A change built again continues where it stopped
+A build on a change's existing branch SHALL continue from the change's previous build: its handoff, its last failing gate's output and its ticked tasks reach the next session. When no build task is open and no gate failure is waiting, the change SHALL go straight to its gates without a builder session.
+
+#### Scenario: Nothing left to build
+- **WHEN** a change whose every build task is done is built again with no gate failure waiting
+- **THEN** no builder session starts and its gates run
+
+#### Scenario: Gate failure carried over
+- **WHEN** a change parked after its gate failed is built again in a new run
+- **THEN** its first session is given that gate's last output lines
+
+### Requirement: The remote branch is checked before building
+Before any session, Counterpoint SHALL check the change's branch on the remote. A remote branch the build would replace SHALL be replaced at delivery only while it is still at the commit Counterpoint saw there: its own last push, or the branch of a closed pull request. When the remote branch of an open pull request holds commits Counterpoint did not push, the change SHALL park before any session, with the reason.
+
+#### Scenario: Branch deleted by hand
+- **WHEN** the owner deleted a change's local branch and its pull request is open with Counterpoint's last push
+- **THEN** the branch is made again from the base and its push replaces exactly that last push, after the gates pass
+
+#### Scenario: Someone else pushed to the branch
+- **WHEN** the remote branch of a change's open pull request has a commit Counterpoint did not push and the local branch lacks it
+- **THEN** the change parks before any session and says so
 
 ### Requirement: Fresh sessions with context-budget handoff
 Each build SHALL run in fresh `claude -p` sessions. When a session's context passes the run's budget, measured against the model's real window (never a hard-coded size), Counterpoint SHALL have it finish the current task, write a handoff and stop, SHALL commit the session's work with the handoff, and SHALL start the next fresh session from that handoff.

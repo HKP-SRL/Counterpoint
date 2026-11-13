@@ -17,14 +17,15 @@ import {
   pushBranch,
   pushCredentials,
   pushTarget,
+  remoteBranchHead,
 } from '../../src/build/deliver.ts';
 import type { ChangeFacts } from '../../src/core/framework/port.ts';
 import { runGit } from '../../src/core/git/run.ts';
 import { EMPTY_HOST_CONFIG } from '../../src/core/host/host-config.ts';
 import { openStore, upsertHost } from '../../src/core/store/db.ts';
-import { insertRun, insertRunChange } from '../../src/core/store/runs.ts';
+import { getRunChange, insertRun, insertRunChange } from '../../src/core/store/runs.ts';
 import { materializeOpenSpecHost } from '../helpers/fixture-repo.ts';
-import { makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
+import { commitAll, makeScratchDir, removeScratchDirs, writeFileIn } from '../helpers/scratch.ts';
 
 afterAll(removeScratchDirs);
 
@@ -168,6 +169,39 @@ describe('pushBranch', () => {
       pushBranch({ host, branch: 'master', target: target(bare), ssh: '/usr/bin/ssh' }),
     ).rejects.toThrow(/not a Counterpoint branch/);
   });
+
+  it('replaces a remote branch only with a lease on the head it saw', async () => {
+    const { repo, bare, host } = await hostWithRemote();
+    const push = (lease?: string) =>
+      pushBranch({
+        host,
+        branch: 'cp/a-thing',
+        target: target(bare),
+        ssh: '/usr/bin/ssh',
+        ...(lease === undefined ? {} : { lease }),
+      });
+    const look = () =>
+      remoteBranchHead({
+        root: host.root,
+        branch: 'cp/a-thing',
+        target: target(bare),
+        ssh: '/usr/bin/ssh',
+      });
+    expect(await look()).toBeNull();
+    await push();
+    expect(await look()).toBe(repo.commit);
+    // The branch is made again with other history (the owner deleted it): a plain push is refused.
+    await runGit(repo.root, ['branch', '-D', 'cp/a-thing']);
+    await runGit(repo.root, ['switch', '-q', '--orphan', 'cp/a-thing']);
+    writeFileIn(repo.root, 'other.txt', 'x\n');
+    const remade = await commitAll(repo.root, 'remade');
+    await runGit(repo.root, ['switch', '-q', '-f', 'master']);
+    await expect(push()).rejects.toThrow(DeliveryError);
+    // A lease on a head the remote is no longer at is refused too.
+    await expect(push('b'.repeat(40))).rejects.toThrow(/failed to push/);
+    await push(repo.commit);
+    expect(await look()).toBe(remade);
+  });
 });
 
 const facts = (over: Partial<ChangeFacts> = {}): ChangeFacts =>
@@ -211,18 +245,73 @@ describe('prBody', () => {
     const body = prBody(bodyInput());
     expect(body).toContain('Diners need it.');
     expect(body).toContain('This build ticked 1 task:\n- [x] 1.1 Do it');
-    expect(body).toContain('<summary>The whole task list</summary>');
+    expect(body).toContain('The whole task list:\n\n- [x] 1.1 Do it\n- [ ] 1.2 Owner: check it');
+    expect(body).toContain(
+      '**Assumed decisions** (1, check each):\n- Chose euros, ping @​alex if wrong.',
+    );
     expect(body).toContain('> - Chose euros, ping @​alex if wrong.');
     expect(body).not.toContain('<!-- session');
-    expect(body).toContain('Every gate passed on attempt 2.');
+    expect(body).toContain('**Gates:** every gate passed on attempt 2: unit (5 s), lint (1 s).');
     expect(body).toContain('| unit | passed | 5 s |');
     expect(body).toContain('| lint | passed | 1 s |');
+    expect(body).toContain(
+      '**Tests:** 20% of the added lines (20 of 100), budget 30%; no existing test edited or deleted.',
+    );
     expect(body).toContain(
       "Tests are 20% of this change's added lines (20 of 100), against a budget of 30%.",
     );
     expect(body).toContain('No existing test was edited or deleted.');
     expect(body).toContain('run `run-1`, 3 builder sessions, from `aaaaaaaaaaaa` on `cp/a-thing`');
     expect(body).not.toContain('[!WARNING]');
+  });
+
+  it('leads with a short summary and the top three decisions; the rest is collapsed', () => {
+    const why = [
+      '## Why',
+      '',
+      'Cooks lose orders when the kitchen screen reloads. They retype them from memory, and some are lost.',
+      '',
+      ...Array.from(
+        { length: 40 },
+        (_, i) => `More context, line ${i}, that nobody reads at a glance.`,
+      ),
+    ].join('\n');
+    const assumptions = Array.from(
+      { length: 7 },
+      (_, i) => `<!-- session ${i} -->\n- Decision ${i + 1}: chose A\n  because B.`,
+    ).join('\n');
+    const taskList = Array.from({ length: 150 }, (_, i) => `- [x] ${i}.1 Task ${i}`).join('\n');
+    const body = prBody(
+      bodyInput({
+        change: facts({ why }),
+        assumptions,
+        taskList,
+        unanswered: [{ question: 'Keep the old table?', answer: 'Keep it' }],
+        testShare: {
+          percent: 44,
+          testLines: 44,
+          addedLines: 100,
+          budget: 30,
+          editedTests: [{ path: 'src/menu.test.ts', status: 'modified' }],
+        },
+      }),
+    );
+    const [top = '', details = ''] = body.split('<details>');
+    expect(top.split('\n').length).toBeLessThanOrEqual(16);
+    expect(top).toContain('Cooks lose orders when the kitchen screen reloads.');
+    expect(top).not.toContain('line 39');
+    expect(top).toContain('**Assumed decisions** (8, check each):');
+    expect(top).toContain('- Keep the old table? Assumed: **Keep it**');
+    expect(top).toContain('- Decision 1: chose A because B.');
+    expect(top).toContain('- Decision 2: chose A because B.');
+    expect(top).not.toContain('Decision 3');
+    expect(top).toContain('- …and 5 more in the details below.');
+    expect(top).toContain('over budget (advice, not a failure); 1 existing test edited or deleted');
+    expect(top).not.toContain('src/menu.test.ts');
+    expect(details).toContain('Decision 7: chose A');
+    expect(details).toContain('- `src/menu.test.ts` (modified)');
+    expect(details).toContain('- [x] 149.1 Task 149');
+    expect(details).toContain('</details>');
   });
 
   it('puts the preview first, and says why when there is none', () => {
@@ -284,7 +373,9 @@ describe('prBody', () => {
   });
 
   it('says so when the builder assumed nothing', () => {
-    expect(prBody(bodyInput({ assumptions: null }))).toContain('The builder recorded none.');
+    expect(prBody(bodyInput({ assumptions: null }))).toContain(
+      '**Assumed decisions:** none. The builder recorded none.',
+    );
   });
 
   it('lists flags and warns when the branch edits planning files', () => {
@@ -520,6 +611,24 @@ describe('createDeliver', () => {
     expect(readFileSync(join(changeDir, 'pr-body.md'), 'utf8')).toContain(
       '**Preview:** http://127.0.0.1:4170/h/cena/preview/a-thing',
     );
+  });
+
+  it('pushes with the lease it was given and records the pushed head', async () => {
+    const { repo, db, context } = await setup(null);
+    const pushes: Array<{ branch: string; lease: string | null | undefined }> = [];
+    const deliver = createDeliver({
+      home: '/unused',
+      consolePort: 4170,
+      adapterFor: () => null,
+      gh: recordingGh().gh,
+      push: async (input) => {
+        pushes.push({ branch: input.branch, lease: input.lease });
+      },
+      hasPreviewDeploys: async () => false,
+    });
+    await deliver({ ...context, lease: 'c'.repeat(40) });
+    expect(pushes).toEqual([{ branch: 'cp/a-thing', lease: 'c'.repeat(40) }]);
+    expect(getRunChange(db, context.runChangeId)?.headCommit).toBe(repo.commit);
   });
 
   it('says there is no preview when the host has neither', async () => {

@@ -23,7 +23,7 @@ import { ClaudeCliRunner } from '../agent/runner.ts';
 import { createActionRunner } from '../build/actions.ts';
 import { onBuilderAnswer, raiseAskSetupCard, setUpInteractiveAsk } from '../build/ask-session.ts';
 import { BUILD_TICKS_KIND, BuildTicks } from '../build/build-ticks.ts';
-import { createDeliver } from '../build/deliver.ts';
+import { createDeliver, pushTarget, remoteBranchHead } from '../build/deliver.ts';
 import { Governor, governedRunner } from '../build/governor.ts';
 import { HoldCards, resolveHoldCards } from '../build/hold-card.ts';
 import { endLiveProcesses } from '../build/live-processes.ts';
@@ -297,6 +297,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   let lane: PlanningLane | undefined;
   // Build ticks of open and merged build PRs (build-ticks-and-owner-steps D-3), on the same tick.
   let buildTicks: BuildTicks | undefined;
+  // The owner's environment as the minute tick last had it (a run start asks gh with it).
+  let tickEnv: Readonly<Record<string, string>> | undefined;
   // The base fetcher (host-planning: When the base is fetched): every host's base branch from its
   // remote, once a minute and at each run and build start. A change in what the console shows
   // about it (a failed fetch, unpushed local commits) is announced like a new base tip.
@@ -308,6 +310,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     },
     // A merged build PR means built (runway): its change leaves the runway and shows Built.
     afterFetch: async (host, env) => {
+      tickEnv = env;
       const merged = await checkPullRequests({ db: store, host, env, log });
       if (merged.length > 0) {
         publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
@@ -499,6 +502,25 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     governor,
     runnerFactory,
     fetcher,
+    // A PR merged since the last minute tick is known before its change builds again.
+    refreshPullRequests: async (host, env) => {
+      const merged = await checkPullRequests({
+        db: store,
+        host,
+        env: env ?? tickEnv ?? process.env,
+        log,
+      });
+      if (merged.length > 0) {
+        publishEvent(store, bus, { hostId: host.id, family: 'planning', payload: { merged } });
+      }
+    },
+    remoteHead: async (host, branch, env) =>
+      remoteBranchHead({
+        root: host.root,
+        branch,
+        target: await pushTarget(host.root, host.baseBranch),
+        env,
+      }),
     consolePort: bound,
     publish: publish('run'),
     onRunEnd: async (runId) => {
