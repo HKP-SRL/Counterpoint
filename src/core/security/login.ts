@@ -11,8 +11,13 @@ export const SESSION_COOKIE = 'cp_session';
 /** How long a minted sign-in code stays usable. */
 export const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 
-/** How long a console session lasts (A11). The cookie's Max-Age (43200 s) matches it. */
+/**
+ * How long a console session lasts unused (A11): each use moves its expiry this far ahead, up to
+ * SESSION_MAX_MS after sign-in.
+ */
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** The longest a console session lasts in all. The cookie's Max-Age (2592000 s) matches it. */
+export const SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 32 random bytes as unpadded base64url. */
 const SECRET_RE = /^[A-Za-z0-9_-]{43}$/;
@@ -58,7 +63,7 @@ export function deleteStaleLoginCodes(db: Store, now: number = Date.now()): void
   db.prepare('DELETE FROM login_codes WHERE used_at IS NOT NULL OR expires_at <= ?').run(now);
 }
 
-/** Creates a 12-hour session and returns its id (the cookie value). */
+/** Creates a session that lasts 12 hours unused, and returns its id (the cookie value). */
 export function createSession(db: Store, now: number = Date.now()): string {
   const id = newSecret();
   db.prepare('INSERT INTO sessions (id_hash, created_at, expires_at) VALUES (?, ?, ?)').run(
@@ -69,16 +74,31 @@ export function createSession(db: Store, now: number = Date.now()): string {
   return id;
 }
 
-/** True when the value is the id of a session that has not expired. */
+/**
+ * True when the value is the id of a session that has not expired. Using it slides its expiry:
+ * 12 hours from now, never past 30 days after sign-in. One conditional UPDATE.
+ */
 export function validateSession(db: Store, value: unknown, now: number = Date.now()): boolean {
   if (!isSecret(value)) return false;
-  const row = db
-    .prepare('SELECT 1 AS ok FROM sessions WHERE id_hash = ? AND expires_at > ?')
-    .get(hash(value), now);
-  return row !== undefined;
+  const result = db
+    .prepare(
+      `UPDATE sessions SET expires_at = MIN(?, created_at + ?)
+       WHERE id_hash = ? AND expires_at > ? AND created_at + ? > ?`,
+    )
+    .run(now + SESSION_TTL_MS, SESSION_MAX_MS, hash(value), now, SESSION_MAX_MS, now);
+  return Number(result.changes) === 1;
 }
 
-/** Signs every browser out. Called on every daemon start. */
+/** Drops expired sessions. Called on every daemon start: the others stay signed in. */
+export function deleteExpiredSessions(db: Store, now: number = Date.now()): void {
+  db.prepare('DELETE FROM sessions WHERE expires_at <= ? OR created_at + ? <= ?').run(
+    now,
+    SESSION_MAX_MS,
+    now,
+  );
+}
+
+/** Signs every browser out. */
 export function clearAllSessions(db: Store): void {
   db.prepare('DELETE FROM sessions').run();
 }

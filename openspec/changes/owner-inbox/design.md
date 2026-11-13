@@ -80,7 +80,7 @@ When the principle decides (a refreshed environment, an owner identity used for 
 macOS notifications use `osascript` with the question passed as an argument, never interpolated into the script. The console adds the tab-title count (already specified) and a browser Notification once the owner allows it. Only blocking cards notify, at most one notification per minute, merged.
 
 **D-10. A planned self-restart keeps sessions.**
-The daemon watches its installed package's version. When it changes and no run is active, it starts its successor with the login environment, hands over through the control channel, and exits. The successor keeps console sessions (stored as hashes in the store), and a crash restart still expires them. During a run, a card asks.
+The daemon watches its installed package's version. When it changes and no run is active, it starts its successor with the login environment, hands over through the control channel, and exits. The successor keeps console sessions (stored as hashes in the store). Fix (2026-11-13): a crash restart keeps them too, and a session slides 12 hours ahead on each use, up to 30 days, since signing in again needs a terminal. During a run, a card asks.
 
 **D-11. Planning writes land as small PRs that the same click merges** (owner, 2026-11-13).
 Each write (Done on an owner step, Land it, later council and `pr-revisions` writes):

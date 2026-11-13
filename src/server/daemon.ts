@@ -40,7 +40,7 @@ import { BaseFetcher } from '../core/git/base-fetch.ts';
 import { type HomePaths, homePaths } from '../core/host/home.ts';
 import { carryOverApprovals } from '../core/runway/carry-over.ts';
 import { hostCheckedServer } from '../core/security/guard.ts';
-import { clearAllSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
+import { deleteExpiredSessions, deleteStaleLoginCodes } from '../core/security/login.ts';
 import { revokeBuilderCapabilities } from '../core/store/ask.ts';
 import { getCard, listWaitingCards } from '../core/store/cards.ts';
 import { openStore, type Store } from '../core/store/db.ts';
@@ -231,10 +231,11 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   const store: Store = openStore(options.home);
-  // Crash-only reconcile: a (re)started daemon signs every browser out and drops stale codes. Only
-  // a planned self-restart, handed over by the previous daemon, keeps the sessions (D-10).
+  // Crash-only reconcile: a (re)started daemon drops expired console sessions and stale codes. The
+  // rest stay signed in, after a crash as after a planned self-restart (D-10): signing in again
+  // needs a terminal, which the owner should not need.
   const planned = takeHandover(paths, options.handover);
-  if (!planned) clearAllSessions(store);
+  deleteExpiredSessions(store);
   deleteStaleLoginCodes(store);
 
   // Console HTTP. The app is created once the real port is known (port 0 → ephemeral); no

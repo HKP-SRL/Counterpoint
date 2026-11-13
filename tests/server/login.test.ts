@@ -6,6 +6,7 @@ import {
   clearAllSessions,
   consumeLoginCode,
   createSession,
+  deleteExpiredSessions,
   mintLoginCode,
   SESSION_COOKIE,
   validateSession,
@@ -22,7 +23,7 @@ const FIVE_MIN = 5 * 60 * 1000;
 const TWELVE_H = 12 * 60 * 60 * 1000;
 const B64URL_32 = /^[A-Za-z0-9_-]{43}$/;
 const COOKIE_RE =
-  /^cp_session=([A-Za-z0-9_-]{43}); HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/;
+  /^cp_session=([A-Za-z0-9_-]{43}); HttpOnly; SameSite=Strict; Path=\/; Max-Age=2592000$/;
 
 const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -112,6 +113,34 @@ describe('sessions', () => {
     for (const value of ['B'.repeat(43), tampered, '', 'x', undefined, null, 7]) {
       expect(validateSession(db, value, NOW)).toBe(false);
     }
+  });
+
+  it('slides a used session 12 hours ahead, never past 30 days after sign-in', () => {
+    const id = createSession(db, NOW);
+    // Used every 11 hours, it stays signed in well past the first 12 hours.
+    let at = NOW;
+    for (let i = 0; i < 10; i += 1) {
+      at += 11 * 60 * 60 * 1000;
+      expect(validateSession(db, id, at)).toBe(true);
+    }
+    // Unused for 12 hours, it ends.
+    expect(validateSession(db, id, at + TWELVE_H)).toBe(false);
+    // Used all along, it still ends 30 days after sign-in.
+    const kept = createSession(db, NOW);
+    const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+    for (at = NOW; at < NOW + thirtyDays - 60_000; at += 6 * 60 * 60 * 1000) {
+      expect(validateSession(db, kept, at)).toBe(true);
+    }
+    expect(validateSession(db, kept, NOW + thirtyDays)).toBe(false);
+  });
+
+  it('deleteExpiredSessions keeps live sessions (a daemon start signs nobody out)', () => {
+    const live = createSession(db, NOW);
+    const old = createSession(db, NOW - TWELVE_H - 1);
+    deleteExpiredSessions(db, NOW + 1000);
+    expect(validateSession(db, live, NOW + 2000)).toBe(true);
+    expect(count('SELECT COUNT(*) AS n FROM sessions')).toBe(1);
+    expect(validateSession(db, old, NOW + 2000)).toBe(false);
   });
 
   it('clearAllSessions signs every browser out', () => {
