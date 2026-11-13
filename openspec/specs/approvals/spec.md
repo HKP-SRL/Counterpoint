@@ -40,7 +40,7 @@ Approvals SHALL be kept across daemon restarts and Counterpoint upgrades.
 ### Requirement: Earlier approvals carry over
 On the first start after the upgrade, an open change that has an approval file from an earlier version at the base-branch tip SHALL be recorded as approved. After that, approval files in a host repository SHALL have no effect.
 
-#### Scenario: Signed approval from before the upgrade
+#### Scenario: Approval file from before the upgrade
 - **WHEN** the base-branch tip holds an earlier approval file for an open change and the upgraded Counterpoint starts for the first time
 - **THEN** that change is on the runway without the owner approving it again
 
